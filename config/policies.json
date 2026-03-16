@@ -1,0 +1,52 @@
+[
+    {
+        "number": 1,
+        "code": "ECH",
+        "comment": "QGISCF DLP Policy for Exchange Online - External Email - Audit Mode",
+        "location": { "ExchangeLocation": "All" },
+        "scopeParam": "AccessScope",
+        "scopeValue": "NotInOrganization",
+        "optional": false,
+        "enabled": true
+    },
+    {
+        "number": 2,
+        "code": "ODB",
+        "comment": "QGISCF DLP Policy for OneDrive for Business - Audit Mode",
+        "location": { "OneDriveLocation": "All" },
+        "scopeParam": "AccessScope",
+        "scopeValue": "NotInOrganization",
+        "optional": false,
+        "enabled": true
+    },
+    {
+        "number": 3,
+        "code": "SPO",
+        "comment": "QGISCF DLP Policy for SharePoint Online - Audit Mode",
+        "location": { "SharePointLocation": "All" },
+        "scopeParam": "AccessScope",
+        "scopeValue": "NotInOrganization",
+        "optional": false,
+        "enabled": true
+    },
+    {
+        "number": 4,
+        "code": "END",
+        "comment": "QGISCF DLP Policy for Endpoint Devices (USB, Cloud Services) - Audit Mode",
+        "location": { "EndpointDlpLocation": "All" },
+        "scopeParam": null,
+        "scopeValue": null,
+        "optional": true,
+        "enabled": true
+    },
+    {
+        "number": 5,
+        "code": "TMS",
+        "comment": "QGISCF DLP Policy for Microsoft Teams - Audit Mode",
+        "location": { "TeamsLocation": "All" },
+        "scopeParam": "AccessScope",
+        "scopeValue": "NotInOrganization",
+        "optional": false,
+        "enabled": true
+    }
+]

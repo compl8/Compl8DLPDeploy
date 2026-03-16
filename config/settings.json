@@ -1,0 +1,19 @@
+{
+    "_comment": "QGISCF DLP Deployment Settings. namingSuffix encodes deployment mode: EXT=external scoping, ADT=audit mode. See policies.json for workload definitions.",
+    "auditMode": true,
+    "notifyUser": false,
+    "generateIncidentReport": false,
+    "incidentReportRecipient": "SiteAdmin",
+    "incidentReportSeverity": "Medium",
+    "namingPrefix": "QGISCF",
+    "namingSuffix": "EXT-ADT",
+    "skipSitValidation": false,
+    "suppressRuleOutput": true,
+    "deploymentTier": "full",
+    "publisher": "Queensland Government CSU",
+    "labelPolicyName": "QGISCF-Label-Policy",
+    "_sitOverrides_comment": "Reserved for future use. Intended to override per-label SIT thresholds at the settings level. Not currently consumed by any script.",
+    "_sitOverrides": {
+        "OFFI": { "minCount": 5, "maxCount": -1, "confidenceLevel": "High" }
+    }
+}
