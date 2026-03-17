@@ -299,19 +299,31 @@ if ($SkipPublish) {
         if ($existingPolicy) {
             Write-Host "  Policy exists. Updating labels..." -ForegroundColor Yellow
             if ($PSCmdlet.ShouldProcess($policyName, "Set-LabelPolicy")) {
-                Set-LabelPolicy -Identity $policyName `
-                    -AddLabels $publishableLabels `
-                    -Comment "$($Config.namingPrefix) labels published $(Get-Date -Format 'yyyy-MM-dd')" `
-                    -ErrorAction Stop
+                try {
+                    Invoke-WithRetry -OperationName "Set-LabelPolicy $policyName" -ScriptBlock {
+                        Set-LabelPolicy -Identity $policyName `
+                            -AddLabels $publishableLabels `
+                            -Comment "$($Config.namingPrefix) labels published $(Get-Date -Format 'yyyy-MM-dd')" `
+                            -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch {
+                    if ($_.Exception.Message -match 'LabelAlreadyPublished') {
+                        Write-Host "  Labels already published to policy (no changes needed)." -ForegroundColor Green
+                    } else {
+                        throw
+                    }
+                }
             }
         } else {
             Write-Host "  Creating label policy (scope: $PublishTo)..." -ForegroundColor Green
             if ($PSCmdlet.ShouldProcess($policyName, "New-LabelPolicy")) {
-                New-LabelPolicy -Name $policyName `
-                    -Labels $publishableLabels `
-                    @locationParams `
-                    -Comment "$($Config.namingPrefix) label policy - scope: $PublishTo" `
-                    -ErrorAction Stop
+                Invoke-WithRetry -OperationName "New-LabelPolicy $policyName" -ScriptBlock {
+                    New-LabelPolicy -Name $policyName `
+                        -Labels $publishableLabels `
+                        @locationParams `
+                        -Comment "$($Config.namingPrefix) label policy - scope: $PublishTo" `
+                        -ErrorAction Stop
+                } -MaxRetries 2 -BaseDelaySec 30
             }
         }
         Write-Host "  Label policy deployed: $policyName ($($publishableLabels.Count) labels, scope: $PublishTo)" -ForegroundColor Green

@@ -91,7 +91,12 @@ if ($validationErrors.Count -gt 0) {
 # Filter to only labels that have classifiers
 $Labels = $Labels | Where-Object { $Classifiers.ContainsKey($_.code) }
 
-$totalRules = $Policies.Count * $Labels.Count
+$totalRules = 0
+foreach ($p in ($Policies | Where-Object { $_.Enabled })) {
+    foreach ($l in $Labels) {
+        $totalRules += (Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
+    }
+}
 $totalClassifiers = ($Classifiers.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
 $totalTCs = ($Classifiers.Values | ForEach-Object { ($_ | Where-Object { $_.ClassifierType -eq "MLModel" }).Count } | Measure-Object -Sum).Sum
 $totalSITs = $totalClassifiers - $totalTCs
@@ -295,79 +300,92 @@ foreach ($policy in $Policies) {
         continue
     }
 
-    # Create one rule per label
+    # Create rules per label — auto-split if >125 classifiers
     $ruleNum = 0
     foreach ($label in $Labels) {
         $ruleNum++
-        if ($ruleNum -gt 1 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
         $labelCode      = $label.code
         $classifierList = $Classifiers[$labelCode]
-        $ruleName       = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+        $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
 
-        $condition = New-DLPSITCondition -ClassifierList $classifierList -ScopeParam $policy.ScopeParam -ScopeValue $policy.ScopeValue
+        $chunkIndex = 0
+        foreach ($chunk in $chunks) {
+            $chunkIndex++
+            if (($ruleNum -gt 1 -or $chunkIndex -gt 1) -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
 
-        Write-Host "  Creating Rule: $ruleName ($($label.fullName), $($condition.Format))" -ForegroundColor Cyan
-
-        $baseRuleParams = @{
-            Name                = $ruleName
-            Policy              = $policyName
-            Comment             = "$($label.fullName) ($($classifierList.Count) classifiers)"
-            ReportSeverityLevel = $(if ($Config.generateIncidentReport) { $Config.incidentReportSeverity } else { "Low" })
-            Disabled            = $false
-        }
-
-        if ($condition.Format -eq "AdvancedRule") {
-            $baseRuleParams["AdvancedRule"] = $condition.Value
-            # AccessScope is embedded in the AdvancedRule JSON — do not add separately
-        } else {
-            $baseRuleParams["ContentContainsSensitiveInformation"] = $condition.Value
-            if ($policy.ScopeParam) {
-                $baseRuleParams[$policy.ScopeParam] = $policy.ScopeValue
+            # Build rule name: append chunk letter to R-number only when split
+            if ($chunks.Count -gt 1) {
+                $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+            } else {
+                $ruleName = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
             }
-        }
 
-        if ($Config.generateIncidentReport) {
-            $baseRuleParams["GenerateIncidentReport"] = $Config.incidentReportRecipient
-            $baseRuleParams["IncidentReportContent"]  = "All"
-        }
-        if ($Config.notifyUser) {
-            $baseRuleParams["NotifyUser"] = "SiteAdmin,LastModifier,Owner"
-        }
+            $condition = New-DLPSITCondition -ClassifierList $chunk -ScopeParam $policy.ScopeParam -ScopeValue $policy.ScopeValue
 
-        $finalRuleParams = Get-MergedRuleParams -BaseParams $baseRuleParams -Overrides $Overrides -LabelCode $labelCode -PolicyCode $policy.Code -RuleName $ruleName
+            $chunkNote = if ($chunks.Count -gt 1) { " [chunk $chunkIndex/$($chunks.Count)]" } else { "" }
+            Write-Host "  Creating Rule: $ruleName ($($label.fullName)$chunkNote, $($chunk.Count) classifiers, $($condition.Format))" -ForegroundColor Cyan
 
-        $existingRule = $null
-        try { $existingRule = Get-DlpComplianceRule -Identity $ruleName -ErrorAction Stop } catch { }
+            $baseRuleParams = @{
+                Name                = $ruleName
+                Policy              = $policyName
+                Comment             = "$($label.fullName)$chunkNote ($($chunk.Count) classifiers)"
+                ReportSeverityLevel = $(if ($Config.generateIncidentReport) { $Config.incidentReportSeverity } else { "Low" })
+                Disabled            = $false
+            }
 
-        try {
-            if ($existingRule) {
-                Write-Host "    Rule exists. Updating..." -ForegroundColor Yellow
-                $updateRuleParams = @{ Identity = $ruleName }
-                foreach ($key in $finalRuleParams.Keys) {
-                    if ($key -notin @("Name", "Policy")) {
-                        $updateRuleParams[$key] = $finalRuleParams[$key]
+            if ($condition.Format -eq "AdvancedRule") {
+                $baseRuleParams["AdvancedRule"] = $condition.Value
+            } else {
+                $baseRuleParams["ContentContainsSensitiveInformation"] = $condition.Value
+                if ($policy.ScopeParam) {
+                    $baseRuleParams[$policy.ScopeParam] = $policy.ScopeValue
+                }
+            }
+
+            if ($Config.generateIncidentReport) {
+                $baseRuleParams["GenerateIncidentReport"] = $Config.incidentReportRecipient
+                $baseRuleParams["IncidentReportContent"]  = "All"
+            }
+            if ($Config.notifyUser) {
+                $baseRuleParams["NotifyUser"] = "SiteAdmin,LastModifier,Owner"
+            }
+
+            $finalRuleParams = Get-MergedRuleParams -BaseParams $baseRuleParams -Overrides $Overrides -LabelCode $labelCode -PolicyCode $policy.Code -RuleName $ruleName
+
+            $existingRule = $null
+            try { $existingRule = Get-DlpComplianceRule -Identity $ruleName -ErrorAction Stop } catch { }
+
+            try {
+                if ($existingRule) {
+                    Write-Host "    Rule exists. Updating..." -ForegroundColor Yellow
+                    $updateRuleParams = @{ Identity = $ruleName }
+                    foreach ($key in $finalRuleParams.Keys) {
+                        if ($key -notin @("Name", "Policy")) {
+                            $updateRuleParams[$key] = $finalRuleParams[$key]
+                        }
+                    }
+                    if ($PSCmdlet.ShouldProcess($ruleName, "Set-DlpComplianceRule")) {
+                        Invoke-WithRetry -OperationName "Set-Rule $ruleName" -ScriptBlock {
+                            Set-DlpComplianceRule @updateRuleParams -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
+                    }
+                } else {
+                    if ($PSCmdlet.ShouldProcess($ruleName, "New-DlpComplianceRule")) {
+                        Invoke-WithRetry -OperationName "New-Rule $ruleName" -ScriptBlock {
+                            if ($Config.suppressRuleOutput) {
+                                $null = New-DlpComplianceRule @finalRuleParams -ErrorAction Stop
+                            } else {
+                                New-DlpComplianceRule @finalRuleParams -ErrorAction Stop
+                            }
+                        } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
                     }
                 }
-                if ($PSCmdlet.ShouldProcess($ruleName, "Set-DlpComplianceRule")) {
-                    Invoke-WithRetry -OperationName "Set-Rule $ruleName" -ScriptBlock {
-                        Set-DlpComplianceRule @updateRuleParams -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                }
-            } else {
-                if ($PSCmdlet.ShouldProcess($ruleName, "New-DlpComplianceRule")) {
-                    Invoke-WithRetry -OperationName "New-Rule $ruleName" -ScriptBlock {
-                        if ($Config.suppressRuleOutput) {
-                            $null = New-DlpComplianceRule @finalRuleParams -ErrorAction Stop
-                        } else {
-                            New-DlpComplianceRule @finalRuleParams -ErrorAction Stop
-                        }
-                    } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                }
+                $successRules++
+            } catch {
+                Write-Warning "    Failed to create/update rule ${ruleName}: $($_.Exception.Message)"
+                $failRules++
             }
-            $successRules++
-        } catch {
-            Write-Warning "    Failed to create/update rule ${ruleName}: $($_.Exception.Message)"
-            $failRules++
         }
     }
 }
@@ -378,13 +396,17 @@ if (-not $SkipVerification) {
     Write-Host "`n=== Deployment Verification ===" -ForegroundColor Cyan
 
     $policyPattern = "P0[1-5]-*-$($Config.namingPrefix)-$($Config.namingSuffix)"
-    $rulePattern   = "P0[1-5]-R??-*-*-$($Config.namingSuffix)"
+    $rulePattern   = "P0[1-5]-R*-*-*-$($Config.namingSuffix)"
 
     $deployedPolicies = Get-DlpCompliancePolicy -ErrorAction Stop | Where-Object { $_.Name -like $policyPattern }
     $deployedRules = Get-DlpComplianceRule -ErrorAction Stop | Where-Object { $_.Name -like $rulePattern } | Sort-Object Policy, Priority
 
     $expectedPolicies = ($Policies | Where-Object { $_.Enabled }).Count
-    $expectedRules = $expectedPolicies * $Labels.Count
+    $expectedRules = 0
+    foreach ($l in $Labels) {
+        $expectedRules += (Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
+    }
+    $expectedRules *= $expectedPolicies
 
     Write-Host "`nPolicies deployed: $($deployedPolicies.Count) (expected $expectedPolicies)" -ForegroundColor $(if ($deployedPolicies.Count -ge $expectedPolicies) { "Green" } else { "Yellow" })
     $deployedPolicies | Format-Table Name, Mode -AutoSize

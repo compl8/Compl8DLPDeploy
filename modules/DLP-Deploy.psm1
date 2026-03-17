@@ -545,6 +545,117 @@ function Start-DeploymentLog {
 }
 #endregion
 
+#region Classifier Helpers
+function Split-ClassifierChunks {
+    <#
+    .SYNOPSIS
+        Splits a classifier list into even chunks of at most $MaxPerRule entries.
+        When splitting is needed, divides evenly (not 125 + remainder) to balance rule sizes.
+    .OUTPUTS
+        Array of arrays. Each inner array is a chunk of classifier entries.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$ClassifierList,
+        [int]$MaxPerRule = 125
+    )
+    $total = $ClassifierList.Count
+    if ($total -eq 0) {
+        return @(, @())
+    }
+    if ($total -le $MaxPerRule) {
+        return @(, $ClassifierList)
+    }
+    $chunkCount = [math]::Ceiling($total / $MaxPerRule)
+    $chunkSize = [math]::Ceiling($total / $chunkCount)
+    $chunks = @()
+    for ($i = 0; $i -lt $total; $i += $chunkSize) {
+        $end = [math]::Min($i + $chunkSize, $total)
+        $chunks += , @($ClassifierList[$i..($end - 1)])
+    }
+    return $chunks
+}
+#endregion
+
+#region Dictionary Helpers
+function Sync-DlpKeywordDictionaries {
+    <#
+    .SYNOPSIS
+        Creates or reuses keyword dictionaries from a testpattern.dev manifest.
+        Returns a hashtable mapping placeholder -> GUID.
+    .PARAMETER ManifestUrl
+        URL to the dictionary manifest endpoint.
+    .PARAMETER WhatIf
+        If true, returns dummy GUIDs without making API calls.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ManifestUrl,
+        [switch]$WhatIf
+    )
+
+    Write-Host "  Fetching dictionary manifest..."
+    $manifest = Invoke-RestMethod -Uri $ManifestUrl
+    Write-Host "  $($manifest.dictionaries.Count) dictionaries in manifest"
+
+    $guidMap = @{}
+
+    # Pre-fetch existing dictionaries (avoids N+1 API calls)
+    $existingDicts = @{}
+    if (-not $WhatIf) {
+        Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | ForEach-Object {
+            $existingDicts[$_.Name] = $_.Identity
+        }
+    }
+
+    foreach ($dict in $manifest.dictionaries) {
+        $terms = $dict.terms -join "`n"
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes($terms)
+
+        if ($WhatIf) {
+            Write-Host "  [WHATIF] $($dict.name) ($($dict.terms.Count) terms)"
+            $guidMap[$dict.placeholder] = "00000000-0000-0000-0000-000000000000"
+            continue
+        }
+
+        $guid = $null
+        if ($existingDicts.ContainsKey($dict.name)) {
+            $guid = $existingDicts[$dict.name]
+            Write-Host "  Exists: $($dict.name) [$guid]"
+        } else {
+            try {
+                $result = Invoke-WithRetry -OperationName "New-Dictionary $($dict.name)" -ScriptBlock {
+                    New-DlpKeywordDictionary -Name $dict.name -Description $dict.description -FileData $bytes -Confirm:$false -ErrorAction Stop
+                } -MaxRetries 2 -BaseDelaySec 30
+                $guid = $result.Identity
+                Write-Host "  Created: $($dict.name) ($($dict.terms.Count) terms)"
+            } catch {
+                if ($_.Exception.Message -match 'already exists') {
+                    # Race condition: created between pre-fetch and now
+                    $found = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $dict.name }
+                    if ($found) {
+                        $guid = $found.Identity
+                        Write-Host "  Recovered: $($dict.name) [$guid]"
+                    } else {
+                        Write-Warning "  Failed: $($dict.name) - exists but could not retrieve"
+                    }
+                } else {
+                    Write-Warning "  Failed: $($dict.name) - $($_.Exception.Message)"
+                }
+            }
+        }
+
+        if ($guid) {
+            $guidMap[$dict.placeholder] = $guid
+        } else {
+            Write-Warning "  No GUID for $($dict.name) - packages using $($dict.placeholder) will be skipped"
+        }
+        if (-not $WhatIf) { Start-Sleep 2 }
+    }
+
+    Write-Host "  $($guidMap.Count) / $($manifest.dictionaries.Count) dictionary GUIDs resolved"
+    return $guidMap
+}
+#endregion
+
 #region XML Validation
 function Test-SITRulePackageXml {
     <#
@@ -584,17 +695,7 @@ function Test-SITRulePackageXml {
         return $result
     }
 
-    # Check encoding (UTF-16 BOM = FF FE or FE FF)
-    $bytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $hasUtf16Bom = ($bytes.Length -ge 2) -and (
-        ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) -or
-        ($bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF)
-    )
-    if (-not $hasUtf16Bom) {
-        $result.Warnings.Add("File does not have UTF-16 BOM. Microsoft recommends UTF-16 encoding.")
-    }
-
-    # Parse XML
+    # Parse XML (UTF-8 and UTF-16 both work; try UTF-8 first as it is the normal case)
     $xml = $null
     try {
         $xml = [xml](Get-Content $FilePath -Encoding UTF8 -ErrorAction SilentlyContinue)
@@ -678,4 +779,6 @@ Export-ModuleMember -Function @(
     'Invoke-WithRetry'
     'Start-DeploymentLog'
     'Test-SITRulePackageXml'
+    'Split-ClassifierChunks'
+    'Sync-DlpKeywordDictionaries'
 )

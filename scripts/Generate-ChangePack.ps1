@@ -300,13 +300,28 @@ if ($doRules -and $Policies -and $Classifiers) {
         $ruleNum = 0
         foreach ($label in $Labels) {
             $ruleNum++
-            $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $Config.namingSuffix
-            $expectedRuleSet[$ruleName] = @{
-                PolicyName = $policyName
-                Policy     = $policy
-                Label      = $label
-                RuleNumber = $ruleNum
-                ClassCount = $Classifiers[$label.code].Count
+            $labelCode = $label.code
+            $classifierList = $Classifiers[$labelCode]
+            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+
+            $chunkIndex = 0
+            foreach ($chunk in $chunks) {
+                $chunkIndex++
+                if ($chunks.Count -gt 1) {
+                    $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                    $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                } else {
+                    $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                }
+                $expectedRuleSet[$ruleName] = @{
+                    PolicyName = $policyName
+                    Policy     = $policy
+                    Label      = $label
+                    RuleNumber = $ruleNum
+                    ChunkIndex = $chunkIndex
+                    ChunkTotal = $chunks.Count
+                    ClassCount = $chunk.Count
+                }
             }
         }
     }
@@ -329,10 +344,24 @@ if ($doRules -and $Policies -and $Classifiers) {
             $ruleNum = 0
             foreach ($label in $Labels) {
                 $ruleNum++
-                $ruleName   = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $Config.namingSuffix
-                $classCount = $Classifiers[$label.code].Count
-                Add-Row -Component "DLPRule" -Action "add" -Identity $ruleName -Policy $policyName -LabelCode $label.code -Detail "New rule ($classCount classifiers)"
-                Write-Host "  ADD    $ruleName ($classCount classifiers)" -ForegroundColor Green
+                $labelCode = $label.code
+                $classifierList = $Classifiers[$labelCode]
+                $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+
+                $chunkIndex = 0
+                foreach ($chunk in $chunks) {
+                    $chunkIndex++
+                    if ($chunks.Count -gt 1) {
+                        $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                        $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                        $chunkNote = " [chunk $chunkIndex/$($chunks.Count)]"
+                    } else {
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                        $chunkNote = ""
+                    }
+                    Add-Row -Component "DLPRule" -Action "add" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "New rule$chunkNote ($($chunk.Count) classifiers)"
+                    Write-Host "  ADD    $ruleName ($($chunk.Count) classifiers)" -ForegroundColor Green
+                }
             }
         } else {
             # Policy exists — diff each rule
@@ -343,39 +372,52 @@ if ($doRules -and $Policies -and $Classifiers) {
             $ruleNum = 0
             foreach ($label in $Labels) {
                 $ruleNum++
-                $ruleName   = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $Config.namingSuffix
-                $classCount = $Classifiers[$label.code].Count
-                $deployed   = $deployedRuleMap[$ruleName]
+                $labelCode = $label.code
+                $classifierList = $Classifiers[$labelCode]
+                $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
 
-                if (-not $deployed) {
-                    Add-Row -Component "DLPRule" -Action "add" -Identity $ruleName -Policy $policyName -LabelCode $label.code -Detail "New rule ($classCount classifiers)"
-                    Write-Host "  ADD    $ruleName ($classCount classifiers)" -ForegroundColor Green
-                } else {
-                    # Compare classifier count from Comment field
-                    $deployedCount = -1
-                    if ($deployed.Comment -match '\((\d+) classifiers?\)') {
-                        $deployedCount = [int]$Matches[1]
-                    }
-
-                    if ($deployedCount -ge 0 -and $deployedCount -ne $classCount) {
-                        Add-Row -Component "DLPRule" -Action "update" -Identity $ruleName -Policy $policyName -LabelCode $label.code -Detail "Classifiers: $deployedCount->$classCount"
-                        Write-Host "  UPDATE $ruleName - classifiers: $deployedCount->$classCount" -ForegroundColor Yellow
-                    } elseif ($deployedCount -lt 0) {
-                        Add-Row -Component "DLPRule" -Action "skip" -Identity $ruleName -Policy $policyName -LabelCode $label.code -Detail "Comment not parseable - review manually"
-                        Write-Host "  SKIP   $ruleName (comment not parseable)" -ForegroundColor DarkYellow
+                $chunkIndex = 0
+                foreach ($chunk in $chunks) {
+                    $chunkIndex++
+                    if ($chunks.Count -gt 1) {
+                        $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                        $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
                     } else {
-                        Add-Row -Component "DLPRule" -Action "skip" -Identity $ruleName -Policy $policyName -LabelCode $label.code -Detail "Matches ($classCount classifiers)"
-                        Write-Host "  SKIP   $ruleName" -ForegroundColor Gray
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
                     }
+                    $classCount = $chunk.Count
+                    $deployed   = $deployedRuleMap[$ruleName]
 
-                    $deployedRuleMap.Remove($ruleName)
+                    if (-not $deployed) {
+                        Add-Row -Component "DLPRule" -Action "add" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "New rule ($classCount classifiers)"
+                        Write-Host "  ADD    $ruleName ($classCount classifiers)" -ForegroundColor Green
+                    } else {
+                        # Compare classifier count from Comment field
+                        $deployedCount = -1
+                        if ($deployed.Comment -match '\((\d+) classifiers?\)') {
+                            $deployedCount = [int]$Matches[1]
+                        }
+
+                        if ($deployedCount -ge 0 -and $deployedCount -ne $classCount) {
+                            Add-Row -Component "DLPRule" -Action "update" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "Classifiers: $deployedCount->$classCount"
+                            Write-Host "  UPDATE $ruleName - classifiers: $deployedCount->$classCount" -ForegroundColor Yellow
+                        } elseif ($deployedCount -lt 0) {
+                            Add-Row -Component "DLPRule" -Action "skip" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "Comment not parseable - review manually"
+                            Write-Host "  SKIP   $ruleName (comment not parseable)" -ForegroundColor DarkYellow
+                        } else {
+                            Add-Row -Component "DLPRule" -Action "skip" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "Matches ($classCount classifiers)"
+                            Write-Host "  SKIP   $ruleName" -ForegroundColor Gray
+                        }
+
+                        $deployedRuleMap.Remove($ruleName)
+                    }
                 }
             }
 
             # Detect orphan rules matching our naming pattern
             $escapedCode   = [regex]::Escape($policy.Code)
             $escapedSuffix = [regex]::Escape($Config.namingSuffix)
-            $namingPattern = "^P\d{2}-R\d{2}-${escapedCode}-\w+-${escapedSuffix}$"
+            $namingPattern = "^P\d{2}-R\d{2}[a-z]?-${escapedCode}-\w+-${escapedSuffix}$"
             foreach ($orphanName in @($deployedRuleMap.Keys)) {
                 if ($orphanName -match $namingPattern) {
                     Add-Row -Component "DLPRule" -Action "delete" -Identity $orphanName -Policy $policyName -Detail "Not in expected rule set"

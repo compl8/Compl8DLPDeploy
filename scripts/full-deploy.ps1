@@ -1,26 +1,29 @@
 #==============================================================================
 # full-deploy.ps1
-# Orchestrates DLP deployment in three phases:
-#   Phase 1: Labels (immediate)
-#   Phase 2: SIT classifier packages (immediate, but SITs take 4-24h to index)
-#   Phase 3: DLP rules (requires SITs to be indexed first)
+# Orchestrates DLP deployment in phases:
+#   Phase 1:   Labels (immediate)
+#   Phase 1.5: Keyword dictionaries (create-or-update, returns GUID map)
+#   Phase 2:   SIT classifier packages (patches dictionary placeholders, uploads)
+#   Phase 3:   DLP rules (requires SITs to be indexed — up to 24h after upload)
 #
 # Phases can be run independently or together. When run together, Phase 3
 # checks whether custom SITs have propagated and warns if too recent.
 #
 # Usage:
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com                  # All phases
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels     # Labels only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers # Packages only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules   # Rules only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup    # Teardown only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com                     # All phases
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels        # Labels only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries  # Dictionaries only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers   # Packages only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules      # Rules only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup       # Teardown only
 #==============================================================================
 
 param(
     [Parameter(Mandatory)][string]$UPN,
-    [ValidateSet("All", "Labels", "Classifiers", "DLPRules", "Cleanup")]
+    [ValidateSet("All", "Labels", "Dictionaries", "Classifiers", "DLPRules", "Cleanup")]
     [string]$Phase = "All",
     [string]$PublishTo = "All",
+    [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
     [switch]$Force,
     [switch]$WhatIf
@@ -57,7 +60,14 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         $rules = Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" }
         foreach ($rule in $rules) {
             Write-Host "    $($rule.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) { Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Rule $($rule.Name)" -ScriptBlock {
+                        Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove rule $($rule.Name): $($_.Exception.Message)" }
+                Start-Sleep 2
+            }
         }
         if ($rules) { Write-Host "    Removed $($rules.Count) rule(s)" -ForegroundColor Green }
     } catch { Write-Warning "Rules: $_" }
@@ -68,7 +78,14 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         $policies = Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" }
         foreach ($pol in $policies) {
             Write-Host "    $($pol.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) { Remove-DlpCompliancePolicy -Identity $pol.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 3 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Policy $($pol.Name)" -ScriptBlock {
+                        Remove-DlpCompliancePolicy -Identity $pol.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove policy $($pol.Name): $($_.Exception.Message)" }
+                Start-Sleep 3
+            }
         }
         if ($policies) { Write-Host "    Removed $($policies.Count) policy(ies)" -ForegroundColor Green }
     } catch { Write-Warning "Policies: $_" }
@@ -89,13 +106,82 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
                 }
             } catch { }
             Write-Host "    $identity" -ForegroundColor Yellow
-            if (-not $WhatIf) { Remove-DlpSensitiveInformationTypeRulePackage -Identity $identity -Confirm:$false -ErrorAction Stop; $removed++; Start-Sleep 5 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Package $identity" -ScriptBlock {
+                        Remove-DlpSensitiveInformationTypeRulePackage -Identity $identity -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove package ${identity}: $($_.Exception.Message)" }
+                $removed++
+                Start-Sleep 5
+            }
         }
         if ($removed -gt 0) { Write-Host "    Removed $removed package(s)" -ForegroundColor Green }
     } catch { Write-Warning "Packages: $_" }
 
-    Write-Host "  Waiting 60s for propagation..." -ForegroundColor Gray
-    if (-not $WhatIf) { Start-Sleep 60 }
+    # Keyword dictionaries
+    Write-Host "  Removing keyword dictionaries..." -ForegroundColor Yellow
+    try {
+        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "TestPattern*" }
+        $dictRemoved = 0
+        foreach ($d in $dicts) {
+            Write-Host "    $($d.Name)" -ForegroundColor Yellow
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Dictionary $($d.Name)" -ScriptBlock {
+                        Remove-DlpKeywordDictionary -Identity $d.Identity -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove dictionary $($d.Name): $($_.Exception.Message)" }
+                $dictRemoved++
+                Start-Sleep 2
+            }
+        }
+        if ($dictRemoved -gt 0) { Write-Host "    Removed $dictRemoved dictionary(ies)" -ForegroundColor Green }
+    } catch { Write-Warning "Dictionaries: $_" }
+
+    # Label policy
+    Write-Host "  Removing label policy..." -ForegroundColor Yellow
+    try {
+        $labelPolicies = Get-LabelPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -eq $Config.labelPolicyName }
+        foreach ($lp in $labelPolicies) {
+            Write-Host "    $($lp.Name)" -ForegroundColor Yellow
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
+                        Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
+                Start-Sleep 3
+            }
+        }
+    } catch { Write-Warning "Label policy: $_" }
+
+    # Labels (sublabels first, then parents)
+    Write-Host "  Removing labels..." -ForegroundColor Yellow
+    try {
+        $labels = Get-Label -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)"
+        }
+        if ($labels) {
+            $sublabels = $labels | Where-Object { $_.ParentId } | Sort-Object { $_.Priority } -Descending
+            $topLabels = $labels | Where-Object { -not $_.ParentId } | Sort-Object { $_.Priority } -Descending
+            foreach ($l in @($sublabels) + @($topLabels)) {
+                Write-Host "    $($l.Name)" -ForegroundColor Yellow
+                if (-not $WhatIf) {
+                    try {
+                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
+                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries 2 -BaseDelaySec 30
+                    } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
+                    Start-Sleep 2
+                }
+            }
+        }
+    } catch { Write-Warning "Labels: $_" }
+
+    Write-Host "  Waiting 2 minutes for Purview cleanup propagation..." -ForegroundColor Gray
+    Write-Host "  Note: Labels may take hours/days to fully purge. SIT packages and rules take minutes." -ForegroundColor Gray
+    if (-not $WhatIf) { Start-Sleep 120 }
     Write-Host ""
 
     if ($Phase -eq "Cleanup") {
@@ -115,6 +201,21 @@ if ($Phase -eq "All" -or $Phase -eq "Labels") {
     Write-Host ""
 }
 
+# ── Phase 1.5: Keyword Dictionaries ──────────────────────────────────────────
+if ($Phase -eq "All" -or $Phase -eq "Dictionaries" -or $Phase -eq "Classifiers") {
+    Write-Host "=== Phase 1.5: Keyword Dictionaries ===" -ForegroundColor Cyan
+
+    $manifestUrl = "https://testpattern.dev/api/export/dictionary-manifest?scope=$Scope"
+    if ($WhatIf) {
+        $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf
+    } else {
+        $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl
+    }
+    Write-Host ""
+
+    if ($Phase -eq "Dictionaries") { return }
+}
+
 # ── Phase 2: SIT Classifier Packages ─────────────────────────────────────────
 if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
     Write-Host "=== Phase 2: Uploading SIT Packages ===" -ForegroundColor Cyan
@@ -130,11 +231,32 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
         $uploadFailed = 0
 
         foreach ($xmlFile in $xmlFiles) {
-            $sizeKB = [math]::Round($xmlFile.Length / 1024, 1)
+            $content = [System.IO.File]::ReadAllText($xmlFile.FullName, [System.Text.Encoding]::UTF8)
+
+            # Patch dictionary placeholders if we have a GUID map
+            if ($guidMap) {
+                foreach ($kv in $guidMap.GetEnumerator()) {
+                    $content = $content -replace [regex]::Escape($kv.Key), $kv.Value
+                }
+            }
+
+            # Patch publisher
+            if ($Config.publisher) {
+                $content = $content -replace '<PublisherName>[^<]+</PublisherName>', "<PublisherName>$($Config.publisher)</PublisherName>"
+            }
+
+            # Check for unpatched placeholders
+            if ($content -match '\{\{DICT_') {
+                Write-Warning "  $($xmlFile.BaseName): unpatched dictionary placeholders, skipping"
+                $uploadFailed++
+                continue
+            }
+
+            $fileData = [System.Text.Encoding]::UTF8.GetBytes($content)
+            $sizeKB = [math]::Round($fileData.Length / 1KB, 1)
             Write-Host "  $($xmlFile.BaseName) (${sizeKB}KB)..." -NoNewline
             if ($WhatIf) { Write-Host " [WHATIF]" -ForegroundColor Yellow; $uploadSuccess++; continue }
             try {
-                $fileData = [System.IO.File]::ReadAllBytes($xmlFile.FullName)
                 New-DlpSensitiveInformationTypeRulePackage -FileData $fileData -Confirm:$false -ErrorAction Stop | Out-Null
                 Write-Host " OK" -ForegroundColor Green
                 $uploadSuccess++

@@ -231,3 +231,56 @@ Describe 'Resolve-LabelConfig' {
         $result[0].fullName | Should -Be 'OFFICIAL'
     }
 }
+
+Describe 'Split-ClassifierChunks' {
+    It 'Returns single chunk when count <= limit' {
+        $classifiers = 1..100 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 1
+        $result[0].Count | Should -Be 100
+    }
+
+    It 'Splits evenly when count exceeds limit' {
+        $classifiers = 1..156 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 2
+        $result[0].Count | Should -Be 78
+        $result[1].Count | Should -Be 78
+    }
+
+    It 'Handles exact limit boundary' {
+        $classifiers = 1..125 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 1
+        $result[0].Count | Should -Be 125
+    }
+
+    It 'Handles 126 items (one over limit)' {
+        $classifiers = 1..126 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 2
+        $result[0].Count | Should -Be 63
+        $result[1].Count | Should -Be 63
+    }
+
+    It 'Handles 375 items (three chunks)' {
+        $classifiers = 1..375 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 3
+        ($result | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum | Should -Be 375
+        $result[0].Count | Should -BeLessOrEqual 125
+    }
+
+    It 'Returns single empty chunk for empty input' {
+        $result = @(Split-ClassifierChunks -ClassifierList @() -MaxPerRule 125)
+        $result.Count | Should -Be 1
+        $result[0].Count | Should -Be 0
+    }
+
+    It 'Preserves all items across chunks' {
+        $classifiers = 1..200 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $allItems = $result | ForEach-Object { $_ } | ForEach-Object { $_.Name }
+        $allItems.Count | Should -Be 200
+    }
+}

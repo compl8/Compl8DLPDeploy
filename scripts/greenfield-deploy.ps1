@@ -53,7 +53,14 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing $($rules.Count) DLP rules..."
         foreach ($r in $rules) {
-            if (-not $WhatIf) { Remove-DlpComplianceRule -Identity $r.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 1 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Rule $($r.Name)" -ScriptBlock {
+                        Remove-DlpComplianceRule -Identity $r.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove rule $($r.Name): $($_.Exception.Message)" }
+                Start-Sleep 1
+            }
         }
     }
 
@@ -63,7 +70,14 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing $($policies.Count) DLP policies..."
         foreach ($p in $policies) {
-            if (-not $WhatIf) { Remove-DlpCompliancePolicy -Identity $p.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-Policy $($p.Name)" -ScriptBlock {
+                        Remove-DlpCompliancePolicy -Identity $p.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove policy $($p.Name): $($_.Exception.Message)" }
+                Start-Sleep 2
+            }
         }
     }
 
@@ -82,16 +96,13 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         $customPkgCount++
         Write-Host "  Removing SIT package $customPkgCount..."
-        if (-not $WhatIf) { Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 3 }
-    }
-
-    # Keyword dictionaries — delete TestPattern ones
-    $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "TestPattern*" }
-    if ($dicts) {
-        $cleanupNeeded = $true
-        Write-Host "  Removing $($dicts.Count) keyword dictionaries..."
-        foreach ($d in $dicts) {
-            if (-not $WhatIf) { Remove-DlpKeywordDictionary -Identity $d.Identity -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2 }
+        if (-not $WhatIf) {
+            try {
+                Invoke-WithRetry -OperationName "Remove-SITPackage $customPkgCount" -ScriptBlock {
+                    Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
+                } -MaxRetries 2 -BaseDelaySec 30
+            } catch { Write-Warning "  Could not remove SIT package $($pkg.Identity): $($_.Exception.Message)" }
+            Start-Sleep 3
         }
     }
 
@@ -101,7 +112,14 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing label policy..."
         foreach ($lp in $labelPolicy) {
-            if (-not $WhatIf) { Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 3 }
+            if (-not $WhatIf) {
+                try {
+                    Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
+                        Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
+                Start-Sleep 3
+            }
         }
     }
 
@@ -116,7 +134,14 @@ if (-not $SkipCleanup) {
         if ($sublabels) {
             Write-Host "  Removing $($sublabels.Count) sublabels..."
             foreach ($l in $sublabels) {
-                if (-not $WhatIf) { Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2 }
+                if (-not $WhatIf) {
+                    try {
+                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
+                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries 2 -BaseDelaySec 30
+                    } catch { Write-Warning "  Could not remove sublabel $($l.Name): $($_.Exception.Message)" }
+                    Start-Sleep 2
+                }
             }
         }
         # Wait for sublabel deletion to propagate before removing parents
@@ -127,15 +152,22 @@ if (-not $SkipCleanup) {
         if ($topLabels) {
             Write-Host "  Removing $($topLabels.Count) top-level labels/groups..."
             foreach ($l in $topLabels) {
-                if (-not $WhatIf) { Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep 2 }
+                if (-not $WhatIf) {
+                    try {
+                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
+                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries 2 -BaseDelaySec 30
+                    } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
+                    Start-Sleep 2
+                }
             }
         }
     }
 
     if ($cleanupNeeded) {
-        $waitMins = 5
-        Write-Host "  Waiting ${waitMins} minutes for Purview propagation..." -ForegroundColor Gray
-        if (-not $WhatIf) { Start-Sleep ($waitMins * 60) }
+        Write-Host "  Waiting 2 minutes for Purview cleanup propagation..." -ForegroundColor Gray
+        Write-Host "  Note: Labels may take hours/days to fully purge. SIT packages and rules take minutes." -ForegroundColor Gray
+        if (-not $WhatIf) { Start-Sleep 120 }
     }
     Write-Host "  Clean.`n" -ForegroundColor Green
 } else {
@@ -146,51 +178,12 @@ if (-not $SkipCleanup) {
 Write-Host "=== Phase 1: Keyword Dictionaries ===" -ForegroundColor Cyan
 
 $manifestUrl = "https://testpattern.dev/api/export/dictionary-manifest?scope=$Scope"
-Write-Host "  Fetching manifest..."
-$manifest = Invoke-RestMethod -Uri $manifestUrl
-Write-Host "  $($manifest.dictionaries.Count) dictionaries"
-
-$guidMap = @{}
-
-# Pre-fetch existing dictionaries once (avoids N+1 API calls)
-$existingDicts = @{}
-if (-not $WhatIf) {
-    Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | ForEach-Object { $existingDicts[$_.Name] = $_.Identity }
+if ($WhatIf) {
+    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf
+} else {
+    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl
 }
-
-foreach ($dict in $manifest.dictionaries) {
-    $terms = $dict.terms -join "`n"
-    $bytes = [System.Text.Encoding]::Unicode.GetBytes($terms)
-
-    if ($WhatIf) {
-        Write-Host "  [WHATIF] $($dict.name) ($($dict.terms.Count) terms)"
-        $guidMap[$dict.placeholder] = "00000000-0000-0000-0000-000000000000"
-        continue
-    }
-
-    # Use existing if found, otherwise create
-    $guid = $null
-    if ($existingDicts.ContainsKey($dict.name)) {
-        $guid = $existingDicts[$dict.name]
-        Write-Host "  Exists: $($dict.name) [$guid]"
-    } else {
-        try {
-            $result = New-DlpKeywordDictionary -Name $dict.name -Description $dict.description -FileData $bytes -Confirm:$false -ErrorAction Stop
-            $guid = $result.Identity
-            Write-Host "  Created: $($dict.name) ($($dict.terms.Count) terms)"
-        } catch {
-            Write-Warning "  Failed: $($dict.name) - $($_.Exception.Message)"
-        }
-    }
-
-    if ($guid) {
-        $guidMap[$dict.placeholder] = $guid
-    } else {
-        Write-Warning "  No GUID for $($dict.name) -- packages using $($dict.placeholder) will be skipped"
-    }
-    Start-Sleep 2
-}
-Write-Host "  $($guidMap.Count) dictionary GUIDs resolved`n"
+Write-Host ""
 
 # ── Phase 2: Labels ─────────────────────────────────────────────────────────
 Write-Host "=== Phase 2: Labels ===" -ForegroundColor Cyan
@@ -268,7 +261,7 @@ if ($WhatIf) {
 # ── Done ─────────────────────────────────────────────────────────────────────
 Write-Host "`n============================================================" -ForegroundColor Green
 Write-Host "  Greenfield Deployment Complete" -ForegroundColor Green
-Write-Host "  Dictionaries: $($guidMap.Count) / $($manifest.dictionaries.Count)" -ForegroundColor Green
+Write-Host "  Dictionaries: $($guidMap.Count) resolved" -ForegroundColor Green
 Write-Host "  Labels: deployed + published" -ForegroundColor Green
 if ($uploadSuccess) { Write-Host "  SIT Packages: $uploadSuccess" -ForegroundColor Green }
 Write-Host "  DLP Rules: deployed" -ForegroundColor Green

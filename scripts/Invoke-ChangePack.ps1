@@ -196,6 +196,17 @@ if (-not $hasComponent) {
 
             "add" {
                 $classifierList = $Classifiers[$labelCode]
+                # Handle chunk-suffixed rules (e.g., R02a) — use only the relevant chunk
+                if ($ruleName -match '-R\d{2}([a-z])-') {
+                    $chunkLetter = $Matches[1]
+                    $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
+                    $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                    if ($chunkIndex -lt $chunks.Count) {
+                        $classifierList = $chunks[$chunkIndex]
+                    } else {
+                        Write-Warning "  Chunk '$chunkLetter' out of range for $labelCode ($($chunks.Count) chunks). Using full list."
+                    }
+                }
 
                 $scopeParam = $null
                 $scopeValue = $null
@@ -253,6 +264,17 @@ if (-not $hasComponent) {
 
             "update" {
                 $classifierList = $Classifiers[$labelCode]
+                # Handle chunk-suffixed rules (e.g., R02a) — use only the relevant chunk
+                if ($ruleName -match '-R\d{2}([a-z])-') {
+                    $chunkLetter = $Matches[1]
+                    $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
+                    $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                    if ($chunkIndex -lt $chunks.Count) {
+                        $classifierList = $chunks[$chunkIndex]
+                    } else {
+                        Write-Warning "  Chunk '$chunkLetter' out of range for $labelCode ($($chunks.Count) chunks). Using full list."
+                    }
+                }
 
                 $scopeParam = $null
                 $scopeValue = $null
@@ -836,6 +858,17 @@ if (-not $hasComponent) {
                         }
 
                         $classifierList = $Classifiers[$labelCode]
+                        # Handle chunk-suffixed rules (e.g., R02a) — use only the relevant chunk
+                        if ($identity -match '-R\d{2}([a-z])-') {
+                            $chunkLetter = $Matches[1]
+                            $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
+                            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                            if ($chunkIndex -lt $chunks.Count) {
+                                $classifierList = $chunks[$chunkIndex]
+                            } else {
+                                Write-Warning "  Chunk '$chunkLetter' out of range for $labelCode ($($chunks.Count) chunks). Using full list."
+                            }
+                        }
                         $scopeParam = $null
                         $scopeValue = $null
                         $policyCode = ""
@@ -891,6 +924,17 @@ if (-not $hasComponent) {
                         }
 
                         $classifierList = $Classifiers[$labelCode]
+                        # Handle chunk-suffixed rules (e.g., R02a) — use only the relevant chunk
+                        if ($identity -match '-R\d{2}([a-z])-') {
+                            $chunkLetter = $Matches[1]
+                            $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
+                            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                            if ($chunkIndex -lt $chunks.Count) {
+                                $classifierList = $chunks[$chunkIndex]
+                            } else {
+                                Write-Warning "  Chunk '$chunkLetter' out of range for $labelCode ($($chunks.Count) chunks). Using full list."
+                            }
+                        }
                         $scopeParam = $null
                         $scopeValue = $null
                         if ($Policies -and $Config) {
