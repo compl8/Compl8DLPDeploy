@@ -1,98 +1,112 @@
 # Compl8 DLP Deployment Toolkit
 
-Config-driven Data Loss Prevention (DLP) deployment engine for Microsoft Purview. Deploys sensitivity labels, keyword dictionaries, custom Sensitive Information Type (SIT) rule packages, and DLP policies/rules — all from JSON configuration files and the [testpattern.dev](https://testpattern.dev) pattern API.
+Config-driven Data Loss Prevention (DLP) deployment engine for Microsoft Purview. Deploys sensitivity labels, keyword dictionaries, custom Sensitive Information Type (SIT) rule packages, and DLP policies/rules — all from JSON configuration files.
 
 Framework-agnostic: works with PSPF (Australia), NZISM (New Zealand), UK GSC, or any custom classification framework. Ships with a Queensland Government (QGISCF) reference configuration.
+
+Two data pipeline options: generate classifier config from a **spreadsheet** (with optional [testpattern.dev](https://testpattern.dev) integration), or **import directly from an existing tenant**.
 
 ## Prerequisites
 
 - PowerShell 7+ (or 5.1 with limitations)
 - [ExchangeOnlineManagement](https://www.powershellgallery.com/packages/ExchangeOnlineManagement) module
 - Microsoft Purview Compliance admin permissions (Compliance Administrator or equivalent)
-- Python 3.x with `openpyxl` (for data pipeline scripts)
+- Python 3.x with `openpyxl` (for spreadsheet pipeline scripts only)
 
 ## Architecture
 
 The toolkit has two layers: a **data pipeline** that decides *what* to deploy, and a **deployment engine** that deploys it.
 
-### Data Pipeline
+### Data Pipeline Options
 
-The SIT Risk Analysis spreadsheet is the master document. It maps every Sensitive Information Type to a classification label and deployment tier. The pipeline works like this:
+There are two ways to generate the `config/classifiers.json` that drives deployment:
+
+**Option A: Spreadsheet Pipeline** — for users with a SIT risk analysis workbook and/or testpattern.dev integration:
 
 ```
-SIT Risk Analysis Spreadsheet (v12.xlsx)
-  ├── Which SITs exist and what they detect
-  ├── Which label each SIT maps to (OFFI, SENS_Pvc, PROT_IT, etc.)
-  ├── Which deployment tier includes each SIT (Small / Medium / Large)
-  └── Risk rating, jurisdiction, classifier type, source
+Input Spreadsheet (SIT-Inputs-Example.xlsx)
          │
          ▼
   Build-FromXLS.py ──► config/classifiers.json
-    Reads spreadsheet, resolves SIT GUIDs from          (SIT-to-label mapping
-    testpattern.dev XML packages, outputs the             with resolved GUIDs)
-    classifier-to-label mapping
+    Reads spreadsheet, resolves SIT GUIDs,
+    outputs classifier-to-label mapping
          │
          ▼
   build-deploy-packages.py ──► xml/deploy/*.xml
-    Fetches SIT patterns from testpattern.dev             (UTF-8 XML packages
-    API, prunes keywords, bin-packs into                   ready to upload)
-    right-sized packages under 150KB
+    Fetches SIT patterns from testpattern.dev,
+    bin-packs into right-sized packages
+```
+
+**Option B: Tenant Import** — for users importing SITs from an existing tenant (no spreadsheet or testpattern.dev needed):
+
+```
+Source Tenant (any M365 tenant)
          │
          ▼
-  greenfield-deploy.ps1 ──► Purview tenant
-    Creates keyword dictionaries, deploys                 (Labels, dictionaries,
-    labels, uploads packages, creates                      packages, DLP rules)
+  Export-TenantSITs.ps1 ──► config/tenant-sits.json
+    Exports all SIT names, GUIDs, and publishers
+         │
+         ▼
+  Build-ClassifierSchema.py --init ──► config/classifier-mapping.csv
+    Generates editable CSV template
+         │  (user fills in LabelCode column)
+         ▼
+  Build-ClassifierSchema.py --apply ──► config/classifiers.json
+    Reads mapping, generates config
+```
+
+Both options produce the same `classifiers.json` format consumed by the deployment engine.
+
+### Deployment Engine
+
+```
+  config/classifiers.json + config/labels.json + config/policies.json
+         │
+         ▼
+  greenfield-deploy.ps1  (or full-deploy.ps1)
+    Creates keyword dictionaries, deploys          ──► Purview tenant
+    labels, uploads packages, creates
     DLP policies and rules
 ```
 
-### The Spreadsheet
-
-The SIT Risk Analysis spreadsheet (`SIT-Risk-Analysis-v12.xlsx`) is the single source of truth for classification decisions. Each row is a Sensitive Information Type with:
-
-- **SIT Name** and **GUID/Slug** — what pattern to use (testpattern.dev slug or Microsoft Built-in GUID)
-- **Label Code** — which sensitivity label this SIT maps to (e.g. `SENS_Pvc`, `PROT_IT`)
-- **Small / Medium / Large** — which deployment tiers include this SIT
-- **Risk Rating** (1-10) — used by the tier allocation scoring model
-- **Source** — `TestPattern` (from testpattern.dev) or `Microsoft Built-in`
-- **Classifier Type** — SIT, Regex, Keyword List, or MLModel
-
-To update what gets deployed, edit the spreadsheet, then re-run the pipeline:
-
-```powershell
-# 1. Regenerate classifiers.json from the spreadsheet
-python scripts/Build-FromXLS.py --tier medium
-
-# 2. Rebuild deployment packages from testpattern.dev
-python scripts/build-deploy-packages.py --tier medium --max-terms 5
-
-# 3. Deploy
-.\scripts\greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com
-```
-
-### Syncing with TestPattern
-
-To update the spreadsheet with the latest patterns from testpattern.dev:
-
-```powershell
-# Sync spreadsheet SITs against current testpattern.dev catalogue
-python scripts/sync-spreadsheet.py
-```
-
-This checks for new patterns added to testpattern.dev that aren't in the spreadsheet, patterns that have been removed, and slug/GUID changes. It produces a report and optionally updates the spreadsheet.
-
 ## Quick Start
 
-### Greenfield Deployment (new tenant)
+### Option A: From Spreadsheet
 
 ```powershell
-# 1. Build SIT packages from testpattern.dev
+# 1. Set your spreadsheet name in config/settings.json (inputSpreadsheet field)
+#    or place your .xlsx in the project root
+
+# 2. Generate classifiers.json from the spreadsheet
+python scripts/Build-FromXLS.py --tier medium
+
+# 3. Build SIT packages from testpattern.dev (if using TestPattern SITs)
 python scripts/build-deploy-packages.py --tier medium --max-terms 5
 
-# 2. Deploy everything in one command
-.\scripts\greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com
+# 4. Deploy everything
+pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com
 ```
 
-This will: create keyword dictionaries, deploy labels, upload SIT packages, and deploy DLP rules — all in a single session.
+### Option B: From Existing Tenant
+
+```powershell
+# 1. Export SITs from your source tenant
+pwsh -File scripts/Export-TenantSITs.ps1 -Connect -UPN admin@source-tenant.com
+
+# 2. Generate a mapping CSV template
+python scripts/Build-ClassifierSchema.py --init
+
+# 3. Open config/classifier-mapping.csv in Excel or a text editor
+#    Fill in the LabelCode column for each SIT you want to include
+#    (or use --auto to pre-fill with keyword-based rules)
+python scripts/Build-ClassifierSchema.py --auto
+
+# 4. Review the CSV, then generate classifiers.json
+python scripts/Build-ClassifierSchema.py --apply
+
+# 5. Deploy
+pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.com
+```
 
 ### Phased Deployment
 
@@ -100,20 +114,49 @@ For more control, deploy in phases:
 
 ```powershell
 # Phase 1: Labels only
-.\scripts\full-deploy.ps1 -UPN admin@tenant.com -Phase Labels
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels
+
+# Phase 1.5: Keyword dictionaries
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
 
 # Phase 2: SIT classifier packages
-.\scripts\full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
 
-# Phase 3: DLP rules
-.\scripts\full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
+# Phase 3: DLP rules (wait 1-24h after Phase 2 for SIT propagation)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
 
 # Cleanup everything
-.\scripts\full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup
 
 # Dry run
-.\scripts\full-deploy.ps1 -UPN admin@tenant.com -WhatIf
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf
 ```
+
+## The Input Spreadsheet
+
+The included `SIT-Inputs-Example.xlsx` is an example spreadsheet for the QGISCF framework. To create your own, use a workbook with a sheet named **"SIT Risk Analysis"** containing these columns (0-indexed):
+
+| Col | Header | Description | Example |
+|-----|--------|-------------|---------|
+| 0 | SIT Name | Human-readable name | `Australia Tax File Number` |
+| 1 | GUID/Slug | Microsoft GUID or testpattern.dev slug | `e29d56f5-...` or `au-tfn` |
+| 2 | Category | Classification category | `Financial`, `Privacy`, `Government` |
+| 3 | Risk Description | What this SIT detects | `Australian tax file numbers` |
+| 4 | Risk Rating | Severity 1-10 (used for tier scoring) | `8` |
+| 5 | Reference URL | Documentation link | `https://learn.microsoft.com/...` |
+| 6 | Classification | Security classification level | `SENSITIVE` |
+| 7 | Framework | Framework code | `QGISCF` |
+| 8 | Framework DLM | Dissemination Limiting Marker | `Financial` |
+| 9 | Small | Include in Small tier? | `Y` or blank |
+| 10 | Medium | Include in Medium tier? | `Y` or blank |
+| 11 | Large | Include in Large tier? | `Y` or blank |
+| 12 | Label Code | Target label code for DLP rules | `SENS_Fin` |
+| 13 | Classifier Type | `SIT`, `Regex`, `Keyword List`, or `MLModel` | `SIT` |
+| 14 | Source | `TestPattern` or `Microsoft Built-in` | `Microsoft Built-in` |
+
+The spreadsheet filename is configurable via `inputSpreadsheet` in `config/settings.json`, or pass `--xls <path>` to any pipeline script. If neither is set, the scripts will use the first `.xlsx` found in the project root.
+
+Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-validation against `labels.json`.
 
 ## Scripts
 
@@ -122,19 +165,26 @@ For more control, deploy in phases:
 | Script | Purpose |
 |--------|---------|
 | `greenfield-deploy.ps1` | Single-command deployment: dictionaries, labels, packages, rules |
-| `full-deploy.ps1` | Phased deployment with propagation checks |
+| `full-deploy.ps1` | Phased deployment with propagation checks and dictionary support |
 | `Deploy-Labels.ps1` | Deploy sensitivity labels and label policy |
-| `Deploy-DLPRules.ps1` | Deploy DLP policies and rules across workloads |
+| `Deploy-DLPRules.ps1` | Deploy DLP policies and rules across workloads (auto-splits >125 SITs) |
 | `Deploy-Classifiers.ps1` | Upload, validate, list, or remove custom SIT packages |
 
-### Data Pipeline
+### Data Pipeline — Spreadsheet
 
 | Script | Purpose |
 |--------|---------|
-| `Build-FromXLS.py` | Generate `classifiers.json` from the SIT Risk Analysis spreadsheet |
+| `Build-FromXLS.py` | Generate `classifiers.json` from the input spreadsheet |
 | `build-deploy-packages.py` | Fetch SITs from testpattern.dev, bin-pack into deployment packages |
 | `tier-allocate.py` | Generate tier assignments using priority scoring model |
 | `sync-spreadsheet.py` | Sync spreadsheet with current testpattern.dev catalogue |
+
+### Data Pipeline — Tenant Import
+
+| Script | Purpose |
+|--------|---------|
+| `Export-TenantSITs.ps1` | Export SIT list from a tenant to `config/tenant-sits.json` |
+| `Build-ClassifierSchema.py` | Build classifier mapping: `--init` (CSV template), `--auto` (keyword rules), `--apply` (generate config) |
 
 ### Utilities
 
@@ -143,9 +193,9 @@ For more control, deploy in phases:
 | `Test-Classifiers.ps1` | Validate config SITs exist in the tenant |
 | `Invoke-ChangePack.ps1` | Apply a CSV of targeted DLP rule changes |
 | `Generate-ChangePack.ps1` | Generate a change pack CSV from config vs tenant diff |
-
-> **Note:** To use trainable classifiers (MLModel type) in DLP rules, you'll need to retrieve their GUIDs from your tenant using `Get-DlpSensitiveInformationType` and add them to `classifiers.json` with `"classifierType": "MLModel"`.
 | `Test-MinimalKeywords.ps1` | Test keyword dictionary upload and DLP rule integration |
+
+> **Note:** To use trainable classifiers (MLModel type) in DLP rules, retrieve their GUIDs from your tenant using `Get-DlpSensitiveInformationType` and add them to `classifiers.json` with `"classifierType": "MLModel"`.
 
 ## Configuration
 
@@ -153,25 +203,27 @@ All deployment behaviour is driven by JSON config files:
 
 | File | Description |
 |------|-------------|
-| `config/settings.json` | Naming prefix, publisher, deployment mode, notification settings |
+| `config/settings.json` | Naming prefix, publisher, deployment mode, input spreadsheet path |
 | `config/labels.json` | Sensitivity label hierarchy (any framework — PSPF, NZISM, GSC, custom) |
 | `config/policies.json` | DLP policy definitions per workload (Exchange, SPO, ODB, Teams, Endpoint) |
 | `config/classifiers.json` | SIT-to-label mapping — which classifiers protect which labels |
 | `config/rule-overrides.json` | Per-label/per-policy DLP rule parameter overrides |
 | `config/tier-assignments.json` | Small/Medium/Large tier SIT name lists |
+| `config/tenant-sits.json` | Exported SIT list from a tenant (for tenant import pipeline) |
+| `config/classifier-mapping.csv` | Editable SIT-to-label mapping template (for tenant import pipeline) |
 
 ## Shared Module
 
-`modules/DLP-Deploy.psm1` provides shared functions: connection management, config loading, naming conventions, SIT condition building (Simple and AdvancedRule formats), retry logic with throttle detection, logging, and XML validation.
+`modules/DLP-Deploy.psm1` provides shared functions: connection management, config loading, naming conventions, SIT condition building (Simple and AdvancedRule formats), auto-splitting rules >125 classifiers, keyword dictionary sync, retry logic with throttle detection, logging, and XML validation.
 
 ## Keyword Dictionaries
 
 The toolkit integrates with [testpattern.dev's keyword dictionary system](https://testpattern.dev). Shared keyword lists (noise exclusion, domain context, classification markers, name lists) are created as Purview keyword dictionaries — these don't consume SIT package slots and are referenced by SIT entities via GUID placeholders.
 
-The greenfield deploy script automatically:
-1. Fetches the dictionary manifest from testpattern.dev
-2. Creates or updates keyword dictionaries in the tenant
-3. Patches `{{DICT_*}}` placeholders in SIT packages with tenant-specific GUIDs
+Both `greenfield-deploy.ps1` and `full-deploy.ps1` automatically:
+1. Fetch the dictionary manifest from testpattern.dev
+2. Create or update keyword dictionaries in the tenant (idempotent)
+3. Patch `{{DICT_*}}` placeholders in SIT packages with tenant-specific GUIDs
 
 ## Deployment Tiers
 
@@ -189,13 +241,25 @@ Microsoft Built-in SITs (254) are included free at all tiers — they don't cons
 
 To deploy for a different classification framework:
 
-1. Create your SIT Risk Analysis spreadsheet (use the included v12 as a template)
+**With a spreadsheet:**
+
+1. Create your input spreadsheet (use `SIT-Inputs-Example.xlsx` as a template)
+2. Edit `config/labels.json` with your label hierarchy
+3. Edit `config/settings.json` with your naming prefix, publisher, and spreadsheet filename
+4. Edit `config/policies.json` with your workload and policy settings
+5. Run `python scripts/Build-FromXLS.py` to generate `classifiers.json`
+6. Run `python scripts/build-deploy-packages.py` to build packages (if using testpattern.dev)
+7. Deploy with `greenfield-deploy.ps1` or `full-deploy.ps1`
+
+**Without a spreadsheet (tenant import):**
+
+1. Export SITs from any tenant: `Export-TenantSITs.ps1 -Connect -UPN admin@source.com`
 2. Edit `config/labels.json` with your label hierarchy
 3. Edit `config/settings.json` with your naming prefix and publisher
 4. Edit `config/policies.json` with your workload and policy settings
-5. Run `python scripts/Build-FromXLS.py` to generate `classifiers.json`
-6. Run `python scripts/build-deploy-packages.py` to build packages
-7. Deploy with `greenfield-deploy.ps1`
+5. Generate mapping: `python scripts/Build-ClassifierSchema.py --auto`
+6. Review/edit `config/classifier-mapping.csv`, then: `python scripts/Build-ClassifierSchema.py --apply`
+7. Deploy with `greenfield-deploy.ps1` or `full-deploy.ps1`
 
 The deployment scripts read everything from config — no code changes needed.
 
@@ -214,4 +278,5 @@ The included config files implement the **Queensland Government Information Secu
 | Custom SITs per tenant | 500 | Microsoft Built-in don't count |
 | Rule packages per tenant | 10 | 1 is Microsoft's built-in = 9 usable |
 | Package file size | 150KB | UTF-8 accepted, dictionaries reduce inline size |
+| SITs per DLP rule | 125 | Auto-split into multiple rules when exceeded |
 | Keyword dictionaries | 50 dictionary-based SITs, 1MB combined | Separate from package limits |

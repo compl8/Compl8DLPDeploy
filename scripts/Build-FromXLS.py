@@ -559,16 +559,12 @@ def main():
     xml_dir = (project_root / args.xml_dir).resolve()
 
     # Auto-detect XLS file
-    if args.xls:
-        xls_path = Path(args.xls).resolve()
-    else:
-        candidates = sorted(project_root.glob("SIT-Risk-Analysis-v*.xlsx"), reverse=True)
-        if candidates:
-            xls_path = candidates[0]
-        else:
-            print("ERROR: No SIT-Risk-Analysis-v*.xlsx found in project root.", file=sys.stderr)
-            print("  Specify with --xls <path>", file=sys.stderr)
-            sys.exit(1)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from pipeline_utils import find_spreadsheet
+    xls_path = find_spreadsheet(project_root, args.xls)
+    if not xls_path:
+        print("ERROR: No input spreadsheet found. Specify with --xls or set inputSpreadsheet in settings.json", file=sys.stderr)
+        sys.exit(1)
 
     print(f"  Source XLS:     {xls_path.name}")
     print(f"  Config dir:     {config_dir}")

@@ -28,6 +28,8 @@ function Get-ModuleDefaults {
         deploymentTier           = "full"
         publisher                = ""
         labelPolicyName          = "DLP-Label-Policy"
+        # Data pipeline
+        inputSpreadsheet         = ""
     }
 }
 #endregion

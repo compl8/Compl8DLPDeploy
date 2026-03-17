@@ -18,11 +18,12 @@ def main():
         sys.exit(1)
 
     project_root = Path(__file__).resolve().parent.parent
-    candidates = sorted(project_root.glob("SIT-Risk-Analysis-v*.xlsx"), reverse=True)
-    if not candidates:
-        print("ERROR: No SIT-Risk-Analysis-v*.xlsx found in project root.", file=sys.stderr)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from pipeline_utils import find_spreadsheet
+    xls_path = find_spreadsheet(project_root)
+    if not xls_path:
+        print("ERROR: No input spreadsheet found. Set inputSpreadsheet in settings.json or place an .xlsx in project root.", file=sys.stderr)
         sys.exit(1)
-    xls_path = candidates[0]
 
     wb = openpyxl.load_workbook(str(xls_path), read_only=True, data_only=True)
     ws = wb["SIT Risk Analysis"]

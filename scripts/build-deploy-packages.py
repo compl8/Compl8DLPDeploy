@@ -103,13 +103,12 @@ def main():
     project_root = Path(__file__).resolve().parent.parent
     output_dir = str((project_root / args.output_dir).resolve())
 
-    if args.xls:
-        xls_path = Path(args.xls).resolve()
-    else:
-        candidates = sorted(project_root.glob("SIT-Risk-Analysis-v*.xlsx"), reverse=True)
-        if not candidates:
-            sys.exit("ERROR: No spreadsheet found")
-        xls_path = candidates[0]
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from pipeline_utils import find_spreadsheet
+    xls_path = find_spreadsheet(project_root, args.xls)
+    if not xls_path:
+        print("ERROR: No input spreadsheet found. Specify with --xls or set inputSpreadsheet in settings.json", file=sys.stderr)
+        sys.exit(1)
 
     cfg_prefix, cfg_publisher = load_settings(project_root)
     prefix = args.prefix or cfg_prefix
