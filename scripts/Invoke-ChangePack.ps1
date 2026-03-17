@@ -200,7 +200,7 @@ if (-not $hasComponent) {
                 if ($ruleName -match '-R\d{2}([a-z])-') {
                     $chunkLetter = $Matches[1]
                     $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
-                    $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                    $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
                     if ($chunkIndex -lt $chunks.Count) {
                         $classifierList = $chunks[$chunkIndex]
                     } else {
@@ -268,7 +268,7 @@ if (-not $hasComponent) {
                 if ($ruleName -match '-R\d{2}([a-z])-') {
                     $chunkLetter = $Matches[1]
                     $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
-                    $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                    $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
                     if ($chunkIndex -lt $chunks.Count) {
                         $classifierList = $chunks[$chunkIndex]
                     } else {
@@ -862,7 +862,7 @@ if (-not $hasComponent) {
                         if ($identity -match '-R\d{2}([a-z])-') {
                             $chunkLetter = $Matches[1]
                             $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
-                            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                            $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
                             if ($chunkIndex -lt $chunks.Count) {
                                 $classifierList = $chunks[$chunkIndex]
                             } else {
@@ -928,7 +928,7 @@ if (-not $hasComponent) {
                         if ($identity -match '-R\d{2}([a-z])-') {
                             $chunkLetter = $Matches[1]
                             $chunkIndex = [int][char]$chunkLetter - [int][char]'a'
-                            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                            $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
                             if ($chunkIndex -lt $chunks.Count) {
                                 $classifierList = $chunks[$chunkIndex]
                             } else {

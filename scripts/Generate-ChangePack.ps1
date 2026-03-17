@@ -302,7 +302,7 @@ if ($doRules -and $Policies -and $Classifiers) {
             $ruleNum++
             $labelCode = $label.code
             $classifierList = $Classifiers[$labelCode]
-            $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+            $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
 
             $chunkIndex = 0
             foreach ($chunk in $chunks) {
@@ -346,7 +346,7 @@ if ($doRules -and $Policies -and $Classifiers) {
                 $ruleNum++
                 $labelCode = $label.code
                 $classifierList = $Classifiers[$labelCode]
-                $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
 
                 $chunkIndex = 0
                 foreach ($chunk in $chunks) {
@@ -374,7 +374,7 @@ if ($doRules -and $Policies -and $Classifiers) {
                 $ruleNum++
                 $labelCode = $label.code
                 $classifierList = $Classifiers[$labelCode]
-                $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+                $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
 
                 $chunkIndex = 0
                 foreach ($chunk in $chunks) {

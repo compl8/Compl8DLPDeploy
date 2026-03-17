@@ -94,7 +94,7 @@ $Labels = $Labels | Where-Object { $Classifiers.ContainsKey($_.code) }
 $totalRules = 0
 foreach ($p in ($Policies | Where-Object { $_.Enabled })) {
     foreach ($l in $Labels) {
-        $totalRules += (Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
+        $totalRules += @(Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
     }
 }
 $totalClassifiers = ($Classifiers.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
@@ -306,7 +306,7 @@ foreach ($policy in $Policies) {
         $ruleNum++
         $labelCode      = $label.code
         $classifierList = $Classifiers[$labelCode]
-        $chunks = Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125
+        $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
 
         $chunkIndex = 0
         foreach ($chunk in $chunks) {
@@ -404,7 +404,7 @@ if (-not $SkipVerification) {
     $expectedPolicies = ($Policies | Where-Object { $_.Enabled }).Count
     $expectedRules = 0
     foreach ($l in $Labels) {
-        $expectedRules += (Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
+        $expectedRules += @(Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
     }
     $expectedRules *= $expectedPolicies
 

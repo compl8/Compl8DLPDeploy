@@ -283,7 +283,7 @@ if ($SkipPublish) {
     Write-Host "`n=== Publishing Label Policy ===" -ForegroundColor Cyan
 
     $policyName = $Config.labelPolicyName
-    $publishableLabels = ($LabelDefinitions | Where-Object { -not $_.isGroup }).name
+    $publishableLabels = ($LabelDefinitions | Where-Object { -not $_.isGroup }).name | Select-Object -Unique
 
     $existingPolicy = $null
     try { $existingPolicy = Get-LabelPolicy -Identity $policyName -ErrorAction Stop } catch { }
