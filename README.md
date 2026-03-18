@@ -83,8 +83,8 @@ python scripts/Build-FromXLS.py --tier medium
 # 3. Build SIT packages from testpattern.dev (if using TestPattern SITs)
 python scripts/build-deploy-packages.py --tier medium --max-terms 5
 
-# 4. Deploy everything
-pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com
+# 4. Deploy everything (PublishTo is mandatory — specify a named group or user)
+pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Option B: From Existing Tenant
@@ -104,8 +104,8 @@ python scripts/Build-ClassifierSchema.py --auto
 # 4. Review the CSV, then generate classifiers.json
 python scripts/Build-ClassifierSchema.py --apply
 
-# 5. Deploy
-pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.com
+# 5. Deploy (PublishTo is mandatory — specify a named group or user)
+pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Phased Deployment
@@ -113,23 +113,23 @@ pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.co
 For more control, deploy in phases:
 
 ```powershell
-# Phase 1: Labels only
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels
+# Phase 1: Labels only (PublishTo is mandatory)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
 
 # Phase 1.5: Keyword dictionaries
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries -PublishTo "DL-InfoSec@agency.gov"
 
 # Phase 2: SIT classifier packages
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers -PublishTo "DL-InfoSec@agency.gov"
 
 # Phase 3: DLP rules (wait 1-24h after Phase 2 for SIT propagation)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules -PublishTo "DL-InfoSec@agency.gov"
 
 # Cleanup everything
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -PublishTo "DL-InfoSec@agency.gov"
 
 # Dry run
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ## The Input Spreadsheet
@@ -166,7 +166,7 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 |--------|---------|
 | `greenfield-deploy.ps1` | Single-command deployment: dictionaries, labels, packages, rules |
 | `full-deploy.ps1` | Phased deployment with propagation checks and dictionary support |
-| `Deploy-Labels.ps1` | Deploy sensitivity labels and label policy |
+| `Deploy-Labels.ps1` | Deploy sensitivity labels and label policy (requires named `-PublishTo` target; `-ApproveOpenPublish` needed for `"All"`) |
 | `Deploy-DLPRules.ps1` | Deploy DLP policies and rules across workloads (auto-splits >125 SITs) |
 | `Deploy-Classifiers.ps1` | Upload, validate, list, or remove custom SIT packages |
 
@@ -249,7 +249,7 @@ To deploy for a different classification framework:
 4. Edit `config/policies.json` with your workload and policy settings
 5. Run `python scripts/Build-FromXLS.py` to generate `classifiers.json`
 6. Run `python scripts/build-deploy-packages.py` to build packages (if using testpattern.dev)
-7. Deploy with `greenfield-deploy.ps1` or `full-deploy.ps1`
+7. Deploy with `greenfield-deploy.ps1 -PublishTo "group@domain"` or `full-deploy.ps1 -PublishTo "group@domain"`
 
 **Without a spreadsheet (tenant import):**
 
@@ -259,7 +259,7 @@ To deploy for a different classification framework:
 4. Edit `config/policies.json` with your workload and policy settings
 5. Generate mapping: `python scripts/Build-ClassifierSchema.py --auto`
 6. Review/edit `config/classifier-mapping.csv`, then: `python scripts/Build-ClassifierSchema.py --apply`
-7. Deploy with `greenfield-deploy.ps1` or `full-deploy.ps1`
+7. Deploy with `greenfield-deploy.ps1 -PublishTo "group@domain"` or `full-deploy.ps1 -PublishTo "group@domain"`
 
 The deployment scripts read everything from config — no code changes needed.
 

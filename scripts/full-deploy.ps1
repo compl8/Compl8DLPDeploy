@@ -22,7 +22,7 @@ param(
     [Parameter(Mandatory)][string]$UPN,
     [ValidateSet("All", "Labels", "Dictionaries", "Classifiers", "DLPRules", "Cleanup")]
     [string]$Phase = "All",
-    [string]$PublishTo = "All",
+    [Parameter(Mandatory)][string]$PublishTo,
     [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
     [switch]$Force,

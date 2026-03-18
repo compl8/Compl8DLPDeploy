@@ -13,7 +13,7 @@ param(
     [Parameter(Mandatory)][string]$UPN,
     [string]$Tier = "medium",
     [string]$Scope = "universal,en-government,au",
-    [string]$PublishTo = "All",
+    [Parameter(Mandatory)][string]$PublishTo,
     [switch]$SkipCleanup,
     [switch]$WhatIf
 )

@@ -4,10 +4,10 @@
 # All label definitions loaded from config/labels.json (single source of truth).
 #
 # Usage:
-#   .\scripts\Deploy-Labels.ps1 -Connect                        # Deploy, prompt-free
-#   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "All"        # Publish to all users
-#   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "user@domain.com"
-#   .\scripts\Deploy-Labels.ps1 -Connect -SkipPublish            # Create labels only
+#   .\scripts\Deploy-Labels.ps1 -Connect                                       # Deploy, prompt-free
+#   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "DL-InfoSec@agency.gov"    # Publish to named group
+#   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "All" -ApproveOpenPublish  # Publish to all (requires explicit approval)
+#   .\scripts\Deploy-Labels.ps1 -Connect -SkipPublish                          # Create labels only
 #   .\scripts\Deploy-Labels.ps1 -Connect -NoMarking              # Skip visual markings
 #   .\scripts\Deploy-Labels.ps1 -Connect -Cleanup                # Remove all labels
 #   .\scripts\Deploy-Labels.ps1 -Connect -WhatIf                 # Dry run
@@ -17,6 +17,7 @@
 param(
     [string]$PublishTo,
     [switch]$SkipPublish,
+    [switch]$ApproveOpenPublish,
     [switch]$NoMarking,
     [switch]$Cleanup,
     [switch]$Connect,
@@ -131,6 +132,10 @@ Write-Host "  Visual markings:         $(if ($NoMarking) { 'OFF (-NoMarking)' } 
 if (-not $SkipPublish -and -not $PublishTo) {
     $SkipPublish = $true
     Write-Host "  No -PublishTo specified; publishing will be skipped. Use -PublishTo to publish." -ForegroundColor Yellow
+}
+if (-not $SkipPublish -and $PublishTo -eq "All" -and -not $ApproveOpenPublish) {
+    Write-Error "Publishing to 'All' requires -ApproveOpenPublish. Specify a named user/group, or add -ApproveOpenPublish to confirm open publishing."
+    return
 }
 
 if ($SkipPublish) {
