@@ -11,7 +11,7 @@ This enables organisations to predict labelling impact from proven DLP rules wit
 
 ## Design Principles
 
-- **Framework-agnostic** — no QGISCF or other framework knowledge baked in. All context comes from tenant state and optional mapping JSON.
+- **Framework-agnostic** — no QGISCF or other framework knowledge baked in. All context comes from tenant state, optional mapping JSON, and optional settings.json for naming. When settings.json is absent, naming falls back to tenant-derived defaults.
 - **Plan-as-audit-trail** — the plan JSON is the single source of truth across scan, approval, and execution. Every decision is recorded.
 - **User makes the call** — the tool doesn't score or filter rules by false positive risk. The user selects which DLP rules to convert and assigns labels.
 - **Partial conversion is transparent** — when a DLP rule has conditions that auto-labeling can't replicate, the plan documents exactly what would be dropped and why.
@@ -22,11 +22,12 @@ This enables organisations to predict labelling impact from proven DLP rules wit
 
 ```
 Connect to tenant
-  Read all DLP compliance rules (all policies)
+  Read all DLP compliance rules (optionally filtered by -DlpPolicyFilter)
   Read existing auto-labeling policies (for scaling check)
   Read existing sensitivity labels (for interactive label assignment)
 
   For each DLP rule:
+    Skip disabled rules by default (include with -IncludeDisabled)
     Extract: SIT conditions, scope conditions, unsupported conditions
     Classify: fully convertible / partial / unconvertible
     For partial: document each dropped condition (what + why)
@@ -34,14 +35,15 @@ Connect to tenant
       1. Toolkit naming convention match -> auto-assign from config
       2. Mapping JSON match (supports wildcards) -> auto-assign
       3. Unknown -> prompt user to select from tenant labels
+    Record assignment method (naming-convention / mapping-json / interactive)
 
   Scaling check:
     Count: existing auto-label policies + planned new policies
-    Warn at 80 total policies
-    Hard block at 100 (tenant limit)
+    Warn at configurable threshold (default 80)
+    Hard block at tenant limit (default 100)
     Advisory note: 100K files/day limit, 4M simulation cap
 
-  Write plan JSON
+  Write plan JSON to plans/ directory (auto-created, filename includes tenant+timestamp)
   Print formatted terminal summary (grouped by label)
   Interactive approval per label:
     "SENSITIVE-Financial: 3 DLP rules, 30 SITs, all convertible. Convert? [Y/n]"
@@ -58,6 +60,7 @@ Read approved plan JSON
     Create rules per workload with converted conditions
     Apply AccessScope and other scope params from source DLP rules
     Record source DLP rule name in Comment field for traceability
+    All API calls use Invoke-WithRetry (throttle-safe)
   Stamp plan JSON with execution results (status, created rule names, timestamps)
   Print execution summary
 ```
@@ -67,6 +70,8 @@ Read approved plan JSON
 ### 1. Auto-detect (toolkit rules)
 
 DLP rules matching our naming convention (`P{nn}-R{nn}-{WorkloadCode}-{LabelCode}-{Suffix}`) are parsed to extract the label code. The label code is resolved against the tenant's sensitivity labels.
+
+When multiple label codes resolve to the same label name (e.g. `SENS_Pvca` and `SENS_Pvcb` both resolve to `SENSITIVE-Personal-Privacyv2`), they are grouped under the same label entry in the plan. The `labelCodes` field (array) tracks all contributing codes.
 
 ### 2. Pre-prepared mapping JSON
 
@@ -101,6 +106,63 @@ DLP Rule: Custom-Rule-SSN-Detection (Exchange, 5 SITs)
   >
 ```
 
+### `-AutoApprove` behaviour
+
+When `-AutoApprove` is set, all rules must be resolvable via naming convention or mapping JSON. If any DLP rule has no mapping match, the scan fails with an error listing the unmapped rules. The user must either add mappings or run without `-AutoApprove`.
+
+## SIT Condition Extraction
+
+DLP rules store conditions in two formats. The scanner handles both:
+
+### Simple format
+
+`ContentContainsSensitiveInformation` is a deserialized PSObject with `groups`, `operator`, and `sensitivetypes` properties. The scanner converts this to a normalised hashtable, preserving:
+- Group structure (operator, name)
+- Per-SIT fields: `name`, `id`, `mincount`, `maxcount`, `confidencelevel`
+
+### AdvancedRule format
+
+The entire condition is a JSON string in the rule's `AdvancedRule` property. `ContentContainsSensitiveInformation` may be null. The scanner:
+1. Parses the JSON string
+2. Extracts the `ContentContainsSensitiveInformation` subcondition
+3. Extracts any scope conditions (`AccessScope`) embedded in the JSON
+4. Checks for trainable classifiers (`classifiertype: "MLModel"`)
+
+**Trainable classifiers**: DLP rules containing trainable classifiers in AdvancedRule JSON are classified as **unconvertible**. The auto-labeling `-AdvancedRule` parameter exists but is undocumented by Microsoft — until it is tested and confirmed working, these rules should not be converted. The plan records the reason: "Rule contains trainable classifiers (MLModel) in AdvancedRule format. Auto-labeling AdvancedRule support is undocumented."
+
+### ExceptIf conditions
+
+`ExceptIfContentContainsSensitiveInformation` and `ExceptIfAccessScope` are extracted and stored separately in the plan under `conditions.converted.exceptIf`:
+
+```json
+{
+  "converted": {
+    "ContentContainsSensitiveInformation": { "..." },
+    "AccessScope": "NotInOrganization",
+    "exceptIf": {
+      "ExceptIfContentContainsSensitiveInformation": { "..." },
+      "ExceptIfAccessScope": "InOrganization"
+    }
+  }
+}
+```
+
+## SIT Condition Merging
+
+When multiple DLP rules map to the same label and workload, their SIT conditions are merged into a single auto-labeling rule. Merge rules:
+
+1. **SIT union (OR)**: All SITs from all source rules are combined into a single `groups` array with `operator: "Or"`. The original group structures are flattened — each source rule's SITs become one group in the merged condition.
+
+2. **Duplicate SIT resolution**: If the same SIT ID appears in multiple source rules with different thresholds, use the **most permissive** values (lowest `minCount`, lowest confidence level). This matches the broadest source rule's behaviour. The plan logs the conflict and which values were chosen.
+
+3. **Scope intersection**: If source rules have different `AccessScope` values (e.g. one is `NotInOrganization`, another has no scope), the merged rule uses the **most restrictive** scope. If scopes conflict irreconcilably, the merge is flagged as needing manual review.
+
+4. **ExceptIf merging**: Exception conditions are intersected (AND) — the merged rule only excludes content that ALL source rules would have excluded.
+
+5. **Format mismatch**: If one source rule uses Simple format and another uses AdvancedRule (non-TC), both are normalised to Simple format before merging. AdvancedRule conditions are parsed and their SIT subconditions extracted.
+
+The plan records all merge decisions under a `mergeNotes` field on the label entry.
+
 ## Convertibility Classification
 
 Each DLP rule is classified into one of three states:
@@ -108,7 +170,7 @@ Each DLP rule is classified into one of three states:
 ### Fully convertible
 
 All conditions have auto-labeling equivalents:
-- `ContentContainsSensitiveInformation` (groups/operators/sensitivetypes)
+- `ContentContainsSensitiveInformation` (groups/operators/sensitivetypes) — Simple format only
 - `ExceptIfContentContainsSensitiveInformation`
 - `AccessScope` / `ExceptIfAccessScope`
 - `ContentExtensionMatchesWords` / `ExceptIfContentExtensionMatchesWords`
@@ -142,7 +204,8 @@ Has convertible conditions (at minimum `ContentContainsSensitiveInformation`) pl
 
 ### Unconvertible
 
-Rules that have no `ContentContainsSensitiveInformation` or `AdvancedRule` condition at all. Auto-labeling requires SIT-based conditions — rules based purely on sender/recipient, message type, or other non-SIT conditions cannot be converted.
+- Rules with no `ContentContainsSensitiveInformation` or `AdvancedRule` condition
+- Rules containing trainable classifiers (`ClassifierType=MLModel`) in AdvancedRule format (auto-labeling AdvancedRule is undocumented)
 
 ## DLP-Only Conditions Reference
 
@@ -179,6 +242,8 @@ Conditions that exist on DLP rules but NOT on auto-labeling rules:
 
 ## Scaling Guardrails
 
+Thresholds are configurable via settings.json (`autoLabelWarnThreshold`, `autoLabelMaxPolicies`), defaulting to:
+
 | Check | Threshold | Behaviour |
 |-------|-----------|-----------|
 | Total auto-labeling policies (existing + planned) | >= 80 | Warning printed |
@@ -191,40 +256,45 @@ Conditions that exist on DLP rules but NOT on auto-labeling rules:
 One policy per label, rules per workload (mirroring Deploy-AutoLabeling.ps1):
 
 - Policy: `AL{nn}-{LabelCode}-{Prefix}-{Suffix}`
+  - `Prefix` and `Suffix` come from `config/settings.json` when available
+  - When settings.json is absent, `Prefix` defaults to `"ALC"` (Auto-Label Convert) and `Suffix` defaults to `"SIM"` (simulation)
 - Rules: `AL{nn}-R{nn}-{WorkloadCode}-{LabelCode}-{Suffix}`
 - Comment field records source DLP rule name(s) for traceability
 - Mode: `TestWithoutNotifications` (simulation) by default
 
-When multiple DLP rules map to the same label and workload, their SIT conditions are merged into a single auto-labeling rule.
+When multiple DLP rules map to the same label and workload, their SIT conditions are merged (see SIT Condition Merging section).
 
 ## Plan JSON Schema
 
 ```json
 {
-  "version": 1,
+  "version": "1",
   "scanDate": "2026-03-18T18:00:00Z",
   "tenant": "testp4ttern.dev",
   "scannedBy": "natadmin@testp4ttern.dev",
   "existingAutoLabelPolicies": 12,
   "scalingStatus": "ok",
-  "mappingSource": "naming-convention+mapping-json",
   "labels": {
     "SENSITIVE-Financialv2": {
-      "labelCode": "SENS_Fin",
+      "labelCodes": ["SENS_Fin"],
       "approved": true,
       "approvedAt": "2026-03-18T18:05:00Z",
+      "mergeNotes": [],
       "sourceRules": [
         {
           "dlpRuleName": "P01-R04-ECH-SENS_Fin-EXT-ADT",
           "dlpPolicyName": "P01-ECH-QGISCF-EXT-ADT",
           "workload": "Exchange",
+          "disabled": false,
           "convertible": "full",
+          "assignedBy": "naming-convention",
           "sitCount": 30,
           "conditions": {
             "converted": {
               "ContentContainsSensitiveInformation": { "operator": "And", "groups": ["..."] },
               "AccessScope": "NotInOrganization"
             },
+            "exceptIf": {},
             "dropped": []
           },
           "executed": null
@@ -233,10 +303,16 @@ When multiple DLP rules map to the same label and workload, their SIT conditions
           "dlpRuleName": "P02-R04-ODB-SENS_Fin-EXT-ADT",
           "dlpPolicyName": "P02-ODB-QGISCF-EXT-ADT",
           "workload": "OneDriveForBusiness",
+          "disabled": false,
           "convertible": "full",
+          "assignedBy": "naming-convention",
           "sitCount": 30,
           "conditions": {
-            "converted": { "ContentContainsSensitiveInformation": "...", "AccessScope": "NotInOrganization" },
+            "converted": {
+              "ContentContainsSensitiveInformation": "...",
+              "AccessScope": "NotInOrganization"
+            },
+            "exceptIf": {},
             "dropped": []
           },
           "executed": null
@@ -244,20 +320,24 @@ When multiple DLP rules map to the same label and workload, their SIT conditions
       ]
     },
     "SENSITIVE-Legal": {
-      "labelCode": null,
+      "labelCodes": [],
       "approved": false,
       "approvedAt": null,
+      "mergeNotes": [],
       "sourceRules": [
         {
           "dlpRuleName": "Custom-Legal-Hold-Rule",
           "dlpPolicyName": "Legal-DLP-Policy",
           "workload": "SharePoint",
+          "disabled": false,
           "convertible": "partial",
+          "assignedBy": "interactive",
           "sitCount": 9,
           "conditions": {
             "converted": {
               "ContentContainsSensitiveInformation": "..."
             },
+            "exceptIf": {},
             "dropped": [
               {
                 "condition": "SubjectOrBodyContainsWords",
@@ -277,6 +357,11 @@ When multiple DLP rules map to the same label and workload, their SIT conditions
       "dlpRuleName": "Header-Only-Rule",
       "dlpPolicyName": "Custom-Policy",
       "reason": "Rule has no ContentContainsSensitiveInformation or AdvancedRule condition. Auto-labeling requires SIT-based conditions."
+    },
+    {
+      "dlpRuleName": "TC-Detection-Rule",
+      "dlpPolicyName": "ML-Policy",
+      "reason": "Rule contains trainable classifiers (MLModel) in AdvancedRule format. Auto-labeling AdvancedRule support is undocumented."
     }
   ],
   "execution": {
@@ -296,8 +381,8 @@ After execution, each source rule's `executed` field is updated:
 {
   "executed": {
     "status": "success",
-    "autoLabelPolicyName": "AL04-SENS_Fin-QGISCF-EXT-ADT",
-    "autoLabelRuleName": "AL04-R01-ECH-SENS_Fin-EXT-ADT",
+    "autoLabelPolicyName": "AL04-SENS_Fin-ALC-SIM",
+    "autoLabelRuleName": "AL04-R01-ECH-SENS_Fin-SIM",
     "timestamp": "2026-03-18T18:10:00Z"
   }
 }
@@ -315,6 +400,15 @@ Failed conversions record the error:
 }
 ```
 
+## Cleanup
+
+The `-Cleanup` phase reads the plan JSON and removes only resources that were successfully created during execution:
+
+- Iterates `executed` stamps in the plan — only targets policies/rules with `status: "success"`
+- Verifies each resource still exists before attempting removal
+- Does not use pattern matching — exclusively uses plan-recorded identities
+- Updates the plan JSON to reflect cleanup (clears `executed` stamps)
+
 ## Script Interface
 
 ```powershell
@@ -327,6 +421,12 @@ Failed conversions record the error:
 # Scan with auto-approve (no interactive prompts — requires mapping for all rules)
 .\scripts\Convert-DLPToAutoLabeling.ps1 -Connect -Scan -MappingFile .\config\dlp-label-mapping.json -AutoApprove
 
+# Scan only specific DLP policies
+.\scripts\Convert-DLPToAutoLabeling.ps1 -Connect -Scan -DlpPolicyFilter "P0*-QGISCF*"
+
+# Include disabled DLP rules in scan
+.\scripts\Convert-DLPToAutoLabeling.ps1 -Connect -Scan -IncludeDisabled
+
 # Execute an approved plan
 .\scripts\Convert-DLPToAutoLabeling.ps1 -Connect -Execute -PlanFile .\plans\conversion-plan-2026-03-18.json
 
@@ -337,14 +437,18 @@ Failed conversions record the error:
 .\scripts\Convert-DLPToAutoLabeling.ps1 -Connect -Cleanup -PlanFile .\plans\conversion-plan-2026-03-18.json
 ```
 
+## Logging
+
+Uses `Start-DeploymentLog` from the shared module (same pattern as Deploy-DLPRules.ps1 and Deploy-AutoLabeling.ps1). Transcript captures all scan output, approval decisions, and execution results.
+
 ## Dependencies
 
-- `modules/DLP-Deploy.psm1` — connection management, retry logic, SIT condition building
-- `config/settings.json` — naming prefix/suffix (for generated policy/rule names)
+- `modules/DLP-Deploy.psm1` — connection management, retry logic (`Invoke-WithRetry`), SIT condition building
+- `config/settings.json` — naming prefix/suffix (optional — falls back to `ALC`/`SIM` defaults)
 - PowerShell 7+ with ExchangeOnlineManagement module
 
 ## Future Extension Points
 
-- Plan JSON format is versioned (`"version": 1`) for forward compatibility
-- The scan/plan/execute pattern can be reused for other Purview object conversions
+- Plan JSON format is versioned (`"version": "1"`) for forward compatibility
+- The scan/plan/execute pattern can be reused for other Purview object conversions (noted: potential for DLP element replication via text-based plans)
 - Mapping JSON wildcards allow bulk assignment without per-rule entries
