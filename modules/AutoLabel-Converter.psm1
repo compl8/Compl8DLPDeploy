@@ -333,12 +333,49 @@ function ConvertFrom-DlpRuleConditions {
     } else {
         # Simple format — read CCSI directly
         if ($DlpRule.PSObject.Properties['ContentContainsSensitiveInformation'] -and $DlpRule.ContentContainsSensitiveInformation) {
-            $result.HasSIT = $true
             $ccsi = $DlpRule.ContentContainsSensitiveInformation
-            if ($ccsi -is [PSCustomObject]) {
+
+            # Purview API returns CCSI as a flat ArrayList of SIT hashtables (not the
+            # nested groups/operator/sensitivetypes structure used when creating rules).
+            # Normalise to our internal format.
+            if ($ccsi -is [System.Collections.IList] -and $ccsi.Count -gt 0 -and $ccsi[0] -is [System.Collections.IDictionary]) {
+                # Flat ArrayList of SIT hashtables from API — wrap into groups structure
+                $result.HasSIT = $true
+                $sitList = @($ccsi | ForEach-Object { Convert-PSOToHashtable -InputObject $_ })
+                $result.Converted['ContentContainsSensitiveInformation'] = [ordered]@{
+                    operator = "And"
+                    groups = @([ordered]@{
+                        operator       = "Or"
+                        name           = "Default"
+                        sensitivetypes = $sitList
+                    })
+                }
+            } elseif ($ccsi -is [PSCustomObject]) {
+                # Already structured (groups/operator format)
+                $result.HasSIT = $true
                 $result.Converted['ContentContainsSensitiveInformation'] = Convert-PSOToHashtable -InputObject $ccsi
-            } else {
-                $result.Converted['ContentContainsSensitiveInformation'] = $ccsi
+            } elseif ($ccsi -is [System.Collections.IDictionary]) {
+                # Single hashtable with groups key
+                $result.HasSIT = $true
+                $result.Converted['ContentContainsSensitiveInformation'] = Convert-PSOToHashtable -InputObject $ccsi
+            }
+        }
+
+        # Also handle ExceptIfCCSI in flat format
+        if ($DlpRule.PSObject.Properties['ExceptIfContentContainsSensitiveInformation'] -and $DlpRule.ExceptIfContentContainsSensitiveInformation) {
+            $exceptCcsi = $DlpRule.ExceptIfContentContainsSensitiveInformation
+            if ($exceptCcsi -is [System.Collections.IList] -and $exceptCcsi.Count -gt 0 -and $exceptCcsi[0] -is [System.Collections.IDictionary]) {
+                $sitList = @($exceptCcsi | ForEach-Object { Convert-PSOToHashtable -InputObject $_ })
+                $result.ExceptIf['ExceptIfContentContainsSensitiveInformation'] = [ordered]@{
+                    operator = "And"
+                    groups = @([ordered]@{
+                        operator       = "Or"
+                        name           = "Default"
+                        sensitivetypes = $sitList
+                    })
+                }
+            } elseif ($exceptCcsi -is [PSCustomObject] -or $exceptCcsi -is [System.Collections.IDictionary]) {
+                $result.ExceptIf['ExceptIfContentContainsSensitiveInformation'] = Convert-PSOToHashtable -InputObject $exceptCcsi
             }
         }
     }
@@ -367,8 +404,10 @@ function ConvertFrom-DlpRuleConditions {
         $value = $prop.Value
 
         # Skip null/empty values
-        if ($null -eq $value -or ($value -is [string] -and [string]::IsNullOrEmpty($value))) { continue }
+        if ($null -eq $value) { continue }
+        if ($value -is [string] -and [string]::IsNullOrEmpty($value)) { continue }
         if ($value -is [bool] -and -not $value) { continue }
+        if ($value -is [System.Collections.IList] -and $value.Count -eq 0) { continue }
 
         # Skip non-condition properties
         if ($name -in $nonConditionProps) { continue }
