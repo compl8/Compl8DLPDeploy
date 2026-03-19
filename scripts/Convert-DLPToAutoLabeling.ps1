@@ -94,7 +94,16 @@ $SupportedWorkloads = @('Exchange', 'SharePoint', 'OneDriveForBusiness')
 function Get-SITCountFromCCSI {
     param([object]$CCSI)
     if (-not $CCSI) { return 0 }
-    $count = 0
+
+    # Flat array of SIT hashtables (from Purview API / plan JSON)
+    if ($CCSI -is [System.Collections.IList] -and $CCSI.Count -gt 0) {
+        $first = $CCSI[0]
+        if ($first -is [System.Collections.IDictionary] -or ($first -is [PSCustomObject] -and $first.PSObject.Properties['id'])) {
+            return $CCSI.Count
+        }
+    }
+
+    # Nested groups/sensitivetypes structure
     $groups = $null
     if ($CCSI -is [hashtable] -or $CCSI -is [System.Collections.Specialized.OrderedDictionary]) {
         $groups = if ($CCSI.Contains('groups')) { $CCSI['groups'] } elseif ($CCSI.Contains('Groups')) { $CCSI['Groups'] } else { $null }
@@ -103,6 +112,7 @@ function Get-SITCountFromCCSI {
         if (-not $groups) { $groups = $CCSI.Groups }
     }
     if (-not $groups) { return 0 }
+    $count = 0
     foreach ($group in $groups) {
         $sits = $null
         if ($group -is [hashtable] -or $group -is [System.Collections.Specialized.OrderedDictionary]) {
@@ -715,8 +725,26 @@ if ($Execute) {
                 }
             }
 
+            # Normalise flat arrays to groups structure before merging
+            $normalisedSources = @()
+            foreach ($src in $ccsiSources) {
+                if ($src -is [System.Collections.IList] -and $src.Count -gt 0 -and -not ($src -is [string])) {
+                    # Flat array of SIT hashtables — wrap into groups structure
+                    $normalisedSources += @{
+                        operator = "And"
+                        groups = @(@{
+                            operator       = "Or"
+                            name           = "Default"
+                            sensitivetypes = @($src)
+                        })
+                    }
+                } else {
+                    $normalisedSources += $src
+                }
+            }
+
             # Merge SIT conditions
-            $mergeResult = Merge-SITConditions -Sources $ccsiSources
+            $mergeResult = Merge-SITConditions -Sources $normalisedSources
             if (-not $mergeResult.Merged) {
                 Write-Warning "    No SIT conditions to merge for $wl workload. Skipping rule."
                 foreach ($sr in $wlRules) {

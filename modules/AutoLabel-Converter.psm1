@@ -339,17 +339,10 @@ function ConvertFrom-DlpRuleConditions {
             # nested groups/operator/sensitivetypes structure used when creating rules).
             # Normalise to our internal format.
             if ($ccsi -is [System.Collections.IList] -and $ccsi.Count -gt 0 -and $ccsi[0] -is [System.Collections.IDictionary]) {
-                # Flat ArrayList of SIT hashtables from API — wrap into groups structure
+                # Flat ArrayList of SIT hashtables from API — store as-is for JSON serialization.
+                # The Execute phase wraps into groups/operator structure when creating rules.
                 $result.HasSIT = $true
-                $sitList = @($ccsi | ForEach-Object { Convert-PSOToHashtable -InputObject $_ })
-                $result.Converted['ContentContainsSensitiveInformation'] = [ordered]@{
-                    operator = "And"
-                    groups = @([ordered]@{
-                        operator       = "Or"
-                        name           = "Default"
-                        sensitivetypes = $sitList
-                    })
-                }
+                $result.Converted['ContentContainsSensitiveInformation'] = @($ccsi)
             } elseif ($ccsi -is [PSCustomObject]) {
                 # Already structured (groups/operator format)
                 $result.HasSIT = $true
@@ -365,15 +358,7 @@ function ConvertFrom-DlpRuleConditions {
         if ($DlpRule.PSObject.Properties['ExceptIfContentContainsSensitiveInformation'] -and $DlpRule.ExceptIfContentContainsSensitiveInformation) {
             $exceptCcsi = $DlpRule.ExceptIfContentContainsSensitiveInformation
             if ($exceptCcsi -is [System.Collections.IList] -and $exceptCcsi.Count -gt 0 -and $exceptCcsi[0] -is [System.Collections.IDictionary]) {
-                $sitList = @($exceptCcsi | ForEach-Object { Convert-PSOToHashtable -InputObject $_ })
-                $result.ExceptIf['ExceptIfContentContainsSensitiveInformation'] = [ordered]@{
-                    operator = "And"
-                    groups = @([ordered]@{
-                        operator       = "Or"
-                        name           = "Default"
-                        sensitivetypes = $sitList
-                    })
-                }
+                $result.ExceptIf['ExceptIfContentContainsSensitiveInformation'] = @($exceptCcsi)
             } elseif ($exceptCcsi -is [PSCustomObject] -or $exceptCcsi -is [System.Collections.IDictionary]) {
                 $result.ExceptIf['ExceptIfContentContainsSensitiveInformation'] = Convert-PSOToHashtable -InputObject $exceptCcsi
             }
