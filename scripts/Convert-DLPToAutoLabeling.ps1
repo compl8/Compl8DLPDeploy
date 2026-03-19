@@ -222,11 +222,11 @@ if ($Scan) {
 
         # Skip unsupported workloads
         if ($workload -notin $SupportedWorkloads) {
-            Write-Host "    Skipping $($rule.Name) — unsupported workload: $workload" -ForegroundColor DarkGray
+            Write-Host "    N/A: $($rule.Name) — auto-labeling does not support $workload" -ForegroundColor DarkGray
             $unconvertibleRules += @{
                 RuleName = $rule.Name
                 PolicyName = $policy.Name
-                Reason = "Unsupported workload: $workload"
+                Reason = "Not applicable: auto-labeling does not support $workload workload"
             }
             continue
         }
@@ -388,11 +388,20 @@ if ($Scan) {
     # Determine tenant name for plan filename
     $tenantName = "unknown"
     try {
-        $orgConfig = Get-OrganizationConfig -ErrorAction SilentlyContinue
-        if ($orgConfig -and $orgConfig.Name) {
-            $tenantName = $orgConfig.Name
+        # Get-ConnectionInformation is available after Connect-IPPSSession
+        $connInfo = Get-ConnectionInformation -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($connInfo -and $connInfo.Organization) {
+            $tenantName = $connInfo.Organization -replace '\.onmicrosoft\.com$', ''
         }
     } catch { }
+    if ($tenantName -eq "unknown") {
+        try {
+            $orgConfig = Get-OrganizationConfig -ErrorAction SilentlyContinue
+            if ($orgConfig -and $orgConfig.Name) {
+                $tenantName = $orgConfig.Name
+            }
+        } catch { }
+    }
     $tenantSanitised = $tenantName -replace '[.\s]', '-'
 
     $plannedPolicyCount = $labelGroups.Count
@@ -491,8 +500,16 @@ if ($Scan) {
     }
 
     if ($plan.Unconvertible -and $plan.Unconvertible.Count -gt 0) {
-        $ucNames = ($plan.Unconvertible | ForEach-Object { $_.ruleName }) -join ', '
-        Write-Host "`nUnconvertible: $($plan.Unconvertible.Count) rules ($ucNames)" -ForegroundColor DarkGray
+        $naRules = @($plan.Unconvertible | Where-Object { $_.reason -like 'Not applicable:*' })
+        $ucRules = @($plan.Unconvertible | Where-Object { $_.reason -notlike 'Not applicable:*' })
+        if ($naRules.Count -gt 0) {
+            $naWorkloads = ($naRules | ForEach-Object { if ($_.reason -match 'support (\S+) workload') { $Matches[1] } }) | Sort-Object -Unique
+            Write-Host ("`nNot applicable: $($naRules.Count) rules (" + ($naWorkloads -join ', ') + " workload - no auto-labeling support)") -ForegroundColor DarkGray
+        }
+        if ($ucRules.Count -gt 0) {
+            $ucReasons = ($ucRules | Group-Object reason | ForEach-Object { "$($_.Count) $($_.Name)" }) -join '; '
+            Write-Host "Unconvertible: $($ucRules.Count) rules ($ucReasons)" -ForegroundColor DarkGray
+        }
     }
 
     Write-Host "`nScaling: $($scalingStatus.Total) of 100 policies ($($scalingStatus.Status))" -ForegroundColor $(
@@ -585,6 +602,28 @@ if ($Execute) {
         return
     }
     Write-Host "  Plan loaded: $($approvedEntries.Count) approved labels" -ForegroundColor Gray
+
+    # Build display-name -> internal-name lookup from labels.json
+    # ApplySensitivityLabel requires the internal label Name, not DisplayName
+    $labelDisplayToName = @{}
+    if ($labelsJson) {
+        foreach ($lj in $labelsJson) {
+            if ($lj.displayName -and $lj.name -and -not $lj.isGroup) {
+                $labelDisplayToName[$lj.displayName] = $lj.name
+            }
+        }
+        Write-Host "  Label name lookup: $($labelDisplayToName.Count) entries from labels.json" -ForegroundColor Gray
+    }
+    # Also check tenant labels as fallback
+    $tenantLabels = @(Get-Label -ErrorAction SilentlyContinue)
+    $labelDisplayToTenantName = @{}
+    foreach ($tl in $tenantLabels) {
+        if ($tl.DisplayName -and $tl.Name) {
+            # For child labels, use the full Name (which is the internal name)
+            $labelDisplayToTenantName[$tl.DisplayName] = $tl.Name
+        }
+    }
+    Write-Host "  Tenant label lookup: $($labelDisplayToTenantName.Count) entries" -ForegroundColor Gray
     #endregion
 
     #region Execute per approved label
@@ -596,7 +635,19 @@ if ($Execute) {
 
     foreach ($entry in $approvedEntries) {
         $policyNum++
-        $labelName = $entry.labelName
+        $labelDisplayName = $entry.labelName
+
+        # Resolve display name to internal label name for ApplySensitivityLabel
+        $labelName = $null
+        if ($labelDisplayToName.ContainsKey($labelDisplayName)) {
+            $labelName = $labelDisplayToName[$labelDisplayName]
+        } elseif ($labelDisplayToTenantName.ContainsKey($labelDisplayName)) {
+            $labelName = $labelDisplayToTenantName[$labelDisplayName]
+        } else {
+            # Fallback: use display name as-is (may work if tenant uses display names as internal names)
+            $labelName = $labelDisplayName
+            Write-Warning "  Could not resolve internal name for label '$labelDisplayName' — using as-is"
+        }
 
         # Determine label code for naming
         $labelCode = $null
@@ -604,13 +655,13 @@ if ($Execute) {
             $labelCode = @($entry.labelCodes)[0]
         }
         if (-not $labelCode) {
-            # Derive from label name: strip spaces and special chars
-            $labelCode = ($labelName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-'
+            # Derive from display name: strip spaces and special chars
+            $labelCode = ($labelDisplayName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-'
         }
 
         $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $labelCode, $namingPrefix, $namingSuffix
 
-        Write-Host "`n--- Creating policy: $policyName (label: $labelName) ---" -ForegroundColor Green
+        Write-Host "`n--- Creating policy: $policyName (label: $labelDisplayName -> $labelName) ---" -ForegroundColor Green
 
         # Build comment from source rule names
         $sourceNames = ($entry.sourceRules | ForEach-Object { $_.ruleName }) -join ', '
@@ -620,9 +671,17 @@ if ($Execute) {
             $policyComment = $policyComment.Substring(0, 997) + "..."
         }
 
-        # Create/update policy
+        # Check if policy already exists
+        $existingPolicy = $null
         try {
-            if ($PSCmdlet.ShouldProcess($policyName, "New-AutoSensitivityLabelPolicy")) {
+            $existingPolicy = Get-AutoSensitivityLabelPolicy -Identity $policyName -ErrorAction SilentlyContinue
+        } catch { }
+
+        # Create or reuse policy
+        try {
+            if ($existingPolicy) {
+                Write-Host "  Policy already exists: $policyName (reusing)" -ForegroundColor Yellow
+            } elseif ($PSCmdlet.ShouldProcess($policyName, "New-AutoSensitivityLabelPolicy")) {
                 Invoke-WithRetry -OperationName "New-ALPolicy $policyName" -ScriptBlock {
                     New-AutoSensitivityLabelPolicy -Name $policyName `
                         -ApplySensitivityLabel $labelName `
@@ -701,7 +760,9 @@ if ($Execute) {
                         if ($ccsi -is [PSCustomObject]) {
                             $ccsi = Convert-PSOToHashtable -InputObject $ccsi
                         }
-                        $ccsiSources += $ccsi
+                        # Use comma operator to prevent PowerShell array flattening
+                        # Each CCSI (flat SIT array or groups structure) must stay as one element
+                        $ccsiSources += ,$ccsi
                     }
                 }
 
@@ -761,64 +822,90 @@ if ($Execute) {
                 Write-Host "    Merge note: $note" -ForegroundColor DarkGray
             }
 
-            $ruleName = "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wlCode, $labelCode, $namingSuffix
             $sourceComment = "Source: $($sourceRuleNames -join ', ')"
             if ($sourceComment.Length -gt 1000) {
                 $sourceComment = $sourceComment.Substring(0, 997) + "..."
             }
 
-            Write-Host "  Creating rule: $ruleName ($wl, $($sourceRuleNames.Count) source rules)" -ForegroundColor Cyan
-
-            # Build rule parameters
-            $ruleParams = @{
-                Name                                  = $ruleName
-                Policy                                = $policyName
-                Workload                              = $wl
-                ContentContainsSensitiveInformation    = $mergeResult.Merged
-                Comment                               = $sourceComment
+            # Split SITs into chunks of 125 (Purview per-rule limit)
+            $mergedSITs = $mergeResult.Merged['groups'][0]['sensitivetypes']
+            $sitChunks = @(Split-ClassifierChunks -ClassifierList $mergedSITs -MaxPerRule 125)
+            if ($sitChunks.Count -gt 1) {
+                Write-Host "    Splitting $($mergedSITs.Count) SITs into $($sitChunks.Count) chunks" -ForegroundColor Yellow
             }
 
-            # Apply AccessScope if present
-            if ($accessScope) {
-                $ruleParams['AccessScope'] = $accessScope
-            }
+            $chunkIdx = 0
+            $allChunksOk = $true
+            $createdRuleNames = @()
+            foreach ($chunk in $sitChunks) {
+                $chunkIdx++
+                # Append chunk letter suffix for multi-chunk rules (a, b, c...)
+                $chunkSuffix = if ($sitChunks.Count -gt 1) { [char](96 + $chunkIdx) } else { '' }
+                $ruleName = "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wlCode, $labelCode, $namingSuffix, $chunkSuffix
 
-            # Apply ExceptIf conditions
-            foreach ($eiKey in $allExceptIf.Keys) {
-                $ruleParams[$eiKey] = $allExceptIf[$eiKey]
-            }
-
-            try {
-                if ($PSCmdlet.ShouldProcess($ruleName, "New-AutoSensitivityLabelRule")) {
-                    Invoke-WithRetry -OperationName "New-ALRule $ruleName" -ScriptBlock {
-                        $null = New-AutoSensitivityLabelRule @ruleParams -ErrorAction Stop
-                    } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                    Write-Host "    Rule created: $ruleName" -ForegroundColor Green
+                $chunkCCSI = [ordered]@{
+                    operator = 'And'
+                    groups   = @([ordered]@{
+                        operator       = 'Or'
+                        name           = 'Default'
+                        sensitivetypes = @($chunk)
+                    })
                 }
-                $successRules++
 
-                # Stamp source rules as executed
-                foreach ($sr in $wlRules) {
+                Write-Host "  Creating rule: $ruleName ($wl, $(@($chunk).Count) SITs)" -ForegroundColor Cyan
+
+                $ruleParams = @{
+                    Name                                  = $ruleName
+                    Policy                                = $policyName
+                    Workload                              = $wl
+                    ContentContainsSensitiveInformation    = $chunkCCSI
+                    Comment                               = $sourceComment
+                }
+
+                if ($accessScope) {
+                    $ruleParams['AccessScope'] = $accessScope
+                }
+                foreach ($eiKey in $allExceptIf.Keys) {
+                    $ruleParams[$eiKey] = $allExceptIf[$eiKey]
+                }
+
+                try {
+                    if ($PSCmdlet.ShouldProcess($ruleName, "New-AutoSensitivityLabelRule")) {
+                        Invoke-WithRetry -OperationName "New-ALRule $ruleName" -ScriptBlock {
+                            $null = New-AutoSensitivityLabelRule @ruleParams -ErrorAction Stop
+                        } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
+                        Write-Host "    Rule created: $ruleName" -ForegroundColor Green
+                    }
+                    $successRules++
+                    $createdRuleNames += $ruleName
+                } catch {
+                    Write-Warning "    Failed to create rule ${ruleName}: $($_.Exception.Message)"
+                    $failRules++
+                    $allChunksOk = $false
+                }
+
+                if (-not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
+            }
+
+            # Stamp source rules
+            foreach ($sr in $wlRules) {
+                if ($allChunksOk) {
                     $sr.executed = [ordered]@{
                         status     = "success"
                         policyName = $policyName
-                        ruleName   = $ruleName
+                        ruleName   = ($createdRuleNames -join ', ')
                         timestamp  = (Get-Date -Format 'o')
                     }
-                }
-            } catch {
-                Write-Warning "    Failed to create rule ${ruleName}: $($_.Exception.Message)"
-                $failRules++
-                foreach ($sr in $wlRules) {
+                } else {
                     $sr.executed = [ordered]@{
-                        status    = "failed"
-                        error     = $_.Exception.Message
+                        status    = "partial"
+                        policyName = $policyName
+                        ruleName  = ($createdRuleNames -join ', ')
+                        error     = "Some rule chunks failed"
                         timestamp = (Get-Date -Format 'o')
                     }
                 }
             }
-
-            if (-not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
         }
     }
     #endregion

@@ -493,6 +493,67 @@ Describe 'Merge-SITConditions' {
         $result = Merge-SITConditions -Sources @()
         $result.Merged | Should -BeNullOrEmpty
     }
+
+    It 'Handles PSCustomObject SIT entries from JSON deserialization' {
+        # Use 2 sources to trigger actual merge (single source passes through as-is)
+        $sit1 = [PSCustomObject]@{ id = 'guid-1'; name = 'SIT One'; mincount = '1'; maxcount = '-1'; confidencelevel = 'High' }
+        $sit2 = [PSCustomObject]@{ id = 'guid-2'; name = 'SIT Two'; mincount = '1'; maxcount = '-1'; confidencelevel = 'Medium' }
+        $source1 = @{
+            operator = 'And'
+            groups = @(@{
+                operator       = 'Or'
+                name           = 'Default'
+                sensitivetypes = @($sit1)
+            })
+        }
+        $source2 = @{
+            operator = 'And'
+            groups = @(@{
+                operator       = 'Or'
+                name           = 'Default'
+                sensitivetypes = @($sit2)
+            })
+        }
+
+        $result = Merge-SITConditions -Sources @($source1, $source2)
+        $merged = $result.Merged
+        $sits = $merged['groups'][0]['sensitivetypes']
+        $sits.Count | Should -Be 2
+        $sits[0]['id'] | Should -Be 'guid-1'
+        $sits[1]['id'] | Should -Be 'guid-2'
+    }
+
+    It 'Strips deprecated minconfidence and maxconfidence from merged SITs' {
+        # Use 2 sources to trigger actual merge
+        $sit1 = [PSCustomObject]@{
+            id = 'guid-1'; name = 'SIT One'
+            mincount = '1'; maxcount = '-1'
+            minconfidence = '85'; maxconfidence = '100'
+            confidencelevel = 'High'; classifiertype = 'Content'
+        }
+        $sit2 = [PSCustomObject]@{
+            id = 'guid-2'; name = 'SIT Two'
+            mincount = '1'; maxcount = '-1'
+            minconfidence = '65'; maxconfidence = '100'
+            confidencelevel = 'Medium'; classifiertype = 'Content'
+        }
+        $source1 = @{
+            operator = 'And'
+            groups = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @($sit1) })
+        }
+        $source2 = @{
+            operator = 'And'
+            groups = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @($sit2) })
+        }
+
+        $result = Merge-SITConditions -Sources @($source1, $source2)
+        $merged = $result.Merged
+        $mergedSit = $merged['groups'][0]['sensitivetypes'][0]
+        $mergedSit.Contains('minconfidence') | Should -Be $false
+        $mergedSit.Contains('maxconfidence') | Should -Be $false
+        $mergedSit['confidencelevel'] | Should -Be 'High'
+        $mergedSit['classifiertype'] | Should -Be 'Content'
+    }
 }
 
 #endregion

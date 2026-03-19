@@ -116,7 +116,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL01-OFFI-QGISCF-EXT-ADT",
+            "ruleName": "AL01-R03-ECH-OFFI-EXT-ADT",
+            "timestamp": "2026-03-19T16:20:05.7837976+10:00"
+          }
         },
         {
           "ruleName": "P02-R01-ODB-OFFI-EXT-ADT",
@@ -213,7 +218,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL01-OFFI-QGISCF-EXT-ADT",
+            "ruleName": "AL01-R01-ODB-OFFI-EXT-ADT",
+            "timestamp": "2026-03-19T16:19:05.8798359+10:00"
+          }
         },
         {
           "ruleName": "P03-R01-SPO-OFFI-EXT-ADT",
@@ -310,7 +320,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL01-OFFI-QGISCF-EXT-ADT",
+            "ruleName": "AL01-R02-SPO-OFFI-EXT-ADT",
+            "timestamp": "2026-03-19T16:19:34.7063905+10:00"
+          }
         }
       ],
       "totalSITs": 24,
@@ -1125,7 +1140,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R03a-ECH-SENS_Pvca-EXT-ADT, AL02-R03b-ECH-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:23:14.0969942+10:00"
+          }
         },
         {
           "ruleName": "P01-R03-ECH-SENS_Pvcb-EXT-ADT",
@@ -1922,7 +1942,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R03a-ECH-SENS_Pvca-EXT-ADT, AL02-R03b-ECH-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:23:14.0970508+10:00"
+          }
         },
         {
           "ruleName": "P02-R02-ODB-SENS_Pvca-EXT-ADT",
@@ -2719,7 +2744,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R01a-ODB-SENS_Pvca-EXT-ADT, AL02-R01b-ODB-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:21:01.8653159+10:00"
+          }
         },
         {
           "ruleName": "P02-R03-ODB-SENS_Pvcb-EXT-ADT",
@@ -3516,7 +3546,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R01a-ODB-SENS_Pvca-EXT-ADT, AL02-R01b-ODB-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:21:01.8653491+10:00"
+          }
         },
         {
           "ruleName": "P03-R02-SPO-SENS_Pvca-EXT-ADT",
@@ -4313,7 +4348,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R02a-SPO-SENS_Pvca-EXT-ADT, AL02-R02b-SPO-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:21:59.3640339+10:00"
+          }
         },
         {
           "ruleName": "P03-R03-SPO-SENS_Pvcb-EXT-ADT",
@@ -5110,7 +5150,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL02-SENS_Pvca-QGISCF-EXT-ADT",
+            "ruleName": "AL02-R02a-SPO-SENS_Pvca-EXT-ADT, AL02-R02b-SPO-SENS_Pvca-EXT-ADT",
+            "timestamp": "2026-03-19T16:21:59.3642497+10:00"
+          }
         }
       ],
       "totalSITs": 468,
@@ -5444,7 +5489,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL03-SENS_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL03-R03-ECH-SENS_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:24:51.3315745+10:00"
+          }
         },
         {
           "ruleName": "P02-R04-ODB-SENS_Fin-EXT-ADT",
@@ -5761,7 +5811,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL03-SENS_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL03-R01-ODB-SENS_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:23:51.3125909+10:00"
+          }
         },
         {
           "ruleName": "P03-R04-SPO-SENS_Fin-EXT-ADT",
@@ -6078,7 +6133,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL03-SENS_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL03-R02-SPO-SENS_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:24:19.6959286+10:00"
+          }
         }
       ],
       "totalSITs": 90,
@@ -6202,7 +6262,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL04-SENS_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL04-R03-ECH-SENS_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:26:22.8164492+10:00"
+          }
         },
         {
           "ruleName": "P02-R05-ODB-SENS_Leg-EXT-ADT",
@@ -6309,7 +6374,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL04-SENS_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL04-R01-ODB-SENS_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:25:27.4729657+10:00"
+          }
         },
         {
           "ruleName": "P03-R05-SPO-SENS_Leg-EXT-ADT",
@@ -6416,7 +6486,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL04-SENS_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL04-R02-SPO-SENS_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:25:55.1639278+10:00"
+          }
         }
       ],
       "totalSITs": 27,
@@ -6530,7 +6605,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL05-SENS_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL05-R03-ECH-SENS_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:27:48.9235355+10:00"
+          }
         },
         {
           "ruleName": "P02-R06-ODB-SENS_Law-EXT-ADT",
@@ -6627,7 +6707,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL05-SENS_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL05-R01-ODB-SENS_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:26:58.5782370+10:00"
+          }
         },
         {
           "ruleName": "P03-R06-SPO-SENS_Law-EXT-ADT",
@@ -6724,7 +6809,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL05-SENS_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL05-R02-SPO-SENS_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:27:23.4383879+10:00"
+          }
         }
       ],
       "totalSITs": 24,
@@ -6788,7 +6878,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL06-SENS_Gov-QGISCF-EXT-ADT",
+            "ruleName": "AL06-R03-ECH-SENS_Gov-EXT-ADT",
+            "timestamp": "2026-03-19T16:29:15.1889123+10:00"
+          }
         },
         {
           "ruleName": "P02-R07-ODB-SENS_Gov-EXT-ADT",
@@ -6835,7 +6930,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL06-SENS_Gov-QGISCF-EXT-ADT",
+            "ruleName": "AL06-R01-ODB-SENS_Gov-EXT-ADT",
+            "timestamp": "2026-03-19T16:28:23.8819052+10:00"
+          }
         },
         {
           "ruleName": "P03-R07-SPO-SENS_Gov-EXT-ADT",
@@ -6882,7 +6982,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL06-SENS_Gov-QGISCF-EXT-ADT",
+            "ruleName": "AL06-R02-SPO-SENS_Gov-EXT-ADT",
+            "timestamp": "2026-03-19T16:28:47.8660777+10:00"
+          }
         }
       ],
       "totalSITs": 9,
@@ -7216,7 +7321,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL07-SENS_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL07-R03-ECH-SENS_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:30:46.1108255+10:00"
+          }
         },
         {
           "ruleName": "P02-R08-ODB-SENS_IT-EXT-ADT",
@@ -7533,7 +7643,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL07-SENS_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL07-R01-ODB-SENS_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:29:51.0694528+10:00"
+          }
         },
         {
           "ruleName": "P03-R08-SPO-SENS_IT-EXT-ADT",
@@ -7850,7 +7965,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL07-SENS_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL07-R02-SPO-SENS_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:30:17.6096053+10:00"
+          }
         }
       ],
       "totalSITs": 90,
@@ -7944,7 +8064,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL08-PROT_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL08-R03-ECH-PROT_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:32:09.8630190+10:00"
+          }
         },
         {
           "ruleName": "P02-R09-ODB-PROT_Fin-EXT-ADT",
@@ -8021,7 +8146,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL08-PROT_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL08-R01-ODB-PROT_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:31:18.6007110+10:00"
+          }
         },
         {
           "ruleName": "P03-R09-SPO-PROT_Fin-EXT-ADT",
@@ -8098,7 +8228,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL08-PROT_Fin-QGISCF-EXT-ADT",
+            "ruleName": "AL08-R02-SPO-PROT_Fin-EXT-ADT",
+            "timestamp": "2026-03-19T16:31:44.7408197+10:00"
+          }
         }
       ],
       "totalSITs": 18,
@@ -8152,7 +8287,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL09-PROT_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL09-R03-ECH-PROT_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:33:42.7098733+10:00"
+          }
         },
         {
           "ruleName": "P02-R10-ODB-PROT_Leg-EXT-ADT",
@@ -8189,7 +8329,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL09-PROT_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL09-R01-ODB-PROT_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:32:46.1760398+10:00"
+          }
         },
         {
           "ruleName": "P03-R10-SPO-PROT_Leg-EXT-ADT",
@@ -8226,7 +8371,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL09-PROT_Leg-QGISCF-EXT-ADT",
+            "ruleName": "AL09-R02-SPO-PROT_Leg-EXT-ADT",
+            "timestamp": "2026-03-19T16:33:14.7713476+10:00"
+          }
         }
       ],
       "totalSITs": 6,
@@ -8350,7 +8500,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL10-PROT_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL10-R03-ECH-PROT_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:35:06.4641435+10:00"
+          }
         },
         {
           "ruleName": "P02-R11-ODB-PROT_Law-EXT-ADT",
@@ -8457,7 +8612,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL10-PROT_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL10-R01-ODB-PROT_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:34:14.8484055+10:00"
+          }
         },
         {
           "ruleName": "P03-R11-SPO-PROT_Law-EXT-ADT",
@@ -8564,7 +8724,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL10-PROT_Law-QGISCF-EXT-ADT",
+            "ruleName": "AL10-R02-SPO-PROT_Law-EXT-ADT",
+            "timestamp": "2026-03-19T16:34:41.4069699+10:00"
+          }
         }
       ],
       "totalSITs": 27,
@@ -9278,7 +9443,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL11-PROT_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL11-R03-ECH-PROT_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:36:55.8025186+10:00"
+          }
         },
         {
           "ruleName": "P02-R12-ODB-PROT_IT-EXT-ADT",
@@ -9975,7 +10145,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL11-PROT_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL11-R01-ODB-PROT_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:35:51.3808964+10:00"
+          }
         },
         {
           "ruleName": "P03-R12-SPO-PROT_IT-EXT-ADT",
@@ -10672,7 +10847,12 @@
             "exceptIf": {},
             "dropped": []
           },
-          "executed": null
+          "executed": {
+            "status": "success",
+            "policyName": "AL11-PROT_IT-QGISCF-EXT-ADT",
+            "ruleName": "AL11-R02-SPO-PROT_IT-EXT-ADT",
+            "timestamp": "2026-03-19T16:36:21.0815533+10:00"
+          }
         }
       ],
       "totalSITs": 204,
@@ -11139,9 +11319,9 @@
     }
   ],
   "ExecutionSummary": {
-    "executedAt": null,
-    "policiesCreated": 0,
-    "rulesCreated": 0,
+    "executedAt": "2026-03-19T16:36:55.8057617+10:00",
+    "policiesCreated": 11,
+    "rulesCreated": 36,
     "failures": 0
   }
 }

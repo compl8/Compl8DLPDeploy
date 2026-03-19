@@ -647,6 +647,13 @@ function Merge-SITConditions {
                     $minCount = if ($sit.Contains('mincount')) { $sit['mincount'] } elseif ($sit.Contains('minCount')) { $sit['minCount'] } elseif ($sit.Contains('Mincount')) { $sit['Mincount'] } else { $null }
                     $maxCount = if ($sit.Contains('maxcount')) { $sit['maxcount'] } elseif ($sit.Contains('maxCount')) { $sit['maxCount'] } elseif ($sit.Contains('Maxcount')) { $sit['Maxcount'] } else { $null }
                     $confidence = if ($sit.Contains('confidencelevel')) { $sit['confidencelevel'] } elseif ($sit.Contains('confidenceLevel')) { $sit['confidenceLevel'] } else { $null }
+                } elseif ($sit -is [PSCustomObject]) {
+                    # Handle JSON-deserialized objects (from ConvertFrom-Json)
+                    $id = if ($sit.PSObject.Properties['id']) { $sit.id } elseif ($sit.PSObject.Properties['Id']) { $sit.Id } else { $null }
+                    $name = if ($sit.PSObject.Properties['name']) { $sit.name } elseif ($sit.PSObject.Properties['Name']) { $sit.Name } else { $null }
+                    $minCount = if ($sit.PSObject.Properties['mincount']) { $sit.mincount } elseif ($sit.PSObject.Properties['minCount']) { $sit.minCount } else { $null }
+                    $maxCount = if ($sit.PSObject.Properties['maxcount']) { $sit.maxcount } elseif ($sit.PSObject.Properties['maxCount']) { $sit.maxCount } else { $null }
+                    $confidence = if ($sit.PSObject.Properties['confidencelevel']) { $sit.confidencelevel } elseif ($sit.PSObject.Properties['confidenceLevel']) { $sit.confidenceLevel } else { $null }
                 }
 
                 if (-not $id) { continue }
@@ -676,12 +683,26 @@ function Merge-SITConditions {
                         $notes.Add("Duplicate SIT '$name' ($id): merged with most permissive values")
                     }
                 } else {
+                    # Preserve all SIT properties (id, name, mincount, maxcount,
+                    # minconfidence, maxconfidence, classifiertype, confidencelevel)
                     $sitEntry = [ordered]@{}
-                    if ($name) { $sitEntry['name'] = $name }
-                    if ($id) { $sitEntry['id'] = $id }
-                    if ($null -ne $minCount) { $sitEntry['mincount'] = [int]$minCount }
-                    if ($null -ne $maxCount) { $sitEntry['maxcount'] = [int]$maxCount }
-                    if ($confidence) { $sitEntry['confidencelevel'] = $confidence }
+                    $propSource = $null
+                    if ($sit -is [hashtable] -or $sit -is [System.Collections.Specialized.OrderedDictionary]) {
+                        $propSource = $sit.GetEnumerator()
+                    } elseif ($sit -is [PSCustomObject]) {
+                        $propSource = $sit.PSObject.Properties | ForEach-Object { [System.Collections.DictionaryEntry]::new($_.Name, $_.Value) }
+                    }
+                    if ($propSource) {
+                        foreach ($kv in $propSource) {
+                            $sitEntry[$kv.Key] = $kv.Value
+                        }
+                    }
+                    # Ensure string types for count fields (Purview API expects strings)
+                    if ($sitEntry.Contains('mincount') -and $null -ne $sitEntry['mincount']) { $sitEntry['mincount'] = "$($sitEntry['mincount'])" }
+                    if ($sitEntry.Contains('maxcount') -and $null -ne $sitEntry['maxcount']) { $sitEntry['maxcount'] = "$($sitEntry['maxcount'])" }
+                    # Strip deprecated minconfidence/maxconfidence (replaced by confidencelevel)
+                    $sitEntry.Remove('minconfidence') | Out-Null
+                    $sitEntry.Remove('maxconfidence') | Out-Null
                     $sitIndex[$id] = $sitEntry
                 }
             }
