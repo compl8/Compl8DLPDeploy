@@ -197,6 +197,80 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 
 > **Note:** To use trainable classifiers (MLModel type) in DLP rules, retrieve their GUIDs from your tenant using `Get-DlpSensitiveInformationType` and add them to `classifiers.json` with `"classifierType": "MLModel"`.
 
+## Naming Convention
+
+All tenant resources are named using a consistent convention driven by `namingPrefix` and `namingSuffix` in `config/settings.json`. **You must change these before deploying to a customer environment** — the scripts will prompt if they detect default values.
+
+### Key Settings
+
+| Setting | Default | Purpose | Example |
+|---------|---------|---------|---------|
+| `namingPrefix` | `DLP` | Identifies your deployment across all resource types | `QGISCF`, `NZISM`, `ACME` |
+| `namingSuffix` | `EXT-ADT` | Encodes deployment mode | `EXT-ADT`, `INT-BLK` |
+| `publisher` | (empty) | Publisher name on SIT rule packages | `Queensland Government CSU` |
+| `labelPolicyName` | `DLP-Label-Policy` | Name of the sensitivity label publishing policy | `QGISCF-Label-Policy` |
+
+The suffix encodes two things: **scoping** (`EXT` = external/outbound, `INT` = internal) and **enforcement mode** (`ADT` = audit, `NFY` = notify, `BLK` = block).
+
+### Resource Naming Patterns
+
+Given `namingPrefix = QGISCF` and `namingSuffix = EXT-ADT`:
+
+**DLP Policies** — `P{NN}-{WorkloadCode}-{Prefix}-{Suffix}`
+```
+P01-ECH-QGISCF-EXT-ADT
+│   │     │      │
+│   │     │      └── Suffix: external scoping, audit mode
+│   │     └── Prefix: deployment/framework identifier
+│   └── Workload code from policies.json (ECH, ODB, SPO, END, TMS)
+└── Policy number from policies.json (01-05)
+```
+
+**DLP Rules** — `P{NN}-R{RR}-{WorkloadCode}-{LabelCode}-{Suffix}`
+```
+P01-R03-ECH-SENS_Fin-EXT-ADT       (single chunk)
+P01-R01a-ECH-SENS_Pvca-EXT-ADT     (chunk "a" when >125 SITs split)
+│    │  │  │     │        │
+│    │  │  │     │        └── Suffix
+│    │  │  │     └── Target label code from labels.json
+│    │  │  └── Workload code
+│    │  └── Chunk letter (a, b, c...) — only when a label has >125 SITs
+│    └── Rule number within the policy
+└── Policy number
+```
+
+**Auto-Labeling Policies** — `AL{NN}-{LabelCode}-{Prefix}-{Suffix}`
+```
+AL01-OFFI-QGISCF-EXT-ADT
+│     │      │       │
+│     │      │       └── Suffix
+│     │      └── Prefix
+│     └── Target label code
+└── Sequential policy number
+```
+
+**Auto-Labeling Rules** — `AL{NN}-R{RR}-{WorkloadCode}-{LabelCode}-{Suffix}`
+```
+AL01-R01-ECH-OFFI-EXT-ADT
+```
+
+**SIT Rule Packages** — `{Prefix}-{Tier}-{NN}`
+```
+QGISCF-medium-01        QGISCF-medium-07a
+│        │     │         │        │     │└── Split suffix (a/b when oversized)
+│        │     │         │        │     └── Package number
+│        │     └── Package number
+│        └── Deployment tier (narrow, medium, full)
+└── Prefix from settings.json
+```
+
+**Label Publishing Policy** — configured directly via `labelPolicyName`
+```
+QGISCF-Label-Policy
+```
+
+**Keyword Dictionaries** — named by the testpattern.dev export API, prefixed with `namingPrefix` for cleanup identification.
+
 ## Configuration
 
 All deployment behaviour is driven by JSON config files:

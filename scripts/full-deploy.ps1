@@ -39,6 +39,7 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 $Defaults    = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
+if (-not (Assert-ConfigCustomised -Config $Config)) { return }
 $cleanupPrefix = $Config.namingPrefix
 
 # ── Connect ──────────────────────────────────────────────────────────────────
@@ -122,8 +123,7 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     # Keyword dictionaries
     Write-Host "  Removing keyword dictionaries..." -ForegroundColor Yellow
     try {
-        $dictPrefix = if ($Config.dictionaryPrefix) { $Config.dictionaryPrefix } else { $Config.namingPrefix }
-        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$dictPrefix*" }
+        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$($Config.namingPrefix)*" }
         $dictRemoved = 0
         foreach ($d in $dicts) {
             Write-Host "    $($d.Name)" -ForegroundColor Yellow

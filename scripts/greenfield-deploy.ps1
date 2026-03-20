@@ -28,6 +28,7 @@ Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 $Defaults = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
+if (-not (Assert-ConfigCustomised -Config $Config)) { return }
 $prefix = $Config.namingPrefix
 
 Write-Host "`n============================================================" -ForegroundColor Cyan

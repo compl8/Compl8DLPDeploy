@@ -145,6 +145,46 @@ function Merge-GlobalConfig {
     }
     return $merged
 }
+
+function Assert-ConfigCustomised {
+    <#
+    .SYNOPSIS
+        Warns if critical settings are still at module defaults.
+        Call after Merge-GlobalConfig to prompt users to customise settings.json.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $defaults = @{
+        namingPrefix    = "DLP"
+        publisher       = ""
+        labelPolicyName = "DLP-Label-Policy"
+    }
+    $warnings = @()
+    foreach ($key in $defaults.Keys) {
+        if ($Config[$key] -eq $defaults[$key]) {
+            $warnings += $key
+        }
+    }
+    if ($warnings.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  WARNING: The following settings in config/settings.json are still at defaults:" -ForegroundColor Red
+        foreach ($w in $warnings) {
+            $current = if ($Config[$w]) { $Config[$w] } else { "(empty)" }
+            Write-Host "    $w = $current" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "  These control how your policies, rules, and packages are named in the tenant." -ForegroundColor Yellow
+        Write-Host "  Update config/settings.json before deploying to a customer environment." -ForegroundColor Yellow
+        Write-Host ""
+
+        $continue = Read-Host "  Continue with default settings? (yes/no)"
+        if ($continue -ne "yes") {
+            Write-Host "  Aborted. Edit config/settings.json and re-run." -ForegroundColor Red
+            return $false
+        }
+    }
+    return $true
+}
 #endregion
 
 #region Config Resolution
@@ -785,6 +825,7 @@ Export-ModuleMember -Function @(
     'Disconnect-DLPSession'
     'Import-JsonConfig'
     'Merge-GlobalConfig'
+    'Assert-ConfigCustomised'
     'Resolve-PolicyConfig'
     'Resolve-ClassifierConfig'
     'Resolve-LabelConfig'

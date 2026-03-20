@@ -20,6 +20,7 @@
         'Disconnect-DLPSession'
         'Import-JsonConfig'
         'Merge-GlobalConfig'
+        'Assert-ConfigCustomised'
         'Resolve-PolicyConfig'
         'Resolve-ClassifierConfig'
         'Resolve-LabelConfig'
