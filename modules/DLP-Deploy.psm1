@@ -537,8 +537,14 @@ function Invoke-WithRetry {
             $isTransient = $msg -match "Object reference not set"
             $isDeleteCooldown = $msg -match "DeleteRetryInterval" -or
                                 $msg -match "retry after (\d+) min"
+            $isPendingDeletion = $msg -match "PendingDeletion" -or
+                                 $msg -match "pending deletion"
 
-            if ($isDeleteCooldown -and $attempt -le $MaxRetries) {
+            if ($isPendingDeletion) {
+                # Already being deleted — treat as success, not an error
+                Write-Host "    (already pending deletion, skipping)" -ForegroundColor DarkGray
+                return
+            } elseif ($isDeleteCooldown -and $attempt -le $MaxRetries) {
                 # Purview enforces a 60-min cooldown between delete attempts on the same rule.
                 # Extract the wait time from the message if possible.
                 $waitMin = 60
