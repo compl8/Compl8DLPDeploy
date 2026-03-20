@@ -57,23 +57,21 @@ Write-Host $divider
 #region 1. Keyword Dictionaries
 Write-Host ""
 Write-Host $divider
-Write-Host "  SECTION 1: KEYWORD DICTIONARIES (TestPattern-*)"
+Write-Host "  SECTION 1: KEYWORD DICTIONARIES"
 Write-Host $divider
 
 try {
-    $allDicts = @(Get-DlpKeywordDictionary -ErrorAction Stop)
-    $tpDicts = @($allDicts | Where-Object { $_.Name -like "TestPattern-*" } | Sort-Object Name)
+    $allDicts = @(Get-DlpKeywordDictionary -ErrorAction Stop | Sort-Object Name)
 
     Write-Host ""
     Write-Host "  Total keyword dictionaries in tenant: $($allDicts.Count)"
-    Write-Host "  TestPattern-* dictionaries:           $($tpDicts.Count)"
 
-    if ($tpDicts.Count -eq 0) {
+    if ($allDicts.Count -eq 0) {
         Write-Host ""
         Write-Host "  (none found)" -ForegroundColor Yellow
     }
 
-    foreach ($dict in $tpDicts) {
+    foreach ($dict in $allDicts) {
         Write-Host ""
         Write-Host "  $subDivider"
         Write-Host "  Dictionary: $($dict.Name)"

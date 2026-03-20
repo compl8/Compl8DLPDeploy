@@ -122,7 +122,8 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     # Keyword dictionaries
     Write-Host "  Removing keyword dictionaries..." -ForegroundColor Yellow
     try {
-        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "TestPattern*" }
+        $dictPrefix = if ($Config.dictionaryPrefix) { $Config.dictionaryPrefix } else { $Config.namingPrefix }
+        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$dictPrefix*" }
         $dictRemoved = 0
         foreach ($d in $dicts) {
             Write-Host "    $($d.Name)" -ForegroundColor Yellow
