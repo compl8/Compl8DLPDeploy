@@ -16,6 +16,8 @@
 #   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers   # Packages only
 #   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules      # Rules only
 #   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup       # Teardown only
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels  # Teardown, keep labels
+#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -SkipLabels         # Nuke & redeploy, keep labels
 #==============================================================================
 
 param(
@@ -25,6 +27,7 @@ param(
     [Parameter(Mandatory)][string]$PublishTo,
     [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
+    [switch]$SkipLabels,
     [switch]$Force,
     [switch]$WhatIf
 )
@@ -54,8 +57,43 @@ Write-Host "  Connected.`n" -ForegroundColor Green
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     Write-Host "=== Cleanup: Removing existing deployment ===" -ForegroundColor Cyan
+    if ($SkipLabels) { Write-Host "  (Labels and label policy will be preserved)" -ForegroundColor Gray }
 
-    # Rules first (they block policy deletion)
+    # Auto-labeling rules and policies
+    Write-Host "  Removing auto-labeling policies..." -ForegroundColor Yellow
+    try {
+        $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "AL*-$($cleanupPrefix)-$($Config.namingSuffix)" })
+        foreach ($alp in $alPolicies) {
+            $alRules = @()
+            try { $alRules = @(Get-AutoSensitivityLabelRule -Policy $alp.Name -ErrorAction SilentlyContinue) } catch { }
+            foreach ($alr in $alRules) {
+                Write-Host "    Rule: $($alr.Name)" -ForegroundColor Yellow
+                if (-not $WhatIf) {
+                    try {
+                        Invoke-WithRetry -OperationName "Remove-ALRule $($alr.Name)" -ScriptBlock {
+                            Remove-AutoSensitivityLabelRule -Identity $alr.Name -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries 2 -BaseDelaySec 30
+                    } catch { Write-Warning "  Could not remove AL rule $($alr.Name): $($_.Exception.Message)" }
+                    Start-Sleep 2
+                }
+            }
+            Write-Host "    Policy: $($alp.Name)" -ForegroundColor Yellow
+            if (-not $WhatIf) {
+                if ($alRules.Count -gt 0) { Start-Sleep -Seconds $Config.interCallDelaySec }
+                try {
+                    Invoke-WithRetry -OperationName "Remove-ALPolicy $($alp.Name)" -ScriptBlock {
+                        Remove-AutoSensitivityLabelPolicy -Identity $alp.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                } catch { Write-Warning "  Could not remove AL policy $($alp.Name): $($_.Exception.Message)" }
+                Start-Sleep 3
+            }
+        }
+        if ($alPolicies.Count -gt 0) { Write-Host "    Removed $($alPolicies.Count) auto-labeling policy(ies)" -ForegroundColor Green }
+        else { Write-Host "    No matching auto-labeling policies found." -ForegroundColor Gray }
+    } catch { Write-Warning "Auto-labeling: $_" }
+
+    # DLP rules first (they block policy deletion)
     Write-Host "  Removing DLP rules..." -ForegroundColor Yellow
     try {
         $rules = Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" }
@@ -163,45 +201,49 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         if ($dictRemoved -gt 0) { Write-Host "    Removed $dictRemoved dictionary(ies)" -ForegroundColor Green }
     } catch { Write-Warning "Dictionaries: $_" }
 
-    # Label policy
-    Write-Host "  Removing label policy..." -ForegroundColor Yellow
-    try {
-        $labelPolicies = Get-LabelPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -eq $Config.labelPolicyName }
-        foreach ($lp in $labelPolicies) {
-            Write-Host "    $($lp.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
-                        Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
-                Start-Sleep 3
-            }
-        }
-    } catch { Write-Warning "Label policy: $_" }
-
-    # Labels (sublabels first, then parents)
-    Write-Host "  Removing labels..." -ForegroundColor Yellow
-    try {
-        $labels = Get-Label -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)"
-        }
-        if ($labels) {
-            $sublabels = $labels | Where-Object { $_.ParentId } | Sort-Object { $_.Priority } -Descending
-            $topLabels = $labels | Where-Object { -not $_.ParentId } | Sort-Object { $_.Priority } -Descending
-            foreach ($l in @($sublabels) + @($topLabels)) {
-                Write-Host "    $($l.Name)" -ForegroundColor Yellow
+    if (-not $SkipLabels) {
+        # Label policy
+        Write-Host "  Removing label policy..." -ForegroundColor Yellow
+        try {
+            $labelPolicies = Get-LabelPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -eq $Config.labelPolicyName }
+            foreach ($lp in $labelPolicies) {
+                Write-Host "    $($lp.Name)" -ForegroundColor Yellow
                 if (-not $WhatIf) {
                     try {
-                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
-                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
+                        Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
+                            Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
                         } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
-                    Start-Sleep 2
+                    } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
+                    Start-Sleep 3
                 }
             }
-        }
-    } catch { Write-Warning "Labels: $_" }
+        } catch { Write-Warning "Label policy: $_" }
+
+        # Labels (sublabels first, then parents)
+        Write-Host "  Removing labels..." -ForegroundColor Yellow
+        try {
+            $labels = Get-Label -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)"
+            }
+            if ($labels) {
+                $sublabels = $labels | Where-Object { $_.ParentId } | Sort-Object { $_.Priority } -Descending
+                $topLabels = $labels | Where-Object { -not $_.ParentId } | Sort-Object { $_.Priority } -Descending
+                foreach ($l in @($sublabels) + @($topLabels)) {
+                    Write-Host "    $($l.Name)" -ForegroundColor Yellow
+                    if (-not $WhatIf) {
+                        try {
+                            Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
+                                Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
+                            } -MaxRetries 2 -BaseDelaySec 30
+                        } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
+                        Start-Sleep 2
+                    }
+                }
+            }
+        } catch { Write-Warning "Labels: $_" }
+    } else {
+        Write-Host "  Skipping label and label policy removal (-SkipLabels)" -ForegroundColor DarkGray
+    }
 
     Write-Host "  Waiting 2 minutes for Purview cleanup propagation..." -ForegroundColor Gray
     Write-Host "  Note: Labels may take hours/days to fully purge. SIT packages and rules take minutes." -ForegroundColor Gray
@@ -215,7 +257,7 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
 }
 
 # ── Phase 1: Labels ──────────────────────────────────────────────────────────
-if ($Phase -eq "All" -or $Phase -eq "Labels") {
+if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
     Write-Host "=== Phase 1: Deploying Labels ===" -ForegroundColor Cyan
     if ($WhatIf) {
         & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") -PublishTo $PublishTo -WhatIf
