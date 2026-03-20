@@ -609,8 +609,16 @@ function Sync-DlpKeywordDictionaries {
     }
 
     foreach ($dict in $manifest.dictionaries) {
-        $terms = $dict.terms -join "`n"
-        $bytes = [System.Text.Encoding]::Unicode.GetBytes($terms)
+        # Write terms to temp file and read back as bytes (includes UTF-16LE BOM).
+        # Direct [System.Text.Encoding]::Unicode.GetBytes() produces BOM-less bytes
+        # that are truncated to 1 char by the REST-based ExchangeOnlineManagement module.
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $dict.terms | Set-Content -Path $tempFile -Encoding Unicode
+            $bytes = [System.IO.File]::ReadAllBytes($tempFile)
+        } finally {
+            Remove-Item $tempFile -ErrorAction SilentlyContinue
+        }
 
         if ($WhatIf) {
             Write-Host "  [WHATIF] $($dict.name) ($($dict.terms.Count) terms)"
@@ -620,8 +628,15 @@ function Sync-DlpKeywordDictionaries {
 
         $guid = $null
         if ($existingDicts.ContainsKey($dict.name)) {
+            # Update existing dictionary with correct content
             $guid = $existingDicts[$dict.name]
-            Write-Host "  Exists: $($dict.name) [$guid]"
+            try {
+                Set-DlpKeywordDictionary -Identity $dict.name -FileData $bytes -Confirm:$false -ErrorAction Stop
+                Write-Host "  Updated: $($dict.name) ($($dict.terms.Count) terms) [$guid]"
+            } catch {
+                Write-Warning "  Failed to update $($dict.name): $($_.Exception.Message)"
+                Write-Host "  Exists: $($dict.name) [$guid]"
+            }
         } else {
             try {
                 $result = Invoke-WithRetry -OperationName "New-Dictionary $($dict.name)" -ScriptBlock {
