@@ -59,26 +59,14 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     Write-Host "=== Cleanup: Removing existing deployment ===" -ForegroundColor Cyan
     if ($SkipLabels) { Write-Host "  (Labels and label policy will be preserved)" -ForegroundColor Gray }
 
-    # Auto-labeling rules and policies
+    # Auto-labeling policies (cascade-deletes their rules)
     Write-Host "  Removing auto-labeling policies..." -ForegroundColor Yellow
     try {
         Write-Host "    Querying tenant for auto-labeling policies..." -ForegroundColor Gray
         $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like "AL*-$($cleanupPrefix)-$($Config.namingSuffix)" })
-        Write-Host "    Found $($alPolicies.Count) policy(ies) to process" -ForegroundColor Gray
-
-        # Collect all AL rules across all policies for batch removal
-        $allAlRules = @()
-        foreach ($alp in $alPolicies) {
-            try { $allAlRules += @(Get-AutoSensitivityLabelRule -Policy $alp.Name -ErrorAction SilentlyContinue) } catch { }
-        }
-        if ($allAlRules.Count -gt 0) {
-            Write-Host "    Removing $($allAlRules.Count) auto-labeling rules..." -ForegroundColor Yellow
-            $null = Remove-PurviewObjects -Objects $allAlRules -RemoveCommand "Remove-AutoSensitivityLabelRule" `
-                -OperationName "AL rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-        }
+        Write-Host "    Found $($alPolicies.Count) policy(ies)" -ForegroundColor Gray
         if ($alPolicies.Count -gt 0) {
-            Write-Host "    Removing $($alPolicies.Count) auto-labeling policies..." -ForegroundColor Yellow
             $null = Remove-PurviewObjects -Objects $alPolicies -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
                 -OperationName "AL policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
         } else {
@@ -86,24 +74,12 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         }
     } catch { Write-Warning "Auto-labeling: $_" }
 
-    # DLP rules first (they block policy deletion)
-    Write-Host "  Removing DLP rules..." -ForegroundColor Yellow
-    try {
-        Write-Host "    Querying tenant for DLP rules..." -ForegroundColor Gray
-        $rules = @(Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" })
-        Write-Host "    Found $($rules.Count) rule(s) to process" -ForegroundColor Gray
-        if ($rules.Count -gt 0) {
-            $null = Remove-PurviewObjects -Objects $rules -RemoveCommand "Remove-DlpComplianceRule" `
-                -OperationName "DLP rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-        }
-    } catch { Write-Warning "Rules: $_" }
-
-    # DLP policies
+    # DLP policies (cascade-deletes their rules)
     Write-Host "  Removing DLP policies..." -ForegroundColor Yellow
     try {
         Write-Host "    Querying tenant for DLP policies..." -ForegroundColor Gray
         $policies = @(Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" })
-        Write-Host "    Found $($policies.Count) policy(ies) to process" -ForegroundColor Gray
+        Write-Host "    Found $($policies.Count) policy(ies)" -ForegroundColor Gray
         if ($policies.Count -gt 0) {
             $null = Remove-PurviewObjects -Objects $policies -RemoveCommand "Remove-DlpCompliancePolicy" `
                 -OperationName "DLP policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf

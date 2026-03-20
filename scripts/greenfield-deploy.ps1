@@ -48,29 +48,13 @@ if (-not $SkipCleanup) {
     Write-Host "=== Phase 0: Cleanup ===" -ForegroundColor Cyan
     $cleanupNeeded = $false
 
-    # DLP rules first
-    $rules = Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$prefix*" -or $_.Name -like "P0*-R0*" }
-    if ($rules) {
-        $cleanupNeeded = $true
-        Write-Host "  Removing $($rules.Count) DLP rules..."
-        foreach ($r in $rules) {
-            Remove-PurviewObject -Identity $r.Name `
-                -GetCommand "Get-DlpComplianceRule" `
-                -RemoveCommand "Remove-DlpComplianceRule" `
-                -OperationName "DLP rule" `
-                -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-            if (-not $WhatIf) { Start-Sleep 1 }
-        }
-    }
-
-    # DLP policies
+    # DLP policies (cascade-deletes their rules)
     $policies = Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$prefix*" -or $_.Name -like "P0*-*" }
     if ($policies) {
         $cleanupNeeded = $true
-        Write-Host "  Removing $($policies.Count) DLP policies..."
+        Write-Host "  Removing $($policies.Count) DLP policies (rules cascade-deleted)..."
         foreach ($p in $policies) {
-            Remove-PurviewObject -Identity $p.Name `
-                -GetCommand "Get-DlpCompliancePolicy" `
+            Remove-PurviewObject -Identity $p.Name -InputObject $p `
                 -RemoveCommand "Remove-DlpCompliancePolicy" `
                 -OperationName "DLP policy" `
                 -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
