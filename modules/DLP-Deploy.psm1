@@ -628,29 +628,40 @@ function Invoke-WithRetry {
                 $delaySec = $waitMin * 60
                 $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
                 Write-Host ""
-                Write-Warning "Purview delete cooldown on: $OperationName"
-                Write-Warning "  Error: $msg"
-                Write-Warning "  Retry $attempt of $MaxRetries - waiting ${waitMin} min - resuming at $resumeTime"
+                Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor DarkYellow
+                Write-Host "  │  PAUSED — Purview delete cooldown                           │" -ForegroundColor DarkYellow
+                Write-Host "  │  Operation: $($OperationName.PadRight(47))│" -ForegroundColor DarkYellow
+                Write-Host "  │  Waiting:   ${waitMin} minutes (Purview enforces 60-min gap)       │" -ForegroundColor DarkYellow
+                Write-Host "  │  Resuming:  $($resumeTime.PadRight(47))│" -ForegroundColor DarkYellow
+                Write-Host "  │  Attempt:   $attempt of $MaxRetries                                        │" -ForegroundColor DarkYellow
+                Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor DarkYellow
                 Write-Host ""
                 Start-Sleep -Seconds $delaySec
+                Write-Host "  Resuming operations..." -ForegroundColor Cyan
             } elseif ($isThrottle -and $attempt -le $MaxRetries) {
                 $delaySec = $BaseDelaySec * $attempt
                 $delayMin = [math]::Round($delaySec / 60, 0)
                 $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
                 Write-Host ""
-                Write-Warning "Purview API throttle detected on: $OperationName"
-                Write-Warning "  Error: $msg"
-                Write-Warning "  Retry $attempt of $MaxRetries - waiting ${delayMin} min (${delaySec}s) - resuming at $resumeTime"
+                Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor DarkYellow
+                Write-Host "  │  PAUSED — Purview API throttle                              │" -ForegroundColor DarkYellow
+                Write-Host "  │  Operation: $($OperationName.PadRight(47))│" -ForegroundColor DarkYellow
+                Write-Host "  │  Waiting:   ${delayMin} min (${delaySec}s backoff)                           │" -ForegroundColor DarkYellow
+                Write-Host "  │  Resuming:  $($resumeTime.PadRight(47))│" -ForegroundColor DarkYellow
+                Write-Host "  │  Attempt:   $attempt of $MaxRetries                                        │" -ForegroundColor DarkYellow
+                Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor DarkYellow
                 Write-Host ""
                 Start-Sleep -Seconds $delaySec
+                Write-Host "  Resuming operations..." -ForegroundColor Cyan
             } elseif ($isTransient -and $attempt -le 2) {
                 $delaySec = 30 * $attempt
+                $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
                 Write-Host ""
-                Write-Warning "Transient server error on: $OperationName"
-                Write-Warning "  Error: $msg"
-                Write-Warning "  Retry $attempt of 2 - waiting ${delaySec}s"
+                Write-Host "  PAUSED — Transient server error on: $OperationName" -ForegroundColor DarkYellow
+                Write-Host "  Waiting ${delaySec}s, resuming at $resumeTime (retry $attempt of 2)" -ForegroundColor DarkYellow
                 Write-Host ""
                 Start-Sleep -Seconds $delaySec
+                Write-Host "  Resuming operations..." -ForegroundColor Cyan
             } else {
                 throw
             }
