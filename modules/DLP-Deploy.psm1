@@ -532,27 +532,34 @@ function Remove-PurviewObject {
     #>
     param(
         [Parameter(Mandatory)][string]$Identity,
-        [Parameter(Mandatory)][string]$GetCommand,
+        [string]$GetCommand,
         [Parameter(Mandatory)][string]$RemoveCommand,
+        [object]$InputObject,
         [string]$OperationName = "object",
         [int]$MaxRetries = 3,
         [int]$BaseDelaySec = 300,
         [switch]$WhatIf
     )
 
-    # Step 1: Check if the object exists and inspect its state
-    $obj = $null
-    try {
-        $obj = & $GetCommand -Identity $Identity -ErrorAction Stop
-    } catch {
-        $msg = $_.Exception.Message
-        if ($msg -match "couldn't be found" -or $msg -match "not found" -or $msg -match "does not exist") {
-            Write-Host "    (not found, skipping): $Identity" -ForegroundColor DarkGray
-            return "not-found"
+    # Step 1: Check if the object exists and inspect its state.
+    # If caller already has the object (from a prior listing), skip the Get call.
+    $obj = $InputObject
+    if (-not $obj) {
+        if (-not $GetCommand) {
+            Write-Warning "  No -InputObject or -GetCommand provided for $OperationName ${Identity}"
+            return "failed"
         }
-        # If the Get itself failed for another reason, log and skip
-        Write-Warning "  Could not query $OperationName ${Identity}: $msg"
-        return "failed"
+        try {
+            $obj = & $GetCommand -Identity $Identity -ErrorAction Stop
+        } catch {
+            $msg = $_.Exception.Message
+            if ($msg -match "couldn't be found" -or $msg -match "not found" -or $msg -match "does not exist") {
+                Write-Host " -> not found, skipped" -ForegroundColor DarkGray
+                return "not-found"
+            }
+            Write-Warning "  Could not query $OperationName ${Identity}: $msg"
+            return "failed"
+        }
     }
 
     if (-not $obj) {
@@ -567,13 +574,13 @@ function Remove-PurviewObject {
     if ($obj.PSObject.Properties['State'] -and $obj.State -eq 'PendingDeletion') { $isPending = $true }
 
     if ($isPending) {
-        Write-Host "    (pending deletion, skipping): $Identity" -ForegroundColor DarkGray
+        Write-Host " -> pending deletion, skipped" -ForegroundColor DarkGray
         return "pending"
     }
 
     # Step 3: Delete
     if ($WhatIf) {
-        Write-Host "    WhatIf: Would remove $OperationName $Identity" -ForegroundColor Yellow
+        Write-Host " -> would remove (WhatIf)" -ForegroundColor Yellow
         return "deleted"
     }
 
@@ -581,10 +588,10 @@ function Remove-PurviewObject {
         Invoke-WithRetry -OperationName "Remove $OperationName $Identity" -ScriptBlock {
             & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
         } -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec
-        Write-Host "    Removed: $Identity" -ForegroundColor Green
+        Write-Host " -> removed" -ForegroundColor Green
         return "deleted"
     } catch {
-        Write-Warning "  Could not remove $OperationName ${Identity}: $($_.Exception.Message)"
+        Write-Host " -> FAILED: $($_.Exception.Message)" -ForegroundColor Red
         return "failed"
     }
 }
