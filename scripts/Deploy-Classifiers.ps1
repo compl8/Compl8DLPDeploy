@@ -63,19 +63,18 @@ if ($Action -in @("Upload", "Validate")) {
 if (-not $Tier)      { $Tier      = $Config.deploymentTier }
 if (-not $Publisher) { $Publisher = $Config.publisher }
 
-# Load package registry
-$registryJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "classifiers-registry.json") -Description "classifier registry"
+# Load package registry (written by build-deploy-packages.py)
+$DeployDir = Join-Path $XmlDir "deploy"
+$registryJson = Import-JsonConfig -FilePath (Join-Path $DeployDir "deploy-registry.json") -Description "deploy registry"
 if (-not $registryJson) {
-    Write-Error "Failed to load classifiers-registry.json. Aborting."
+    Write-Error "Failed to load xml/deploy/deploy-registry.json. Run build-deploy-packages.py first."
     return
 }
 
-# Build package lookup
+# Build package lookup — all packages in the build output are deployable
 $Packages = @{}
 foreach ($pkg in $registryJson.packages) {
-    if ($pkg.enabled) {
-        $Packages[$pkg.key] = $pkg
-    }
+    $Packages[$pkg.key] = $pkg
 }
 #endregion
 
@@ -98,6 +97,13 @@ function Get-SelectedPackages {
 function Resolve-PackageFile {
     param([object]$Package, [string]$RequestedTier)
 
+    # deploy-registry.json from build-deploy-packages.py has no variants —
+    # files are at xml/deploy/{key}.xml
+    if (-not $Package.variants) {
+        return Join-Path $DeployDir "$($Package.key).xml"
+    }
+
+    # Legacy registry with tier variants
     $variants = @{}
     foreach ($prop in $Package.variants.PSObject.Properties) {
         $variants[$prop.Name] = $prop.Value
@@ -459,6 +465,13 @@ function Find-DeployedMatch {
         # Match by display name
         if ($deployed.Name -and $RegistryPackage.displayName) {
             if ($deployed.Name -match [regex]::Escape($RegistryPackage.displayName)) {
+                return $deployed
+            }
+        }
+
+        # Match by registry key name (deploy-registry.json has key but no rulePackId/displayName)
+        if ($RegistryPackage.key -and $deployed.Name) {
+            if ($deployed.Name -match [regex]::Escape($RegistryPackage.key)) {
                 return $deployed
             }
         }
@@ -989,7 +1002,8 @@ function Invoke-Remove {
         Write-Host "WhatIf: The following packages would be removed:" -ForegroundColor Yellow
         foreach ($name in $selected) {
             $pkg = $Packages[$name]
-            Write-Host "  - $name (RulePackId: $($pkg.rulePackId))" -ForegroundColor Yellow
+            $rpId = if ($pkg.rulePackId) { $pkg.rulePackId } else { "key: $($pkg.key)" }
+            Write-Host "  - $name ($rpId)" -ForegroundColor Yellow
         }
         return
     }
@@ -1005,7 +1019,8 @@ function Invoke-Remove {
 
     foreach ($name in $selected) {
         $pkg = $Packages[$name]
-        Write-Host "  Removing $name ($($pkg.rulePackId))..." -ForegroundColor Cyan
+        $rpId = if ($pkg.rulePackId) { $pkg.rulePackId } else { $pkg.key }
+        Write-Host "  Removing $name ($rpId)..." -ForegroundColor Cyan
 
         $match = Find-DeployedMatch -RegistryPackage $pkg -DeployedLookup $deployedLookup
 

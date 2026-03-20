@@ -216,7 +216,8 @@ try {
 
             foreach ($kw in $keywords) {
                 $kwId = $kw.id
-                $kwTerms = @($kw.ChildNodes | Where-Object { $_.LocalName -eq "Term" })
+                # Terms are nested inside Group elements: <Keyword><Group><Term>...</Term></Group></Keyword>
+                $kwTerms = @($kw.ChildNodes | Where-Object { $_.LocalName -eq "Group" } | ForEach-Object { $_.ChildNodes } | Where-Object { $_.LocalName -eq "Term" })
 
                 Write-Host ""
                 Write-Host "    Keyword: $kwId"
