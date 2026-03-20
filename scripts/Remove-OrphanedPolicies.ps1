@@ -1,20 +1,33 @@
 #==============================================================================
 # Remove-OrphanedPolicies.ps1
-# Targeted removal of orphaned auto-labeling policies and ghost DLP rules.
-# Uses the shared DLP-Deploy.psm1 module for retry logic and session management.
+# Removes auto-labeling policies and DLP rules that are NOT in the current
+# converter plan. Requires a -PlanFile to know what to keep (safety gate).
+#
+# How it works:
+#   1. Reads the converter plan to build a "keep" list of policy names
+#   2. Lists everything on the tenant
+#   3. Shows what will be KEPT vs DELETED, with counts
+#   4. Asks for confirmation before proceeding
 #
 # Usage:
-#   .\scripts\Remove-OrphanedPolicies.ps1 -AutoLabelPolicies -Connect         # Remove old AL policies
-#   .\scripts\Remove-OrphanedPolicies.ps1 -GhostDlpRules -DlpPolicy P01-ECH-QGISCF-EXT-ADT -Connect
-#   .\scripts\Remove-OrphanedPolicies.ps1 -AutoLabelPolicies -GhostDlpRules -DlpPolicy P01-ECH-QGISCF-EXT-ADT -Connect
-#   .\scripts\Remove-OrphanedPolicies.ps1 -AutoLabelPolicies -WhatIf -Connect # Dry run
+#   # Remove orphaned auto-labeling policies (keeps converter set)
+#   .\scripts\Remove-OrphanedPolicies.ps1 -PlanFile plans\conversion-plan-*.json -Connect
+#
+#   # Also remove ghost DLP rules (no SIT conditions) from a specific policy
+#   .\scripts\Remove-OrphanedPolicies.ps1 -PlanFile plans\conversion-plan-*.json -GhostDlpRules -DlpPolicy P01-ECH-QGISCF-EXT-ADT -Connect
+#
+#   # Dry run
+#   .\scripts\Remove-OrphanedPolicies.ps1 -PlanFile plans\conversion-plan-*.json -Connect -WhatIf
 #==============================================================================
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$AutoLabelPolicies,
+    [Parameter(Mandatory)]
+    [string]$PlanFile,
+
     [switch]$GhostDlpRules,
     [string]$DlpPolicy,
+
     [switch]$Connect,
     [string]$UPN
 )
@@ -30,15 +43,47 @@ $interCallDelaySec = $Defaults.interCallDelaySec
 $maxRetries        = $Defaults.maxRetries
 $baseDelaySec      = $Defaults.baseDelaySec
 
-if (-not $AutoLabelPolicies -and -not $GhostDlpRules) {
-    Write-Error "Specify at least one of -AutoLabelPolicies or -GhostDlpRules."
-    return
-}
-
 if ($GhostDlpRules -and -not $DlpPolicy) {
     Write-Error "-GhostDlpRules requires -DlpPolicy (e.g. 'P01-ECH-QGISCF-EXT-ADT')."
     return
 }
+
+#region Load converter plan — build the "keep" list
+$planPath = if ([System.IO.Path]::IsPathRooted($PlanFile)) { $PlanFile } else { Join-Path $ProjectRoot $PlanFile }
+if (-not (Test-Path $planPath)) {
+    Write-Error "Plan file not found: $planPath"
+    return
+}
+
+$plan = Get-Content $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $plan.Entries -or -not $plan.ExecutionSummary) {
+    Write-Error "Plan file does not look like a converter plan (missing Entries or ExecutionSummary)."
+    return
+}
+
+# Extract policy names the converter created (from execution stamps)
+$keepPolicies = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($entry in $plan.Entries) {
+    foreach ($sr in $entry.sourceRules) {
+        $ex = $sr.executed
+        if ($ex -and $ex.policyName -and $ex.status -eq "success") {
+            [void]$keepPolicies.Add($ex.policyName)
+        }
+    }
+}
+
+if ($keepPolicies.Count -eq 0) {
+    Write-Error "No successfully executed policies found in plan. Has the converter been run?"
+    return
+}
+
+Write-Host ""
+Write-Host "  Converter plan: $planPath" -ForegroundColor Gray
+Write-Host "  Policies to KEEP (from plan): $($keepPolicies.Count)" -ForegroundColor Green
+foreach ($p in ($keepPolicies | Sort-Object)) {
+    Write-Host "    $p" -ForegroundColor Green
+}
+#endregion
 
 #region Connection
 if ($Connect) {
@@ -50,78 +95,62 @@ if (-not (Assert-DLPSession)) { return }
 
 $divider = "=" * 70
 
-#region 1. Remove orphaned auto-labeling policies
-if ($AutoLabelPolicies) {
-    Write-Host ""
-    Write-Host $divider
-    Write-Host "  REMOVE ORPHANED AUTO-LABELING POLICIES"
-    Write-Host "  (Old Deploy-AutoLabeling.ps1 set, superseded by converter)"
-    Write-Host $divider
+#region 1. Auto-labeling policy cleanup
+Write-Host ""
+Write-Host $divider
+Write-Host "  AUTO-LABELING POLICY CLEANUP"
+Write-Host $divider
 
-    # These are the old Deploy-AutoLabeling.ps1 policies that overlap in numbering
-    # but NOT in name with the converter set. AL01-OFFI and AL02-SENS_Pvca are
-    # shared (converter reused them) and must NOT be deleted.
-    #
-    # Old set numbering (labels with classifiers, sequential):
-    #   AL01-OFFI          ← SHARED with converter, skip
-    #   AL02-SENS_Pvca     ← SHARED with converter, skip
-    #   AL03-SENS_Pvcb     ← converter merged Pvcb into AL02, this is orphaned
-    #   AL04 through AL12  ← all orphaned (converter uses different numbering)
+# List all auto-labeling policies on tenant
+$allPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop)
+Write-Host "  Total auto-labeling policies on tenant: $($allPolicies.Count)" -ForegroundColor Gray
 
-    $ConfigPath = Join-Path $ProjectRoot "config"
-    $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
-    $Config = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
-
-    $labelsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "labels.json") -Description "label definitions"
-    $classifiersJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "classifiers.json") -Description "classifier definitions"
-
-    if (-not $labelsJson -or -not $classifiersJson) {
-        Write-Error "Cannot load labels.json or classifiers.json."
-        return
-    }
-
-    # Build classifier lookup
-    $Classifiers = @{}
-    if ($classifiersJson -is [System.Collections.IDictionary]) {
-        foreach ($key in $classifiersJson.Keys) { $Classifiers[$key] = $classifiersJson[$key] }
+# Classify: keep vs delete
+$toKeep = @()
+$toDelete = @()
+foreach ($pol in ($allPolicies | Sort-Object Name)) {
+    if ($keepPolicies.Contains($pol.Name)) {
+        $toKeep += $pol
     } else {
-        foreach ($prop in $classifiersJson.PSObject.Properties) { $Classifiers[$prop.Name] = $prop.Value }
+        $toDelete += $pol
     }
+}
 
-    # Filter to non-group labels with classifiers (same logic as Deploy-AutoLabeling.ps1)
-    $Labels = @($labelsJson | Where-Object { $_.code -and $Classifiers.ContainsKey($_.code) })
+# Display
+Write-Host ""
+Write-Host "  KEEP ($($toKeep.Count)):" -ForegroundColor Green
+foreach ($pol in $toKeep) {
+    $ruleCount = 0
+    try { $ruleCount = @(Get-AutoSensitivityLabelRule -Policy $pol.Name -ErrorAction SilentlyContinue).Count } catch { }
+    Write-Host "    $($pol.Name)  ($ruleCount rules, mode: $($pol.Mode))" -ForegroundColor Green
+}
 
-    # Build the full list of old policy names, then skip AL01 and AL02
-    $policyNum = 0
-    $policiesToRemove = @()
-    foreach ($label in $Labels) {
-        $policyNum++
-        $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $label.code, $Config.namingPrefix, $Config.namingSuffix
-        if ($policyNum -le 2) {
-            Write-Host "  SKIP (shared with converter): $policyName" -ForegroundColor DarkGray
-            continue
+Write-Host ""
+Write-Host "  DELETE ($($toDelete.Count)):" -ForegroundColor Red
+foreach ($pol in $toDelete) {
+    $ruleCount = 0
+    try { $ruleCount = @(Get-AutoSensitivityLabelRule -Policy $pol.Name -ErrorAction SilentlyContinue).Count } catch { }
+    Write-Host "    $($pol.Name)  ($ruleCount rules, mode: $($pol.Mode))" -ForegroundColor Red
+}
+
+if ($toDelete.Count -eq 0) {
+    Write-Host "  Nothing to delete — tenant is clean." -ForegroundColor Green
+} else {
+    # Confirmation
+    Write-Host ""
+    if (-not $WhatIfPreference) {
+        $confirm = Read-Host "  Delete $($toDelete.Count) policies and their rules? (yes/no)"
+        if ($confirm -ne "yes") {
+            Write-Host "  Aborted." -ForegroundColor Yellow
+            return
         }
-        $policiesToRemove += $policyName
     }
-
-    Write-Host ""
-    Write-Host "  Policies targeted for removal ($($policiesToRemove.Count)):" -ForegroundColor Yellow
-    foreach ($p in $policiesToRemove) {
-        Write-Host "    $p" -ForegroundColor Yellow
-    }
-    Write-Host ""
 
     $removedPolicies = 0
     $removedRules = 0
 
-    foreach ($policyName in $policiesToRemove) {
-        $existingPolicy = $null
-        try { $existingPolicy = Get-AutoSensitivityLabelPolicy -Identity $policyName -ErrorAction Stop } catch { }
-
-        if (-not $existingPolicy) {
-            Write-Host "  Not found (already gone): $policyName" -ForegroundColor DarkGray
-            continue
-        }
+    foreach ($pol in $toDelete) {
+        $policyName = $pol.Name
 
         # Remove rules first
         $rules = @()
@@ -164,12 +193,11 @@ if ($AutoLabelPolicies) {
 }
 #endregion
 
-#region 2. Remove ghost DLP rules
+#region 2. Ghost DLP rules
 if ($GhostDlpRules) {
     Write-Host ""
     Write-Host $divider
-    Write-Host "  REMOVE GHOST DLP RULES FROM: $DlpPolicy"
-    Write-Host "  (Rules with no SIT conditions, from broken earlier deploys)"
+    Write-Host "  GHOST DLP RULE CLEANUP: $DlpPolicy"
     Write-Host $divider
 
     # Verify policy exists
@@ -187,15 +215,11 @@ if ($GhostDlpRules) {
         return
     }
 
-    # Identify ghost rules: no ContentContainsSensitiveInformation condition
-    $ghostRules = @()
+    # Classify: valid (has SIT conditions) vs ghost (no SIT conditions)
     $validRules = @()
+    $ghostRules = @()
     foreach ($rule in $allRules) {
-        $hasSITs = $false
         if ($rule.ContentContainsSensitiveInformation -and $rule.ContentContainsSensitiveInformation.Count -gt 0) {
-            $hasSITs = $true
-        }
-        if ($hasSITs) {
             $validRules += $rule
         } else {
             $ghostRules += $rule
@@ -203,43 +227,59 @@ if ($GhostDlpRules) {
     }
 
     Write-Host ""
-    Write-Host "  Total rules in policy:  $($allRules.Count)" -ForegroundColor Gray
-    Write-Host "  Valid rules (with SITs): $($validRules.Count)" -ForegroundColor Green
-    Write-Host "  Ghost rules (no SITs):   $($ghostRules.Count)" -ForegroundColor Yellow
+    Write-Host "  Total rules:  $($allRules.Count)" -ForegroundColor Gray
+    Write-Host "  KEEP (valid): $($validRules.Count)" -ForegroundColor Green
+    foreach ($rule in $validRules) {
+        Write-Host "    $($rule.Name)" -ForegroundColor Green
+    }
+    Write-Host "  DELETE (ghost, no SITs): $($ghostRules.Count)" -ForegroundColor Red
+    if ($ghostRules.Count -le 20) {
+        foreach ($rule in $ghostRules) {
+            $state = if ($rule.Disabled) { " [DISABLED]" } else { "" }
+            Write-Host "    $($rule.Name)$state" -ForegroundColor Red
+        }
+    } else {
+        # Too many to list individually — show first 10 + count
+        $ghostRules | Select-Object -First 10 | ForEach-Object {
+            $state = if ($_.Disabled) { " [DISABLED]" } else { "" }
+            Write-Host "    $($_.Name)$state" -ForegroundColor Red
+        }
+        Write-Host "    ... and $($ghostRules.Count - 10) more" -ForegroundColor Red
+    }
 
     if ($ghostRules.Count -eq 0) {
-        Write-Host "  No ghost rules found. Nothing to do." -ForegroundColor Green
-        return
-    }
-
-    Write-Host ""
-    Write-Host "  Ghost rules to remove:" -ForegroundColor Yellow
-    foreach ($rule in $ghostRules) {
-        $state = if ($rule.Disabled) { " [DISABLED]" } else { "" }
-        Write-Host "    $($rule.Name)$state" -ForegroundColor Yellow
-    }
-    Write-Host ""
-
-    $removedCount = 0
-    $ruleIndex = 0
-    foreach ($rule in $ghostRules) {
-        if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-DlpComplianceRule")) {
-            if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-            try {
-                Invoke-WithRetry -OperationName "Remove-DlpRule $($rule.Name)" -ScriptBlock {
-                    Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                Write-Host "    Removed: $($rule.Name)" -ForegroundColor Green
-                $removedCount++
-            } catch {
-                Write-Warning "    Failed to remove $($rule.Name): $($_.Exception.Message)"
+        Write-Host "  No ghost rules found." -ForegroundColor Green
+    } else {
+        Write-Host ""
+        if (-not $WhatIfPreference) {
+            $confirm = Read-Host "  Delete $($ghostRules.Count) ghost rules from $DlpPolicy? (yes/no)"
+            if ($confirm -ne "yes") {
+                Write-Host "  Aborted." -ForegroundColor Yellow
+                return
             }
-            $ruleIndex++
         }
-    }
 
-    Write-Host ""
-    Write-Host "  Ghost rule cleanup: $removedCount of $($ghostRules.Count) removed" -ForegroundColor Cyan
+        $removedCount = 0
+        $ruleIndex = 0
+        foreach ($rule in $ghostRules) {
+            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-DlpComplianceRule")) {
+                if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
+                try {
+                    Invoke-WithRetry -OperationName "Remove-DlpRule $($rule.Name)" -ScriptBlock {
+                        Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
+                    Write-Host "    Removed: $($rule.Name)" -ForegroundColor Green
+                    $removedCount++
+                } catch {
+                    Write-Warning "    Failed: $($rule.Name): $($_.Exception.Message)"
+                }
+                $ruleIndex++
+            }
+        }
+
+        Write-Host ""
+        Write-Host "  Ghost rule cleanup: $removedCount of $($ghostRules.Count) removed" -ForegroundColor Cyan
+    }
 }
 #endregion
 
