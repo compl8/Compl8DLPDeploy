@@ -584,9 +584,10 @@ function Remove-PurviewObject {
         return "deleted"
     }
 
+    Write-Host " -> deleting..." -ForegroundColor Gray -NoNewline
     try {
         & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
-        Write-Host " -> removed" -ForegroundColor Green
+        Write-Host " done" -ForegroundColor Green
         return "deleted"
     } catch {
         $msg = $_.Exception.Message
