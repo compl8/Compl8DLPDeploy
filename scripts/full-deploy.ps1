@@ -91,33 +91,56 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         if ($policies) { Write-Host "    Removed $($policies.Count) policy(ies)" -ForegroundColor Green }
     } catch { Write-Warning "Policies: $_" }
 
-    # SIT packages
+    # SIT packages — only remove packages matching our publisher
     Write-Host "  Removing SIT packages..." -ForegroundColor Yellow
     try {
         $existing = Get-DlpSensitiveInformationTypeRulePackage -ErrorAction Stop
-        $removed = 0
+        $ours = @()
+        $others = @()
         foreach ($pkg in $existing) {
-            $identity = $pkg.Identity
-            if (-not $identity) { continue }
-            try {
-                $bytes = $pkg.SerializedClassificationRuleCollection
-                if ($bytes) {
-                    $xml = [System.Text.Encoding]::Unicode.GetString($bytes)
-                    if ($xml -match "Microsoft Corporation") { continue }
-                }
-            } catch { }
-            Write-Host "    $identity" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Package $identity" -ScriptBlock {
-                        Remove-DlpSensitiveInformationTypeRulePackage -Identity $identity -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove package ${identity}: $($_.Exception.Message)" }
-                $removed++
-                Start-Sleep 5
+            if (-not $pkg.Identity) { continue }
+            if ($pkg.Publisher -eq "Microsoft Corporation" -or $pkg.Publisher -eq "Microsoft") { continue }
+            if ($Config.publisher -and $pkg.Publisher -eq $Config.publisher) {
+                $ours += $pkg
+            } else {
+                $others += $pkg
             }
         }
-        if ($removed -gt 0) { Write-Host "    Removed $removed package(s)" -ForegroundColor Green }
+
+        if ($others.Count -gt 0) {
+            Write-Host "    Skipping $($others.Count) package(s) from other publishers:" -ForegroundColor DarkGray
+            foreach ($o in $others) {
+                Write-Host "      $($o.Publisher): $($o.Identity)" -ForegroundColor DarkGray
+            }
+        }
+
+        if ($ours.Count -eq 0) {
+            Write-Host "    No packages matching publisher '$($Config.publisher)' found." -ForegroundColor Gray
+        } else {
+            Write-Host "    Removing $($ours.Count) package(s) from '$($Config.publisher)':" -ForegroundColor Yellow
+            foreach ($pkg in $ours) {
+                Write-Host "      $($pkg.Identity)" -ForegroundColor Yellow
+            }
+
+            if (-not $WhatIf) {
+                $confirm = Read-Host "    Proceed with removal? (yes/no)"
+                if ($confirm -ne "yes") {
+                    Write-Host "    Package removal skipped." -ForegroundColor Yellow
+                } else {
+                    $removed = 0
+                    foreach ($pkg in $ours) {
+                        try {
+                            Invoke-WithRetry -OperationName "Remove-Package $($pkg.Identity)" -ScriptBlock {
+                                Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
+                            } -MaxRetries 2 -BaseDelaySec 30
+                            $removed++
+                        } catch { Write-Warning "  Could not remove package $($pkg.Identity): $($_.Exception.Message)" }
+                        Start-Sleep 5
+                    }
+                    Write-Host "    Removed $removed package(s)" -ForegroundColor Green
+                }
+            }
+        }
     } catch { Write-Warning "Packages: $_" }
 
     # Keyword dictionaries

@@ -82,28 +82,42 @@ if (-not $SkipCleanup) {
         }
     }
 
-    # SIT packages
+    # SIT packages — only remove packages matching our publisher
     $pkgs = Get-DlpSensitiveInformationTypeRulePackage -ErrorAction SilentlyContinue
-    $customPkgCount = 0
+    $ours = @()
+    $others = @()
     foreach ($pkg in $pkgs) {
         if (-not $pkg.Identity) { continue }
-        try {
-            $bytes = $pkg.SerializedClassificationRuleCollection
-            if ($bytes) {
-                $xml = [System.Text.Encoding]::Unicode.GetString($bytes)
-                if ($xml -match "Microsoft Corporation") { continue }
-            }
-        } catch { }
+        if ($pkg.Publisher -eq "Microsoft Corporation" -or $pkg.Publisher -eq "Microsoft") { continue }
+        if ($Config.publisher -and $pkg.Publisher -eq $Config.publisher) {
+            $ours += $pkg
+        } else {
+            $others += $pkg
+        }
+    }
+    if ($others.Count -gt 0) {
+        Write-Host "  Skipping $($others.Count) package(s) from other publishers:" -ForegroundColor DarkGray
+        foreach ($o in $others) { Write-Host "    $($o.Publisher): $($o.Identity)" -ForegroundColor DarkGray }
+    }
+    if ($ours.Count -gt 0) {
         $cleanupNeeded = $true
-        $customPkgCount++
-        Write-Host "  Removing SIT package $customPkgCount..."
+        Write-Host "  Removing $($ours.Count) package(s) from '$($Config.publisher)':" -ForegroundColor Yellow
+        foreach ($pkg in $ours) { Write-Host "    $($pkg.Identity)" -ForegroundColor Yellow }
         if (-not $WhatIf) {
-            try {
-                Invoke-WithRetry -OperationName "Remove-SITPackage $customPkgCount" -ScriptBlock {
-                    Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
-                } -MaxRetries 2 -BaseDelaySec 30
-            } catch { Write-Warning "  Could not remove SIT package $($pkg.Identity): $($_.Exception.Message)" }
-            Start-Sleep 3
+            $confirm = Read-Host "  Proceed with package removal? (yes/no)"
+            if ($confirm -ne "yes") {
+                Write-Host "  Package removal skipped." -ForegroundColor Yellow
+            } else {
+                foreach ($pkg in $ours) {
+                    try {
+                        Invoke-WithRetry -OperationName "Remove-SITPackage $($pkg.Identity)" -ScriptBlock {
+                            Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
+                        } -MaxRetries 2 -BaseDelaySec 30
+                    } catch { Write-Warning "  Could not remove SIT package $($pkg.Identity): $($_.Exception.Message)" }
+                    Start-Sleep 3
+                }
+                Write-Host "  Removed $($ours.Count) package(s)" -ForegroundColor Green
+            }
         }
     }
 
