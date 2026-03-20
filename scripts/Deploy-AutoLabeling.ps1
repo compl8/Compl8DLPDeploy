@@ -257,6 +257,51 @@ if (-not $Config.skipSitValidation -and -not $SkipValidation) {
 }
 #endregion
 
+#region Pre-flight: check for name conflicts
+Write-Host "`n=== Pre-flight: Checking for name conflicts ===" -ForegroundColor Cyan
+$allPlannedPolicyNames = @()
+$allPlannedRuleNames = @()
+$pn = 0
+foreach ($l in $Labels) {
+    $pn++
+    $allPlannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $pn, $l.code, $Config.namingPrefix, $Config.namingSuffix
+    $classifierList = $Classifiers[$l.code]
+    $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
+    $rn = 0
+    foreach ($wl in $AutoLabelWorkloads) {
+        $rn++
+        $ci = 0
+        foreach ($chunk in $chunks) {
+            $ci++
+            if ($chunks.Count -gt 1) {
+                $cl = [char]([int][char]'a' + $ci - 1)
+                $allPlannedRuleNames += "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $pn, $rn, $cl, $wl.Code, $l.code, $Config.namingSuffix
+            } else {
+                $allPlannedRuleNames += "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $pn, $rn, $wl.Code, $l.code, $Config.namingSuffix
+            }
+        }
+    }
+}
+
+$allExistingALRules = @()
+foreach ($polName in $allPlannedPolicyNames) {
+    try { $allExistingALRules += @(Get-AutoSensitivityLabelRule -Policy $polName -ErrorAction SilentlyContinue) } catch { }
+}
+$allExistingALPolicies = @()
+foreach ($polName in $allPlannedPolicyNames) {
+    try {
+        $p = Get-AutoSensitivityLabelPolicy -Identity $polName -ErrorAction SilentlyContinue
+        if ($p) { $allExistingALPolicies += $p }
+    } catch { }
+}
+
+Write-Host "  Planned: $($allPlannedPolicyNames.Count) policies, $($allPlannedRuleNames.Count) rules" -ForegroundColor Gray
+Write-Host "  Existing: $($allExistingALPolicies.Count) policies, $($allExistingALRules.Count) rules" -ForegroundColor Gray
+
+$safe = Test-PurviewNameConflicts -PlannedNames $allPlannedRuleNames -ExistingObjects $allExistingALRules -ObjectType "AL rule"
+if (-not $safe) { try { Stop-Transcript } catch { }; return }
+#endregion
+
 #region Deployment Loop
 Write-Host "`n=== Auto-Labeling Deployment ===" -ForegroundColor Cyan
 Write-Host "Starting deployment at $(Get-Date)" -ForegroundColor Cyan

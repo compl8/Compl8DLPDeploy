@@ -628,6 +628,76 @@ if ($Execute) {
     Write-Host "  Tenant label lookup: $($labelDisplayToTenantName.Count) entries" -ForegroundColor Gray
     #endregion
 
+    #region Pre-flight: check for name conflicts
+    Write-Host "`n=== Pre-flight: Checking for name conflicts ===" -ForegroundColor Cyan
+    $plannedPolicyNames = @()
+    $pn = 0
+    foreach ($entry in $approvedEntries) {
+        $pn++
+        $lc = $null
+        if ($entry.labelCodes -and @($entry.labelCodes).Count -gt 0) { $lc = @($entry.labelCodes)[0] }
+        if (-not $lc) { $lc = ($entry.labelName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-' }
+        $plannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $pn, $lc, $namingPrefix, $namingSuffix
+    }
+
+    # Query existing AL rules under the planned policy names
+    $allExistingRules = @()
+    foreach ($polName in $plannedPolicyNames) {
+        try { $allExistingRules += @(Get-AutoSensitivityLabelRule -Policy $polName -ErrorAction SilentlyContinue) } catch { }
+    }
+    # Query existing AL policies
+    $allExistingPolicies = @()
+    foreach ($polName in $plannedPolicyNames) {
+        try {
+            $p = Get-AutoSensitivityLabelPolicy -Identity $polName -ErrorAction SilentlyContinue
+            if ($p) { $allExistingPolicies += $p }
+        } catch { }
+    }
+
+    Write-Host "  Planned: $($plannedPolicyNames.Count) policies" -ForegroundColor Gray
+    Write-Host "  Existing: $($allExistingPolicies.Count) policies, $($allExistingRules.Count) rules on tenant" -ForegroundColor Gray
+
+    if ($allExistingRules.Count -gt 0) {
+        # Build planned rule names from plan structure (workload groups + chunks)
+        $plannedRuleNames = @()
+        $rpn = 0
+        foreach ($entry in $approvedEntries) {
+            $rpn++
+            $lc = $null
+            if ($entry.labelCodes -and @($entry.labelCodes).Count -gt 0) { $lc = @($entry.labelCodes)[0] }
+            if (-not $lc) { $lc = ($entry.labelName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-' }
+            # Group source rules by workload (same logic as execute loop)
+            $wlGroups = @{}
+            foreach ($sr in $entry.sourceRules) {
+                $wl = $sr.workload
+                if ($SupportedWorkloads -notcontains $wl) { continue }
+                if (-not $wlGroups.ContainsKey($wl)) { $wlGroups[$wl] = @() }
+                $wlGroups[$wl] += $sr
+            }
+            $rrn = 0
+            foreach ($wl in $wlGroups.Keys) {
+                $rrn++
+                $wlCode = $WorkloadCodeMap[$wl]
+                if (-not $wlCode) { $wlCode = $wl.Substring(0, 3).ToUpper() }
+                # Estimate chunk count from SIT count (125 per chunk)
+                $sitCount = 0
+                foreach ($sr in $wlGroups[$wl]) { $sitCount += $sr.sitCount }
+                $chunkCount = [math]::Ceiling($sitCount / 125)
+                if ($chunkCount -lt 1) { $chunkCount = 1 }
+                for ($ci = 1; $ci -le $chunkCount; $ci++) {
+                    $cs = if ($chunkCount -gt 1) { [char](96 + $ci) } else { '' }
+                    $plannedRuleNames += "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $rpn, $rrn, $wlCode, $lc, $namingSuffix, $cs
+                }
+            }
+        }
+
+        $safe = Test-PurviewNameConflicts -PlannedNames $plannedRuleNames -ExistingObjects $allExistingRules -ObjectType "AL rule"
+        if (-not $safe) { try { Stop-Transcript } catch { }; return }
+    } else {
+        Write-Host "    No existing rules — no conflicts" -ForegroundColor Green
+    }
+    #endregion
+
     #region Execute per approved label
     $successPolicies = 0
     $failPolicies    = 0
