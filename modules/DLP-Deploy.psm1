@@ -585,15 +585,111 @@ function Remove-PurviewObject {
     }
 
     try {
-        Invoke-WithRetry -OperationName "Remove $OperationName $Identity" -ScriptBlock {
-            & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
-        } -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec
+        & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
         Write-Host " -> removed" -ForegroundColor Green
         return "deleted"
     } catch {
-        Write-Host " -> FAILED: $($_.Exception.Message)" -ForegroundColor Red
+        $msg = $_.Exception.Message
+        if ($msg -match "PendingDeletion" -or $msg -match "pending deletion") {
+            Write-Host " -> pending deletion, skipped" -ForegroundColor DarkGray
+            return "pending"
+        }
+        if ($msg -match "DeleteRetryInterval" -or $msg -match "retry after (\d+) min") {
+            $waitMin = 60
+            if ($msg -match "retry after (\d+) min") { $waitMin = [int]$Matches[1] + 1 }
+            Write-Host " -> cooldown (${waitMin}m remaining)" -ForegroundColor DarkYellow
+            return "cooldown:$waitMin"
+        }
+        if ($msg -match "server side error" -or $msg -match "try again after some time") {
+            Write-Host " -> throttled, retrying..." -ForegroundColor DarkYellow
+            # For throttle errors, do retry inline
+            try {
+                Invoke-WithRetry -OperationName "Remove $OperationName $Identity" -ScriptBlock {
+                    & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
+                } -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec
+                Write-Host " -> removed (after retry)" -ForegroundColor Green
+                return "deleted"
+            } catch {
+                Write-Host " -> FAILED after retries: $($_.Exception.Message)" -ForegroundColor Red
+                return "failed"
+            }
+        }
+        Write-Host " -> FAILED: $msg" -ForegroundColor Red
         return "failed"
     }
+}
+
+function Remove-PurviewObjects {
+    <#
+    .SYNOPSIS
+        Batch-removes Purview objects with cooldown-aware retry.
+        First pass: attempt all deletions, collecting any in cooldown.
+        If cooldowns found: wait once, then retry them all.
+    #>
+    param(
+        [Parameter(Mandatory)][array]$Objects,
+        [Parameter(Mandatory)][string]$RemoveCommand,
+        [string]$GetCommand,
+        [string]$OperationName = "object",
+        [string]$IdentityProperty = "Name",
+        [int]$MaxRetries = 3,
+        [int]$BaseDelaySec = 300,
+        [switch]$WhatIf
+    )
+
+    $total = $Objects.Count
+    $deleted = 0
+    $skipped = 0
+    $cooldowns = @()
+    $maxCooldownMin = 0
+
+    # Pass 1: try all
+    $idx = 0
+    foreach ($obj in $Objects) {
+        $idx++
+        $identity = $obj.$IdentityProperty
+        Write-Host "    [$idx/$total] $identity" -ForegroundColor Yellow -NoNewline
+        $status = Remove-PurviewObject -Identity $identity -InputObject $obj `
+            -RemoveCommand $RemoveCommand -GetCommand $GetCommand `
+            -OperationName $OperationName -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec -WhatIf:$WhatIf
+        if ($status -eq "deleted") { $deleted++ }
+        elseif ($status -like "cooldown:*") {
+            $cooldowns += $obj
+            $mins = [int]($status -replace 'cooldown:', '')
+            if ($mins -gt $maxCooldownMin) { $maxCooldownMin = $mins }
+        }
+        else { $skipped++ }
+    }
+
+    # Pass 2: if any cooldowns, wait once then retry
+    if ($cooldowns.Count -gt 0 -and -not $WhatIf) {
+        $delaySec = $maxCooldownMin * 60
+        $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
+        Write-Host ""
+        Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor DarkYellow
+        Write-Host "  │  PAUSED — Purview delete cooldown                           │" -ForegroundColor DarkYellow
+        Write-Host "  │  $($cooldowns.Count) $($OperationName)(s) in cooldown, waiting once for all    │" -ForegroundColor DarkYellow
+        Write-Host "  │  Waiting:   $maxCooldownMin minutes                                      │" -ForegroundColor DarkYellow
+        Write-Host "  │  Resuming:  $($resumeTime.PadRight(47))│" -ForegroundColor DarkYellow
+        Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor DarkYellow
+        Write-Host ""
+        Start-Sleep -Seconds $delaySec
+        Write-Host "  Retrying $($cooldowns.Count) $($OperationName)(s)..." -ForegroundColor Cyan
+
+        $retryIdx = 0
+        foreach ($obj in $cooldowns) {
+            $retryIdx++
+            $identity = $obj.$IdentityProperty
+            Write-Host "    [retry $retryIdx/$($cooldowns.Count)] $identity" -ForegroundColor Yellow -NoNewline
+            $status = Remove-PurviewObject -Identity $identity `
+                -RemoveCommand $RemoveCommand -GetCommand $GetCommand `
+                -OperationName $OperationName -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec
+            if ($status -eq "deleted") { $deleted++ }
+        }
+    }
+
+    Write-Host "    Done: $total processed ($deleted deleted, $skipped skipped, $($cooldowns.Count) retried)" -ForegroundColor Green
+    return $deleted
 }
 #endregion
 
@@ -952,6 +1048,7 @@ Export-ModuleMember -Function @(
     'Resolve-PolicyMode'
     'Get-MergedRuleParams'
     'Remove-PurviewObject'
+    'Remove-PurviewObjects'
     'Invoke-WithRetry'
     'Start-DeploymentLog'
     'Test-SITRulePackageXml'

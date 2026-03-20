@@ -66,72 +66,48 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like "AL*-$($cleanupPrefix)-$($Config.namingSuffix)" })
         Write-Host "    Found $($alPolicies.Count) policy(ies) to process" -ForegroundColor Gray
-        $alDeleted = 0
-        $alIdx = 0
+
+        # Collect all AL rules across all policies for batch removal
+        $allAlRules = @()
         foreach ($alp in $alPolicies) {
-            $alIdx++
-            Write-Host "    [$alIdx/$($alPolicies.Count)] $($alp.Name)" -ForegroundColor Yellow
-            $alRules = @()
-            try { $alRules = @(Get-AutoSensitivityLabelRule -Policy $alp.Name -ErrorAction SilentlyContinue) } catch { }
-            $rIdx = 0
-            foreach ($alr in $alRules) {
-                $rIdx++
-                Write-Host "      Rule [$rIdx/$($alRules.Count)] $($alr.Name)" -ForegroundColor Yellow -NoNewline
-                $status = Remove-PurviewObject -Identity $alr.Name -InputObject $alr `
-                    -RemoveCommand "Remove-AutoSensitivityLabelRule" `
-                    -OperationName "AL rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-                if (-not $WhatIf -and $status -eq "deleted") { Start-Sleep 2 }
-            }
-            if ($alRules.Count -gt 0 -and -not $WhatIf) { Start-Sleep -Seconds $Config.interCallDelaySec }
-            Write-Host "      Policy: $($alp.Name)" -ForegroundColor Yellow -NoNewline
-            $status = Remove-PurviewObject -Identity $alp.Name `
-                -GetCommand "Get-AutoSensitivityLabelPolicy" -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
-                -OperationName "AL policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-            if ($status -eq "deleted") { $alDeleted++ }
-            if (-not $WhatIf) { Start-Sleep 3 }
+            try { $allAlRules += @(Get-AutoSensitivityLabelRule -Policy $alp.Name -ErrorAction SilentlyContinue) } catch { }
         }
-        if ($alPolicies.Count -gt 0) { Write-Host "    Done: $($alPolicies.Count) policy(ies) processed ($alDeleted deleted)" -ForegroundColor Green }
-        else { Write-Host "    No matching auto-labeling policies found." -ForegroundColor Gray }
+        if ($allAlRules.Count -gt 0) {
+            Write-Host "    Removing $($allAlRules.Count) auto-labeling rules..." -ForegroundColor Yellow
+            $null = Remove-PurviewObjects -Objects $allAlRules -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+                -OperationName "AL rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+        }
+        if ($alPolicies.Count -gt 0) {
+            Write-Host "    Removing $($alPolicies.Count) auto-labeling policies..." -ForegroundColor Yellow
+            $null = Remove-PurviewObjects -Objects $alPolicies -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
+                -OperationName "AL policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+        } else {
+            Write-Host "    No matching auto-labeling policies found." -ForegroundColor Gray
+        }
     } catch { Write-Warning "Auto-labeling: $_" }
 
     # DLP rules first (they block policy deletion)
     Write-Host "  Removing DLP rules..." -ForegroundColor Yellow
     try {
         Write-Host "    Querying tenant for DLP rules..." -ForegroundColor Gray
-        $rules = Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" }
+        $rules = @(Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" })
         Write-Host "    Found $($rules.Count) rule(s) to process" -ForegroundColor Gray
-        $ruleDeleted = 0
-        $ruleIdx = 0
-        foreach ($rule in $rules) {
-            $ruleIdx++
-            Write-Host "    [$ruleIdx/$($rules.Count)] $($rule.Name)" -ForegroundColor Yellow -NoNewline
-            $status = Remove-PurviewObject -Identity $rule.Name -InputObject $rule `
-                -RemoveCommand "Remove-DlpComplianceRule" `
+        if ($rules.Count -gt 0) {
+            $null = Remove-PurviewObjects -Objects $rules -RemoveCommand "Remove-DlpComplianceRule" `
                 -OperationName "DLP rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-            if ($status -eq "deleted") { $ruleDeleted++ }
-            if (-not $WhatIf) { Start-Sleep 2 }
         }
-        if ($rules) { Write-Host "    Done: $($rules.Count) rule(s) processed ($ruleDeleted deleted)" -ForegroundColor Green }
     } catch { Write-Warning "Rules: $_" }
 
-    # Policies
+    # DLP policies
     Write-Host "  Removing DLP policies..." -ForegroundColor Yellow
     try {
         Write-Host "    Querying tenant for DLP policies..." -ForegroundColor Gray
-        $policies = Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" }
+        $policies = @(Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" })
         Write-Host "    Found $($policies.Count) policy(ies) to process" -ForegroundColor Gray
-        $polDeleted = 0
-        $polIdx = 0
-        foreach ($pol in $policies) {
-            $polIdx++
-            Write-Host "    [$polIdx/$($policies.Count)] $($pol.Name)" -ForegroundColor Yellow -NoNewline
-            $status = Remove-PurviewObject -Identity $pol.Name -InputObject $pol `
-                -RemoveCommand "Remove-DlpCompliancePolicy" `
+        if ($policies.Count -gt 0) {
+            $null = Remove-PurviewObjects -Objects $policies -RemoveCommand "Remove-DlpCompliancePolicy" `
                 -OperationName "DLP policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-            if ($status -eq "deleted") { $polDeleted++ }
-            if (-not $WhatIf) { Start-Sleep 3 }
         }
-        if ($policies) { Write-Host "    Done: $($policies.Count) policy(ies) processed ($polDeleted deleted)" -ForegroundColor Green }
     } catch { Write-Warning "Policies: $_" }
 
     # SIT packages — only remove packages matching our publisher

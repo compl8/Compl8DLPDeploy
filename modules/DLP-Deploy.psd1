@@ -32,6 +32,7 @@
         'Resolve-PolicyMode'
         'Get-MergedRuleParams'
         'Remove-PurviewObject'
+        'Remove-PurviewObjects'
         'Invoke-WithRetry'
         'Start-DeploymentLog'
         'Test-SITRulePackageXml'
