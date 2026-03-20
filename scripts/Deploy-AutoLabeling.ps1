@@ -169,31 +169,29 @@ if ($Cleanup) {
         }
         $ruleIndex = 0
         foreach ($rule in $rules) {
-            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-AutoSensitivityLabelRule")) {
-                if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
-                try {
-                    Invoke-WithRetry -OperationName "Remove-ALRule $($rule.Name)" -ScriptBlock {
-                        Remove-AutoSensitivityLabelRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                    Write-Host "  Removed rule: $($rule.Name)" -ForegroundColor Yellow
-                } catch {
-                    Write-Warning "  Failed to remove rule $($rule.Name): $($_.Exception.Message)"
-                }
-                $ruleIndex++
+            if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
+            $result = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-AutoSensitivityLabelRule" `
+                -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+                -OperationName "AL rule" `
+                -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec `
+                -WhatIf:$WhatIfPreference
+            if ($result -eq "failed") {
+                Write-Warning "  Failed to remove rule $($rule.Name)"
             }
+            $ruleIndex++
         }
 
         # Remove policy
         if ($rules.Count -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
-        if ($PSCmdlet.ShouldProcess($policyName, "Remove-AutoSensitivityLabelPolicy")) {
-            try {
-                Invoke-WithRetry -OperationName "Remove-ALPolicy $policyName" -ScriptBlock {
-                    Remove-AutoSensitivityLabelPolicy -Identity $policyName -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                Write-Host "  Removed policy: $policyName" -ForegroundColor Yellow
-            } catch {
-                Write-Warning "  Error removing policy ${policyName}: $($_.Exception.Message)"
-            }
+        $result = Remove-PurviewObject -Identity $policyName `
+            -GetCommand "Get-AutoSensitivityLabelPolicy" `
+            -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
+            -OperationName "AL policy" `
+            -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec `
+            -WhatIf:$WhatIfPreference
+        if ($result -eq "failed") {
+            Write-Warning "  Error removing policy $policyName"
         }
     }
 

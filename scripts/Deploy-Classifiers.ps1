@@ -1025,14 +1025,11 @@ function Invoke-Remove {
         $match = Find-DeployedMatch -RegistryPackage $pkg -DeployedLookup $deployedLookup
 
         if ($match) {
-            if ($PSCmdlet.ShouldProcess($name, "Remove SIT Rule Package")) {
-                try {
-                    Remove-DlpSensitiveInformationTypeRulePackage -Identity $match.Identity -Confirm:$false -ErrorAction Stop
-                    Write-Host "    Removed successfully" -ForegroundColor Green
-                } catch {
-                    Write-Host "    Failed: $($_.Exception.Message)" -ForegroundColor Red
-                }
-            }
+            $status = Remove-PurviewObject -Identity $match.Identity `
+                -GetCommand "Get-DlpSensitiveInformationTypeRulePackage" `
+                -RemoveCommand "Remove-DlpSensitiveInformationTypeRulePackage" `
+                -OperationName "SIT package" -MaxRetries 2 -BaseDelaySec 30 `
+                -WhatIf:$WhatIfPreference
         } else {
             Write-Host "    Not found in tenant - skipping" -ForegroundColor Yellow
         }

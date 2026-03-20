@@ -514,6 +514,82 @@ function Get-MergedRuleParams {
 }
 #endregion
 
+#region Deletion
+function Remove-PurviewObject {
+    <#
+    .SYNOPSIS
+        Checks state before deleting a Purview object. Returns a status string:
+        "deleted", "pending", "not-found", or "failed".
+
+        Pre-checks the object's state via -GetCommand before attempting deletion.
+        Objects already pending deletion are skipped silently. Objects that don't
+        exist are skipped. Only objects confirmed present and deletable are removed.
+    .EXAMPLE
+        Remove-PurviewObject -Identity "AL01-R01-ECH-OFFI-EXT-ADT" `
+            -GetCommand "Get-AutoSensitivityLabelRule" `
+            -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+            -OperationName "AL rule"
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][string]$GetCommand,
+        [Parameter(Mandatory)][string]$RemoveCommand,
+        [string]$OperationName = "object",
+        [int]$MaxRetries = 3,
+        [int]$BaseDelaySec = 300,
+        [switch]$WhatIf
+    )
+
+    # Step 1: Check if the object exists and inspect its state
+    $obj = $null
+    try {
+        $obj = & $GetCommand -Identity $Identity -ErrorAction Stop
+    } catch {
+        $msg = $_.Exception.Message
+        if ($msg -match "couldn't be found" -or $msg -match "not found" -or $msg -match "does not exist") {
+            Write-Host "    (not found, skipping): $Identity" -ForegroundColor DarkGray
+            return "not-found"
+        }
+        # If the Get itself failed for another reason, log and skip
+        Write-Warning "  Could not query $OperationName ${Identity}: $msg"
+        return "failed"
+    }
+
+    if (-not $obj) {
+        Write-Host "    (not found, skipping): $Identity" -ForegroundColor DarkGray
+        return "not-found"
+    }
+
+    # Step 2: Check for pending deletion state
+    # Purview objects may have Mode = "PendingDeletion" or similar state indicators
+    $isPending = $false
+    if ($obj.PSObject.Properties['Mode'] -and $obj.Mode -eq 'PendingDeletion') { $isPending = $true }
+    if ($obj.PSObject.Properties['State'] -and $obj.State -eq 'PendingDeletion') { $isPending = $true }
+
+    if ($isPending) {
+        Write-Host "    (pending deletion, skipping): $Identity" -ForegroundColor DarkGray
+        return "pending"
+    }
+
+    # Step 3: Delete
+    if ($WhatIf) {
+        Write-Host "    WhatIf: Would remove $OperationName $Identity" -ForegroundColor Yellow
+        return "deleted"
+    }
+
+    try {
+        Invoke-WithRetry -OperationName "Remove $OperationName $Identity" -ScriptBlock {
+            & $RemoveCommand -Identity $Identity -Confirm:$false -ErrorAction Stop
+        } -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec
+        Write-Host "    Removed: $Identity" -ForegroundColor Green
+        return "deleted"
+    } catch {
+        Write-Warning "  Could not remove $OperationName ${Identity}: $($_.Exception.Message)"
+        return "failed"
+    }
+}
+#endregion
+
 #region Retry
 function Invoke-WithRetry {
     <#
@@ -857,6 +933,7 @@ Export-ModuleMember -Function @(
     'New-AdvancedRuleJson'
     'Resolve-PolicyMode'
     'Get-MergedRuleParams'
+    'Remove-PurviewObject'
     'Invoke-WithRetry'
     'Start-DeploymentLog'
     'Test-SITRulePackageXml'

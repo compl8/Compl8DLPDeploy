@@ -158,34 +158,24 @@ if ($toDelete.Count -eq 0) {
 
         $ruleIndex = 0
         foreach ($rule in $rules) {
-            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-AutoSensitivityLabelRule")) {
-                if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-                try {
-                    Invoke-WithRetry -OperationName "Remove-ALRule $($rule.Name)" -ScriptBlock {
-                        Remove-AutoSensitivityLabelRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                    Write-Host "    Removed rule: $($rule.Name)" -ForegroundColor Yellow
-                    $removedRules++
-                } catch {
-                    Write-Warning "    Failed to remove rule $($rule.Name): $($_.Exception.Message)"
-                }
-                $ruleIndex++
-            }
+            if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
+            $status = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-AutoSensitivityLabelRule" `
+                -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+                -OperationName "AL rule" `
+                -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec -WhatIf:$WhatIfPreference
+            if ($status -eq "deleted") { $removedRules++ }
+            $ruleIndex++
         }
 
         # Remove policy
         if ($rules.Count -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-        if ($PSCmdlet.ShouldProcess($policyName, "Remove-AutoSensitivityLabelPolicy")) {
-            try {
-                Invoke-WithRetry -OperationName "Remove-ALPolicy $policyName" -ScriptBlock {
-                    Remove-AutoSensitivityLabelPolicy -Identity $policyName -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                Write-Host "  Removed policy: $policyName" -ForegroundColor Green
-                $removedPolicies++
-            } catch {
-                Write-Warning "  Failed to remove policy ${policyName}: $($_.Exception.Message)"
-            }
-        }
+        $status = Remove-PurviewObject -Identity $policyName `
+            -GetCommand "Get-AutoSensitivityLabelPolicy" `
+            -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
+            -OperationName "AL policy" `
+            -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec -WhatIf:$WhatIfPreference
+        if ($status -eq "deleted") { $removedPolicies++ }
     }
 
     Write-Host ""
@@ -262,19 +252,14 @@ if ($GhostDlpRules) {
         $removedCount = 0
         $ruleIndex = 0
         foreach ($rule in $ghostRules) {
-            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-DlpComplianceRule")) {
-                if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-                try {
-                    Invoke-WithRetry -OperationName "Remove-DlpRule $($rule.Name)" -ScriptBlock {
-                        Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                    Write-Host "    Removed: $($rule.Name)" -ForegroundColor Green
-                    $removedCount++
-                } catch {
-                    Write-Warning "    Failed: $($rule.Name): $($_.Exception.Message)"
-                }
-                $ruleIndex++
-            }
+            if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
+            $status = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-DlpComplianceRule" `
+                -RemoveCommand "Remove-DlpComplianceRule" `
+                -OperationName "DLP rule" `
+                -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec -WhatIf:$WhatIfPreference
+            if ($status -eq "deleted") { $removedCount++ }
+            $ruleIndex++
         }
 
         Write-Host ""

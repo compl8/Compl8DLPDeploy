@@ -54,14 +54,12 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing $($rules.Count) DLP rules..."
         foreach ($r in $rules) {
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Rule $($r.Name)" -ScriptBlock {
-                        Remove-DlpComplianceRule -Identity $r.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove rule $($r.Name): $($_.Exception.Message)" }
-                Start-Sleep 1
-            }
+            Remove-PurviewObject -Identity $r.Name `
+                -GetCommand "Get-DlpComplianceRule" `
+                -RemoveCommand "Remove-DlpComplianceRule" `
+                -OperationName "DLP rule" `
+                -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if (-not $WhatIf) { Start-Sleep 1 }
         }
     }
 
@@ -71,14 +69,12 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing $($policies.Count) DLP policies..."
         foreach ($p in $policies) {
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Policy $($p.Name)" -ScriptBlock {
-                        Remove-DlpCompliancePolicy -Identity $p.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove policy $($p.Name): $($_.Exception.Message)" }
-                Start-Sleep 2
-            }
+            Remove-PurviewObject -Identity $p.Name `
+                -GetCommand "Get-DlpCompliancePolicy" `
+                -RemoveCommand "Remove-DlpCompliancePolicy" `
+                -OperationName "DLP policy" `
+                -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if (-not $WhatIf) { Start-Sleep 2 }
         }
     }
 
@@ -108,15 +104,16 @@ if (-not $SkipCleanup) {
             if ($confirm -ne "yes") {
                 Write-Host "  Package removal skipped." -ForegroundColor Yellow
             } else {
+                $pkgDeleted = 0
                 foreach ($pkg in $ours) {
-                    try {
-                        Invoke-WithRetry -OperationName "Remove-SITPackage $($pkg.Identity)" -ScriptBlock {
-                            Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
-                        } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove SIT package $($pkg.Identity): $($_.Exception.Message)" }
+                    $status = Remove-PurviewObject -Identity $pkg.Identity `
+                        -GetCommand "Get-DlpSensitiveInformationTypeRulePackage" `
+                        -RemoveCommand "Remove-DlpSensitiveInformationTypeRulePackage" `
+                        -OperationName "SIT package" -MaxRetries 2 -BaseDelaySec 30
+                    if ($status -eq "deleted") { $pkgDeleted++ }
                     Start-Sleep 3
                 }
-                Write-Host "  Removed $($ours.Count) package(s)" -ForegroundColor Green
+                Write-Host "  Removed $pkgDeleted package(s)" -ForegroundColor Green
             }
         }
     }
@@ -127,14 +124,12 @@ if (-not $SkipCleanup) {
         $cleanupNeeded = $true
         Write-Host "  Removing label policy..."
         foreach ($lp in $labelPolicy) {
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
-                        Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
-                Start-Sleep 3
-            }
+            Remove-PurviewObject -Identity $lp.Name `
+                -GetCommand "Get-LabelPolicy" `
+                -RemoveCommand "Remove-LabelPolicy" `
+                -OperationName "label policy" `
+                -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if (-not $WhatIf) { Start-Sleep 3 }
         }
     }
 
@@ -149,14 +144,12 @@ if (-not $SkipCleanup) {
         if ($sublabels) {
             Write-Host "  Removing $($sublabels.Count) sublabels..."
             foreach ($l in $sublabels) {
-                if (-not $WhatIf) {
-                    try {
-                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
-                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
-                        } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove sublabel $($l.Name): $($_.Exception.Message)" }
-                    Start-Sleep 2
-                }
+                Remove-PurviewObject -Identity $l.Name `
+                    -GetCommand "Get-Label" `
+                    -RemoveCommand "Remove-Label" `
+                    -OperationName "sublabel" `
+                    -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+                if (-not $WhatIf) { Start-Sleep 2 }
             }
         }
         # Wait for sublabel deletion to propagate before removing parents
@@ -167,14 +160,12 @@ if (-not $SkipCleanup) {
         if ($topLabels) {
             Write-Host "  Removing $($topLabels.Count) top-level labels/groups..."
             foreach ($l in $topLabels) {
-                if (-not $WhatIf) {
-                    try {
-                        Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
-                            Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
-                        } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
-                    Start-Sleep 2
-                }
+                Remove-PurviewObject -Identity $l.Name `
+                    -GetCommand "Get-Label" `
+                    -RemoveCommand "Remove-Label" `
+                    -OperationName "label" `
+                    -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+                if (-not $WhatIf) { Start-Sleep 2 }
             }
         }
     }

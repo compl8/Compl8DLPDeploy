@@ -31,6 +31,7 @@
         'New-AdvancedRuleJson'
         'Resolve-PolicyMode'
         'Get-MergedRuleParams'
+        'Remove-PurviewObject'
         'Invoke-WithRetry'
         'Start-DeploymentLog'
         'Test-SITRulePackageXml'

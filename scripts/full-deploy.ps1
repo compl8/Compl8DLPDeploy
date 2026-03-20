@@ -64,32 +64,24 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     try {
         $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like "AL*-$($cleanupPrefix)-$($Config.namingSuffix)" })
+        $alDeleted = 0
         foreach ($alp in $alPolicies) {
             $alRules = @()
             try { $alRules = @(Get-AutoSensitivityLabelRule -Policy $alp.Name -ErrorAction SilentlyContinue) } catch { }
             foreach ($alr in $alRules) {
-                Write-Host "    Rule: $($alr.Name)" -ForegroundColor Yellow
-                if (-not $WhatIf) {
-                    try {
-                        Invoke-WithRetry -OperationName "Remove-ALRule $($alr.Name)" -ScriptBlock {
-                            Remove-AutoSensitivityLabelRule -Identity $alr.Name -Confirm:$false -ErrorAction Stop
-                        } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove AL rule $($alr.Name): $($_.Exception.Message)" }
-                    Start-Sleep 2
-                }
+                $status = Remove-PurviewObject -Identity $alr.Name `
+                    -GetCommand "Get-AutoSensitivityLabelRule" -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+                    -OperationName "AL rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+                if (-not $WhatIf -and $status -eq "deleted") { Start-Sleep 2 }
             }
-            Write-Host "    Policy: $($alp.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                if ($alRules.Count -gt 0) { Start-Sleep -Seconds $Config.interCallDelaySec }
-                try {
-                    Invoke-WithRetry -OperationName "Remove-ALPolicy $($alp.Name)" -ScriptBlock {
-                        Remove-AutoSensitivityLabelPolicy -Identity $alp.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove AL policy $($alp.Name): $($_.Exception.Message)" }
-                Start-Sleep 3
-            }
+            if ($alRules.Count -gt 0 -and -not $WhatIf) { Start-Sleep -Seconds $Config.interCallDelaySec }
+            $status = Remove-PurviewObject -Identity $alp.Name `
+                -GetCommand "Get-AutoSensitivityLabelPolicy" -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
+                -OperationName "AL policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if ($status -eq "deleted") { $alDeleted++ }
+            if (-not $WhatIf) { Start-Sleep 3 }
         }
-        if ($alPolicies.Count -gt 0) { Write-Host "    Removed $($alPolicies.Count) auto-labeling policy(ies)" -ForegroundColor Green }
+        if ($alPolicies.Count -gt 0) { Write-Host "    Processed $($alPolicies.Count) auto-labeling policy(ies) ($alDeleted deleted)" -ForegroundColor Green }
         else { Write-Host "    No matching auto-labeling policies found." -ForegroundColor Gray }
     } catch { Write-Warning "Auto-labeling: $_" }
 
@@ -97,36 +89,30 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     Write-Host "  Removing DLP rules..." -ForegroundColor Yellow
     try {
         $rules = Get-DlpComplianceRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-R0*" }
+        $ruleDeleted = 0
         foreach ($rule in $rules) {
-            Write-Host "    $($rule.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Rule $($rule.Name)" -ScriptBlock {
-                        Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove rule $($rule.Name): $($_.Exception.Message)" }
-                Start-Sleep 2
-            }
+            $status = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-DlpComplianceRule" -RemoveCommand "Remove-DlpComplianceRule" `
+                -OperationName "DLP rule" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if ($status -eq "deleted") { $ruleDeleted++ }
+            if (-not $WhatIf) { Start-Sleep 2 }
         }
-        if ($rules) { Write-Host "    Removed $($rules.Count) rule(s)" -ForegroundColor Green }
+        if ($rules) { Write-Host "    Processed $($rules.Count) rule(s) ($ruleDeleted deleted)" -ForegroundColor Green }
     } catch { Write-Warning "Rules: $_" }
 
     # Policies
     Write-Host "  Removing DLP policies..." -ForegroundColor Yellow
     try {
         $policies = Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" }
+        $polDeleted = 0
         foreach ($pol in $policies) {
-            Write-Host "    $($pol.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Policy $($pol.Name)" -ScriptBlock {
-                        Remove-DlpCompliancePolicy -Identity $pol.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove policy $($pol.Name): $($_.Exception.Message)" }
-                Start-Sleep 3
-            }
+            $status = Remove-PurviewObject -Identity $pol.Name `
+                -GetCommand "Get-DlpCompliancePolicy" -RemoveCommand "Remove-DlpCompliancePolicy" `
+                -OperationName "DLP policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if ($status -eq "deleted") { $polDeleted++ }
+            if (-not $WhatIf) { Start-Sleep 3 }
         }
-        if ($policies) { Write-Host "    Removed $($policies.Count) policy(ies)" -ForegroundColor Green }
+        if ($policies) { Write-Host "    Processed $($policies.Count) policy(ies) ($polDeleted deleted)" -ForegroundColor Green }
     } catch { Write-Warning "Policies: $_" }
 
     # SIT packages — only remove packages matching our publisher
@@ -167,12 +153,11 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
                 } else {
                     $removed = 0
                     foreach ($pkg in $ours) {
-                        try {
-                            Invoke-WithRetry -OperationName "Remove-Package $($pkg.Identity)" -ScriptBlock {
-                                Remove-DlpSensitiveInformationTypeRulePackage -Identity $pkg.Identity -Confirm:$false -ErrorAction Stop
-                            } -MaxRetries 2 -BaseDelaySec 30
-                            $removed++
-                        } catch { Write-Warning "  Could not remove package $($pkg.Identity): $($_.Exception.Message)" }
+                        $status = Remove-PurviewObject -Identity $pkg.Identity `
+                            -GetCommand "Get-DlpSensitiveInformationTypeRulePackage" `
+                            -RemoveCommand "Remove-DlpSensitiveInformationTypeRulePackage" `
+                            -OperationName "SIT package" -MaxRetries 2 -BaseDelaySec 30
+                        if ($status -eq "deleted") { $removed++ }
                         Start-Sleep 5
                     }
                     Write-Host "    Removed $removed package(s)" -ForegroundColor Green
@@ -185,20 +170,15 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
     Write-Host "  Removing keyword dictionaries..." -ForegroundColor Yellow
     try {
         $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$($Config.namingPrefix)*" }
-        $dictRemoved = 0
+        $dictDeleted = 0
         foreach ($d in $dicts) {
-            Write-Host "    $($d.Name)" -ForegroundColor Yellow
-            if (-not $WhatIf) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Dictionary $($d.Name)" -ScriptBlock {
-                        Remove-DlpKeywordDictionary -Identity $d.Identity -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries 2 -BaseDelaySec 30
-                } catch { Write-Warning "  Could not remove dictionary $($d.Name): $($_.Exception.Message)" }
-                $dictRemoved++
-                Start-Sleep 2
-            }
+            $status = Remove-PurviewObject -Identity $d.Identity `
+                -GetCommand "Get-DlpKeywordDictionary" -RemoveCommand "Remove-DlpKeywordDictionary" `
+                -OperationName "dictionary" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+            if ($status -eq "deleted") { $dictDeleted++ }
+            if (-not $WhatIf) { Start-Sleep 2 }
         }
-        if ($dictRemoved -gt 0) { Write-Host "    Removed $dictRemoved dictionary(ies)" -ForegroundColor Green }
+        if ($dicts) { Write-Host "    Processed $($dicts.Count) dictionary(ies) ($dictDeleted deleted)" -ForegroundColor Green }
     } catch { Write-Warning "Dictionaries: $_" }
 
     if (-not $SkipLabels) {
@@ -207,15 +187,10 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
         try {
             $labelPolicies = Get-LabelPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -eq $Config.labelPolicyName }
             foreach ($lp in $labelPolicies) {
-                Write-Host "    $($lp.Name)" -ForegroundColor Yellow
-                if (-not $WhatIf) {
-                    try {
-                        Invoke-WithRetry -OperationName "Remove-LabelPolicy $($lp.Name)" -ScriptBlock {
-                            Remove-LabelPolicy -Identity $lp.Name -Confirm:$false -ErrorAction Stop
-                        } -MaxRetries 2 -BaseDelaySec 30
-                    } catch { Write-Warning "  Could not remove label policy $($lp.Name): $($_.Exception.Message)" }
-                    Start-Sleep 3
-                }
+                $status = Remove-PurviewObject -Identity $lp.Name `
+                    -GetCommand "Get-LabelPolicy" -RemoveCommand "Remove-LabelPolicy" `
+                    -OperationName "label policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+                if (-not $WhatIf) { Start-Sleep 3 }
             }
         } catch { Write-Warning "Label policy: $_" }
 
@@ -229,15 +204,10 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
                 $sublabels = $labels | Where-Object { $_.ParentId } | Sort-Object { $_.Priority } -Descending
                 $topLabels = $labels | Where-Object { -not $_.ParentId } | Sort-Object { $_.Priority } -Descending
                 foreach ($l in @($sublabels) + @($topLabels)) {
-                    Write-Host "    $($l.Name)" -ForegroundColor Yellow
-                    if (-not $WhatIf) {
-                        try {
-                            Invoke-WithRetry -OperationName "Remove-Label $($l.Name)" -ScriptBlock {
-                                Remove-Label -Identity $l.Name -Confirm:$false -ErrorAction Stop
-                            } -MaxRetries 2 -BaseDelaySec 30
-                        } catch { Write-Warning "  Could not remove label $($l.Name): $($_.Exception.Message)" }
-                        Start-Sleep 2
-                    }
+                    $status = Remove-PurviewObject -Identity $l.Name `
+                        -GetCommand "Get-Label" -RemoveCommand "Remove-Label" `
+                        -OperationName "label" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
+                    if (-not $WhatIf) { Start-Sleep 2 }
                 }
             }
         } catch { Write-Warning "Labels: $_" }

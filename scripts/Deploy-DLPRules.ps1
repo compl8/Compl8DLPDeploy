@@ -125,47 +125,36 @@ if ($Cleanup) {
     }
 
     foreach ($policyName in $policyNames) {
-        $existingPolicy = $null
-        try { $existingPolicy = Get-DlpCompliancePolicy -Identity $policyName -ErrorAction Stop } catch { }
-
-        if (-not $existingPolicy) {
-            Write-Host "  Policy not found (skipping): $policyName" -ForegroundColor Gray
-            continue
-        }
+        Write-Host "`n  Policy: $policyName" -ForegroundColor Cyan
 
         # Remove rules first
         $rules = @()
         try { $rules = Get-DlpComplianceRule -Policy $policyName -ErrorAction Stop } catch {
-            Write-Warning "  Error listing rules for ${policyName}: $($_.Exception.Message)"
+            $msg = $_.Exception.Message
+            if ($msg -notmatch "couldn't be found|not found|does not exist") {
+                Write-Warning "  Error listing rules for ${policyName}: $msg"
+            }
         }
         $ruleIndex = 0
         foreach ($rule in $rules) {
-            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-DlpComplianceRule")) {
-                if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
-                try {
-                    Invoke-WithRetry -OperationName "Remove-Rule $($rule.Name)" -ScriptBlock {
-                        Remove-DlpComplianceRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                    Write-Host "  Removed rule: $($rule.Name)" -ForegroundColor Yellow
-                } catch {
-                    Write-Warning "  Failed to remove rule $($rule.Name): $($_.Exception.Message)"
-                }
-                $ruleIndex++
-            }
+            if ($ruleIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
+            $null = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-DlpComplianceRule" `
+                -RemoveCommand "Remove-DlpComplianceRule" `
+                -OperationName "DLP rule" `
+                -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec `
+                -WhatIf:$WhatIfPreference
+            $ruleIndex++
         }
 
         # Remove policy
         if ($rules.Count -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $Config.interCallDelaySec }
-        if ($PSCmdlet.ShouldProcess($policyName, "Remove-DlpCompliancePolicy")) {
-            try {
-                Invoke-WithRetry -OperationName "Remove-Policy $policyName" -ScriptBlock {
-                    Remove-DlpCompliancePolicy -Identity $policyName -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                Write-Host "  Removed policy: $policyName" -ForegroundColor Yellow
-            } catch {
-                Write-Warning "  Error removing policy ${policyName}: $($_.Exception.Message)"
-            }
-        }
+        $null = Remove-PurviewObject -Identity $policyName `
+            -GetCommand "Get-DlpCompliancePolicy" `
+            -RemoveCommand "Remove-DlpCompliancePolicy" `
+            -OperationName "DLP policy" `
+            -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec `
+            -WhatIf:$WhatIfPreference
     }
 
     Write-Host "`nCleanup complete." -ForegroundColor Green

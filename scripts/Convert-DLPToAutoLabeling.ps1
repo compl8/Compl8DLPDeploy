@@ -1026,35 +1026,27 @@ if ($Cleanup) {
         $ruleIdx = 0
         foreach ($rule in $rules) {
             if ($ruleIdx -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-            if ($PSCmdlet.ShouldProcess($rule.Name, "Remove-AutoSensitivityLabelRule")) {
-                try {
-                    Invoke-WithRetry -OperationName "Remove-ALRule $($rule.Name)" -ScriptBlock {
-                        Remove-AutoSensitivityLabelRule -Identity $rule.Name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                    Write-Host "    Removed rule: $($rule.Name)" -ForegroundColor Yellow
-                    $removedRules++
-                } catch {
-                    Write-Warning "    Failed to remove rule $($rule.Name): $($_.Exception.Message)"
-                    $failedRemovals++
-                }
-                $ruleIdx++
-            }
+            $result = Remove-PurviewObject -Identity $rule.Name `
+                -GetCommand "Get-AutoSensitivityLabelRule" `
+                -RemoveCommand "Remove-AutoSensitivityLabelRule" `
+                -OperationName "AL rule" `
+                -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec `
+                -WhatIf:$WhatIfPreference
+            if ($result -eq 'deleted')    { $removedRules++ }
+            if ($result -eq 'failed')     { $failedRemovals++ }
+            $ruleIdx++
         }
 
         # Remove policy
         if ($rules.Count -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $interCallDelaySec }
-        if ($PSCmdlet.ShouldProcess($polName, "Remove-AutoSensitivityLabelPolicy")) {
-            try {
-                Invoke-WithRetry -OperationName "Remove-ALPolicy $polName" -ScriptBlock {
-                    Remove-AutoSensitivityLabelPolicy -Identity $polName -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
-                Write-Host "    Removed policy: $polName" -ForegroundColor Yellow
-                $removedPolicies++
-            } catch {
-                Write-Warning "    Failed to remove policy ${polName}: $($_.Exception.Message)"
-                $failedRemovals++
-            }
-        }
+        $result = Remove-PurviewObject -Identity $polName `
+            -GetCommand "Get-AutoSensitivityLabelPolicy" `
+            -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
+            -OperationName "AL policy" `
+            -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec `
+            -WhatIf:$WhatIfPreference
+        if ($result -eq 'deleted')    { $removedPolicies++ }
+        if ($result -eq 'failed')     { $failedRemovals++ }
     }
     #endregion
 

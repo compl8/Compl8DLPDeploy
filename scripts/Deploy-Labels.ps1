@@ -70,37 +70,19 @@ if ($Cleanup) {
     # Remove label policy first
     $policyName = $Config.labelPolicyName
     $cleanupDelay = if ($Config.interCallDelaySec) { $Config.interCallDelaySec } else { 2 }
-    try {
-        $existingPolicy = Get-LabelPolicy -Identity $policyName -ErrorAction Stop
-        if ($existingPolicy) {
-            if ($PSCmdlet.ShouldProcess($policyName, "Remove-LabelPolicy")) {
-                Invoke-WithRetry -OperationName "Remove-LabelPolicy $policyName" -ScriptBlock {
-                    Remove-LabelPolicy -Identity $policyName -Confirm:$false -ErrorAction Stop
-                } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                Write-Host "  Removed label policy: $policyName" -ForegroundColor Yellow
-            }
-        }
-    } catch {
-        Write-Host "  Label policy not found (skipping): $policyName" -ForegroundColor Gray
-    }
+    Remove-PurviewObject -Identity $policyName `
+        -GetCommand "Get-LabelPolicy" -RemoveCommand "Remove-LabelPolicy" `
+        -OperationName "label policy" `
+        -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -WhatIf:$WhatIfPreference
 
     $labelIndex = 0
     foreach ($label in $sortedLabels) {
         if ($labelIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $cleanupDelay }
         $labelIndex++
-        try {
-            $existing = Get-Label -Identity $label.name -ErrorAction Stop
-            if ($existing) {
-                if ($PSCmdlet.ShouldProcess($label.name, "Remove-Label")) {
-                    Invoke-WithRetry -OperationName "Remove-Label $($label.name)" -ScriptBlock {
-                        Remove-Label -Identity $label.name -Confirm:$false -ErrorAction Stop
-                    } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
-                    Write-Host "  Removed label: $($label.name)" -ForegroundColor Yellow
-                }
-            }
-        } catch {
-            Write-Host "  Label not found (skipping): $($label.name)" -ForegroundColor Gray
-        }
+        Remove-PurviewObject -Identity $label.name `
+            -GetCommand "Get-Label" -RemoveCommand "Remove-Label" `
+            -OperationName "label" `
+            -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -WhatIf:$WhatIfPreference
     }
 
     Write-Host "`nCleanup complete." -ForegroundColor Green
