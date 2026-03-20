@@ -301,7 +301,15 @@ if ($Phase -eq "All" -or $Phase -eq "DLPRules") {
     $timestampFile = Join-Path $ProjectRoot "config" "last-classifier-upload.json"
     if (Test-Path $timestampFile) {
         $uploadInfo = Get-Content $timestampFile -Raw | ConvertFrom-Json
-        $uploadTime = [DateTimeOffset]::Parse($uploadInfo.timestamp)
+        # ConvertFrom-Json may auto-convert ISO timestamps to DateTime objects,
+        # which lose timezone info and get culture-formatted on ToString().
+        # Handle both string and DateTime inputs.
+        $ts = $uploadInfo.timestamp
+        if ($ts -is [datetime]) {
+            $uploadTime = [DateTimeOffset]::new($ts, [TimeSpan]::Zero)
+        } else {
+            $uploadTime = [DateTimeOffset]::Parse($ts, [System.Globalization.CultureInfo]::InvariantCulture)
+        }
         $hoursAgo = [math]::Round(((Get-Date).ToUniversalTime() - $uploadTime.UtcDateTime).TotalHours, 1)
 
         if ($hoursAgo -lt 1) {
