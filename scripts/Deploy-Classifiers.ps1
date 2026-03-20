@@ -201,6 +201,7 @@ function Get-DeployedPackageInfo {
     $info = @{
         Identity    = $DeployedPackage.Identity
         Name        = $DeployedPackage.Name
+        DisplayName = $DeployedPackage.Identity  # overwritten below if XML has LocalizedDetails
         Publisher   = $DeployedPackage.Publisher
         CreatedUTC  = $DeployedPackage.WhenCreatedUTC
         ModifiedUTC = $DeployedPackage.WhenChangedUTC
@@ -222,6 +223,15 @@ function Get-DeployedPackageInfo {
         $xml = [xml]$xmlContent
 
         $rulePack = $xml.RulePackage.RulePack
+        if ($rulePack) {
+            $localized = $rulePack.SelectSingleNode("*[local-name()='Details']/*[local-name()='LocalizedDetails']/*[local-name()='Name']")
+            if (-not $localized) {
+                # Fallback: try direct property access (works when no namespace prefix)
+                try { $localized = $rulePack.Details.LocalizedDetails.Name } catch { }
+            }
+            $nameText = if ($localized -is [System.Xml.XmlNode]) { $localized.InnerText } elseif ($localized -is [string]) { $localized } else { $null }
+            if ($nameText) { $info.DisplayName = $nameText }
+        }
         if ($rulePack -and $rulePack.Version) {
             $v = $rulePack.Version
             $info.Version = @{
@@ -902,8 +912,7 @@ function Invoke-Estimate {
         $entityStr = if ($info.EntityCount -ge 0) { "$($info.EntityCount)" } else { "?" }
 
         Write-Host ""
-        Write-Host "    $idx. $($d.Name)${tag}" -ForegroundColor $nameColor
-        Write-Host "       Identity:  $($d.Identity)" -ForegroundColor DarkGray
+        Write-Host "    $idx. $($info.DisplayName)${tag}" -ForegroundColor $nameColor
         Write-Host "       Publisher: $($d.Publisher)" -ForegroundColor DarkGray
         Write-Host "       Version:   $($info.VersionStr)" -ForegroundColor DarkGray
         Write-Host "       Entities:  $entityStr" -ForegroundColor DarkGray
@@ -926,7 +935,7 @@ function Invoke-Estimate {
         Write-Host "`n  Per-Package Limits (custom packages):" -ForegroundColor White
         foreach ($d in $customPkgs) {
             $info = Get-DeployedPackageInfo -DeployedPackage $d
-            Write-Host "    $($d.Name):" -ForegroundColor White
+            Write-Host "    $($info.DisplayName):" -ForegroundColor White
 
             if ($info.EntityCount -ge 0) {
                 $entPct = [math]::Round(($info.EntityCount / 50) * 100)
@@ -1056,19 +1065,10 @@ function Invoke-List {
         Write-Host ""
         foreach ($d in $deployed) {
             $info = Get-DeployedPackageInfo -DeployedPackage $d
-            # Get human name from RulePack > Details > LocalizedDetails > Name
-            $displayName = $d.Identity
-            if ($info.RawXml) {
-                try {
-                    $xml = [xml]$info.RawXml
-                    $localized = $xml.RulePackage.RulePack.Details.LocalizedDetails
-                    if ($localized -and $localized.Name) { $displayName = $localized.Name }
-                } catch { }
-            }
             $entityStr = if ($info.EntityCount -ge 0) { "$($info.EntityCount) SITs" } else { "unknown SITs" }
             $versionStr = "v$($info.VersionStr)"
             $modifiedStr = if ($d.WhenChangedUTC) { "  modified $($d.WhenChangedUTC)" } else { "" }
-            Write-Host "  $displayName  ($entityStr, $versionStr)$modifiedStr" -ForegroundColor Gray
+            Write-Host "  $($info.DisplayName)  ($entityStr, $versionStr)$modifiedStr" -ForegroundColor Gray
         }
     }
 

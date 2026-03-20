@@ -130,8 +130,20 @@ try {
 
     foreach ($pkg in $customPackages) {
         Write-Host ""
+        # Extract display name early for the header
+        $displayName = $pkg.Identity
+        if ($pkg.SerializedClassificationRuleCollection) {
+            try {
+                $bytes = $pkg.SerializedClassificationRuleCollection
+                $xmlContent = [System.Text.Encoding]::Unicode.GetString($bytes)
+                $xmlParsed = [xml]$xmlContent
+                $localized = $xmlParsed.RulePackage.RulePack.Details.LocalizedDetails
+                if ($localized -and $localized.Name) { $displayName = $localized.Name }
+            } catch { }
+        }
+
         Write-Host "  $subDivider"
-        Write-Host "  Package Identity: $($pkg.Identity)"
+        Write-Host "  Package: $displayName"
         Write-Host "  Publisher:        $($pkg.Publisher)"
         if ($pkg.WhenChangedUTC) {
             Write-Host "  Last modified:    $($pkg.WhenChangedUTC)"
@@ -143,16 +155,8 @@ try {
         }
 
         try {
-            # IMPORTANT: SerializedClassificationRuleCollection is Byte[], decode with Unicode
-            $bytes = $pkg.SerializedClassificationRuleCollection
-            $xmlContent = [System.Text.Encoding]::Unicode.GetString($bytes)
-            $xml = [xml]$xmlContent
-
-            # Extract display name from localized details
-            $displayName = $pkg.Identity
-            $localized = $xml.RulePackage.RulePack.Details.LocalizedDetails
-            if ($localized -and $localized.Name) { $displayName = $localized.Name }
-            Write-Host "  Display name:     $displayName"
+            # Reuse already-parsed XML from display name extraction above
+            $xml = $xmlParsed
 
             # Extract version
             $rulePack = $xml.RulePackage.RulePack
