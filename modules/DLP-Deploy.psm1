@@ -514,6 +514,114 @@ function Get-MergedRuleParams {
 }
 #endregion
 
+#region Pre-flight Conflict Check
+function Test-PurviewNameConflicts {
+    <#
+    .SYNOPSIS
+        Checks a list of planned object names against existing tenant objects.
+        Returns $true if safe to proceed, $false if user aborted.
+
+        Classifies each existing object as:
+        - "active"  — exists and is live, will need delete-and-recreate
+        - "pending" — pending deletion, creation may fail
+        - "clean"   — no conflict
+
+        Prompts for confirmation when conflicts are found.
+    .EXAMPLE
+        $existingRules = Get-DlpComplianceRule -Policy $policyName
+        $safe = Test-PurviewNameConflicts -PlannedNames @("P01-R01-ECH-OFFI") `
+            -ExistingObjects $existingRules -ObjectType "DLP rule"
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$PlannedNames,
+        [array]$ExistingObjects = @(),
+        [string]$ObjectType = "object",
+        [string]$IdentityProperty = "Name"
+    )
+
+    # Build lookup of existing objects by name
+    $existingLookup = @{}
+    foreach ($obj in $ExistingObjects) {
+        $name = $obj.$IdentityProperty
+        if ($name) { $existingLookup[$name] = $obj }
+    }
+
+    # Classify conflicts
+    $active = @()
+    $pending = @()
+    $clean = 0
+    foreach ($name in $PlannedNames) {
+        if (-not $existingLookup.ContainsKey($name)) {
+            $clean++
+            continue
+        }
+        $obj = $existingLookup[$name]
+        $isPending = $false
+        if ($obj.PSObject.Properties['Mode'] -and $obj.Mode -eq 'PendingDeletion') { $isPending = $true }
+        if ($obj.PSObject.Properties['State'] -and $obj.State -eq 'PendingDeletion') { $isPending = $true }
+
+        if ($isPending) { $pending += $name }
+        else { $active += $name }
+    }
+
+    if ($active.Count -eq 0 -and $pending.Count -eq 0) {
+        Write-Host "    No name conflicts detected ($clean new $($ObjectType)s)" -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host ""
+    Write-Host "    Name conflict check:" -ForegroundColor Yellow
+    Write-Host "      Clean (no conflict):  $clean" -ForegroundColor Green
+    if ($active.Count -gt 0) {
+        Write-Host "      Active (will delete and recreate): $($active.Count)" -ForegroundColor Red
+        foreach ($n in $active | Select-Object -First 10) {
+            Write-Host "        $n" -ForegroundColor Red
+        }
+        if ($active.Count -gt 10) { Write-Host "        ... and $($active.Count - 10) more" -ForegroundColor Red }
+    }
+    if ($pending.Count -gt 0) {
+        Write-Host "      Pending deletion (creation may fail): $($pending.Count)" -ForegroundColor DarkYellow
+        foreach ($n in $pending | Select-Object -First 10) {
+            Write-Host "        $n" -ForegroundColor DarkYellow
+        }
+        if ($pending.Count -gt 10) { Write-Host "        ... and $($pending.Count - 10) more" -ForegroundColor DarkYellow }
+        Write-Host ""
+        Write-Host "      WARNING: Purview may reject creation of $($ObjectType)s that are still" -ForegroundColor DarkYellow
+        Write-Host "      pending deletion. If this happens, wait for deletion to complete and re-run." -ForegroundColor DarkYellow
+    }
+
+    Write-Host ""
+    $confirm = Read-Host "    Proceed? Active items will be deleted and recreated (yes/no)"
+    if ($confirm -ne "yes") {
+        Write-Host "    Aborted." -ForegroundColor Red
+        return $false
+    }
+
+    # Delete active conflicts so creation can proceed
+    if ($active.Count -gt 0) {
+        Write-Host "    Removing $($active.Count) active $($ObjectType)(s) before deploy..." -ForegroundColor Yellow
+        foreach ($name in $active) {
+            $obj = $existingLookup[$name]
+            Write-Host "      $name" -ForegroundColor Yellow -NoNewline
+            # Determine remove command from object type
+            $removeCmd = switch -Wildcard ($ObjectType) {
+                "DLP rule"  { "Remove-DlpComplianceRule" }
+                "DLP polic*" { "Remove-DlpCompliancePolicy" }
+                "AL rule"   { "Remove-AutoSensitivityLabelRule" }
+                "AL polic*" { "Remove-AutoSensitivityLabelPolicy" }
+                default     { $null }
+            }
+            if ($removeCmd) {
+                $null = Remove-PurviewObject -Identity $name -InputObject $obj `
+                    -RemoveCommand $removeCmd -OperationName $ObjectType -MaxRetries 2 -BaseDelaySec 30
+            }
+        }
+    }
+
+    return $true
+}
+#endregion
+
 #region Deletion
 function Remove-PurviewObject {
     <#
@@ -1048,6 +1156,7 @@ Export-ModuleMember -Function @(
     'New-AdvancedRuleJson'
     'Resolve-PolicyMode'
     'Get-MergedRuleParams'
+    'Test-PurviewNameConflicts'
     'Remove-PurviewObject'
     'Remove-PurviewObjects'
     'Invoke-WithRetry'

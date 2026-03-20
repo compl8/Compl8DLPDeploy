@@ -31,6 +31,7 @@
         'New-AdvancedRuleJson'
         'Resolve-PolicyMode'
         'Get-MergedRuleParams'
+        'Test-PurviewNameConflicts'
         'Remove-PurviewObject'
         'Remove-PurviewObjects'
         'Invoke-WithRetry'

@@ -224,6 +224,44 @@ if (-not $Config.skipSitValidation -and -not $SkipValidation) {
 Write-Host "`n=== DLP Rules Deployment ===" -ForegroundColor Cyan
 Write-Host "Starting deployment at $(Get-Date)" -ForegroundColor Cyan
 
+#region Pre-flight: check for name conflicts across all policies
+Write-Host "`n=== Pre-flight: Checking for name conflicts ===" -ForegroundColor Cyan
+$allPlannedNames = @()
+foreach ($policy in $Policies) {
+    if (-not $policy.Enabled) { continue }
+    $policyNum = $policy.Number
+    $ruleNum = 0
+    foreach ($label in $Labels) {
+        $ruleNum++
+        $labelCode = $label.code
+        $chunks = @(Split-ClassifierChunks -ClassifierList $Classifiers[$labelCode] -MaxPerRule 125)
+        $chunkIndex = 0
+        foreach ($chunk in $chunks) {
+            $chunkIndex++
+            if ($chunks.Count -gt 1) {
+                $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                $name = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+            } else {
+                $name = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+            }
+            $allPlannedNames += $name
+        }
+    }
+}
+
+# Query all existing rules across target policies
+$allExistingRules = @()
+foreach ($policy in $Policies) {
+    if (-not $policy.Enabled) { continue }
+    $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+    try { $allExistingRules += @(Get-DlpComplianceRule -Policy $policyName -ErrorAction SilentlyContinue) } catch { }
+}
+
+Write-Host "  Planned rules: $($allPlannedNames.Count), Existing rules on tenant: $($allExistingRules.Count)" -ForegroundColor Gray
+$safe = Test-PurviewNameConflicts -PlannedNames $allPlannedNames -ExistingObjects $allExistingRules -ObjectType "DLP rule"
+if (-not $safe) { return }
+#endregion
+
 $successPolicies = 0
 $failPolicies    = 0
 $skippedPolicies = 0
