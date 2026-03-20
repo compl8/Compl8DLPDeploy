@@ -292,12 +292,17 @@ foreach ($label in $Labels) {
         if ($existingPolicy) {
             Write-Host "  Policy exists. Updating..." -ForegroundColor Yellow
             if ($PSCmdlet.ShouldProcess($policyName, "Set-AutoSensitivityLabelPolicy")) {
+                $setPolicyParams = @{
+                    Identity              = $policyName
+                    ApplySensitivityLabel = $labelName
+                    Comment              = "Auto-label $($label.fullName) ($labelCode)"
+                    Mode                 = "TestWithoutNotifications"
+                    Confirm              = $false
+                    ErrorAction          = "Stop"
+                }
+                if ($Config.overwriteLabel) { $setPolicyParams['OverwriteLabel'] = $true }
                 Invoke-WithRetry -OperationName "Set-ALPolicy $policyName" -ScriptBlock {
-                    Set-AutoSensitivityLabelPolicy -Identity $policyName `
-                        -ApplySensitivityLabel $labelName `
-                        -Comment "Auto-label $($label.fullName) ($labelCode)" `
-                        -Mode TestWithoutNotifications `
-                        -Confirm:$false -ErrorAction Stop
+                    Set-AutoSensitivityLabelPolicy @setPolicyParams
                 } -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec
             }
         } else {
@@ -308,6 +313,7 @@ foreach ($label in $Labels) {
                 Comment                 = "Auto-label $($label.fullName) ($labelCode)"
                 Mode                    = "TestWithoutNotifications"
             }
+            if ($Config.overwriteLabel) { $newPolicyParams['OverwriteLabel'] = $true }
             $newPolicyParams += $locationParams
 
             if ($PSCmdlet.ShouldProcess($policyName, "New-AutoSensitivityLabelPolicy")) {

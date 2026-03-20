@@ -24,6 +24,8 @@ function Get-ModuleDefaults {
         maxRetries               = 3
         baseDelaySec             = 300
         interCallDelaySec        = 10
+        # Auto-labeling
+        overwriteLabel           = $false
         # Classifier deployment
         deploymentTier           = "full"
         publisher                = ""

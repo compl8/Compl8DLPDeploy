@@ -56,6 +56,7 @@ $namingSuffix = "SIM"
 $interCallDelaySec = 10
 $maxRetries = 3
 $baseDelaySec = 300
+$overwriteLabel = $false
 
 try {
     $globalJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
@@ -70,6 +71,7 @@ if ($globalJson) {
     if ($mergedConfig.interCallDelaySec) { $interCallDelaySec = $mergedConfig.interCallDelaySec }
     if ($mergedConfig.maxRetries) { $maxRetries = $mergedConfig.maxRetries }
     if ($mergedConfig.baseDelaySec) { $baseDelaySec = $mergedConfig.baseDelaySec }
+    if ($mergedConfig.overwriteLabel) { $overwriteLabel = $mergedConfig.overwriteLabel }
 }
 
 # Load optional labels.json
@@ -682,13 +684,19 @@ if ($Execute) {
             if ($existingPolicy) {
                 Write-Host "  Policy already exists: $policyName (reusing)" -ForegroundColor Yellow
             } elseif ($PSCmdlet.ShouldProcess($policyName, "New-AutoSensitivityLabelPolicy")) {
+                $newPolicyParams = @{
+                    Name                    = $policyName
+                    ApplySensitivityLabel   = $labelName
+                    ExchangeLocation        = "All"
+                    SharePointLocation      = "All"
+                    OneDriveLocation        = "All"
+                    Mode                    = "TestWithoutNotifications"
+                    Comment                 = $policyComment
+                    ErrorAction             = "Stop"
+                }
+                if ($overwriteLabel) { $newPolicyParams['OverwriteLabel'] = $true }
                 Invoke-WithRetry -OperationName "New-ALPolicy $policyName" -ScriptBlock {
-                    New-AutoSensitivityLabelPolicy -Name $policyName `
-                        -ApplySensitivityLabel $labelName `
-                        -ExchangeLocation "All" -SharePointLocation "All" -OneDriveLocation "All" `
-                        -Mode TestWithoutNotifications `
-                        -Comment $policyComment `
-                        -ErrorAction Stop
+                    New-AutoSensitivityLabelPolicy @newPolicyParams
                 } -MaxRetries $maxRetries -BaseDelaySec $baseDelaySec
                 Write-Host "  Policy created: $policyName" -ForegroundColor Green
             }

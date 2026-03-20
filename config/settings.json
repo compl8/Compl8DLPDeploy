@@ -9,6 +9,7 @@
     "namingSuffix": "EXT-ADT",
     "skipSitValidation": false,
     "suppressRuleOutput": true,
+    "overwriteLabel": false,
     "deploymentTier": "full",
     "publisher": "Queensland Government CSU",
     "labelPolicyName": "QGISCF-Label-Policy",
