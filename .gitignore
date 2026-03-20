@@ -6,6 +6,8 @@ Thumbs.db
 *.swp
 .vscode/
 __pycache__/
+plans/conversion-plan-*.json
+docs/superpowers/
 config/*.bak
 config/tenant-sits.json
 config/last-classifier-upload.json
