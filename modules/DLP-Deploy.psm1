@@ -535,8 +535,23 @@ function Invoke-WithRetry {
             $isThrottle = $msg -match "server side error" -or
                           $msg -match "try again after some time"
             $isTransient = $msg -match "Object reference not set"
+            $isDeleteCooldown = $msg -match "DeleteRetryInterval" -or
+                                $msg -match "retry after (\d+) min"
 
-            if ($isThrottle -and $attempt -le $MaxRetries) {
+            if ($isDeleteCooldown -and $attempt -le $MaxRetries) {
+                # Purview enforces a 60-min cooldown between delete attempts on the same rule.
+                # Extract the wait time from the message if possible.
+                $waitMin = 60
+                if ($msg -match "retry after (\d+) min") { $waitMin = [int]$Matches[1] + 1 }
+                $delaySec = $waitMin * 60
+                $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
+                Write-Host ""
+                Write-Warning "Purview delete cooldown on: $OperationName"
+                Write-Warning "  Error: $msg"
+                Write-Warning "  Retry $attempt of $MaxRetries - waiting ${waitMin} min - resuming at $resumeTime"
+                Write-Host ""
+                Start-Sleep -Seconds $delaySec
+            } elseif ($isThrottle -and $attempt -le $MaxRetries) {
                 $delaySec = $BaseDelaySec * $attempt
                 $delayMin = [math]::Round($delaySec / 60, 0)
                 $resumeTime = (Get-Date).AddSeconds($delaySec).ToString("HH:mm:ss")
