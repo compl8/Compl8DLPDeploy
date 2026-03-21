@@ -10,6 +10,7 @@
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -Cleanup         # Remove policies/rules
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -SkipValidation  # Skip SIT check
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -SkipVerification
+#   .\scripts\Deploy-AutoLabeling.ps1 -Connect -StartSimulation  # Restart simulation on all policies
 #==============================================================================
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -17,6 +18,7 @@ param(
     [switch]$SkipValidation,
     [switch]$SkipVerification,
     [switch]$Cleanup,
+    [switch]$StartSimulation,
     [switch]$Connect,
     [string]$UPN
 )
@@ -143,6 +145,41 @@ if (-not (Assert-DLPSession)) { return }
 
 #region Logging
 $null = Start-DeploymentLog -ScriptName "Deploy-AutoLabeling"
+#endregion
+
+#region Start Simulation
+if ($StartSimulation) {
+    Write-Host "`n=== Start Simulation ===" -ForegroundColor Cyan
+    Write-Host "  Querying auto-labeling policies matching $($Config.namingPrefix)..." -ForegroundColor Gray
+
+    $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop |
+        Where-Object { $_.Name -like "AL*-$($Config.namingPrefix)-$($Config.namingSuffix)" })
+
+    if ($alPolicies.Count -eq 0) {
+        Write-Host "  No matching policies found." -ForegroundColor Yellow
+        try { Stop-Transcript } catch { }
+        return
+    }
+
+    Write-Host "  Found $($alPolicies.Count) policy(ies)" -ForegroundColor Gray
+    $started = 0
+    foreach ($pol in ($alPolicies | Sort-Object Name)) {
+        Write-Host "    $($pol.Name)" -ForegroundColor Yellow -NoNewline
+        if ($PSCmdlet.ShouldProcess($pol.Name, "Start simulation")) {
+            try {
+                Set-AutoSensitivityLabelPolicy -Identity $pol.Name -StartSimulation $true -ErrorAction Stop
+                Write-Host " -> simulation started" -ForegroundColor Green
+                $started++
+            } catch {
+                Write-Host " -> FAILED: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+
+    Write-Host "`n  Simulation started on $started of $($alPolicies.Count) policies." -ForegroundColor Cyan
+    try { Stop-Transcript } catch { }
+    return
+}
 #endregion
 
 #region Cleanup
@@ -469,6 +506,26 @@ if (-not $SkipVerification) {
     $deployedRules | Format-Table Name, Workload, Policy -AutoSize
 } else {
     Write-Host "`n=== Verification Skipped ===" -ForegroundColor Yellow
+}
+#endregion
+
+#region Start Simulation (post-deploy)
+if ($successPolicies -gt 0 -and -not $WhatIfPreference) {
+    Write-Host "`n=== Starting Simulation ===" -ForegroundColor Cyan
+    $simPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "AL*-$($Config.namingPrefix)-$($Config.namingSuffix)" })
+    $simStarted = 0
+    foreach ($pol in ($simPolicies | Sort-Object Name)) {
+        Write-Host "    $($pol.Name)" -ForegroundColor Yellow -NoNewline
+        try {
+            Set-AutoSensitivityLabelPolicy -Identity $pol.Name -StartSimulation $true -ErrorAction Stop
+            Write-Host " -> simulation started" -ForegroundColor Green
+            $simStarted++
+        } catch {
+            Write-Host " -> $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    Write-Host "  Simulation started on $simStarted policy(ies)" -ForegroundColor Cyan
 }
 #endregion
 
