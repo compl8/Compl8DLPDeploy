@@ -283,4 +283,38 @@ Describe 'Split-ClassifierChunks' {
         $allItems = $result | ForEach-Object { $_ } | ForEach-Object { $_.Name }
         $allItems.Count | Should -Be 200
     }
+
+    It 'Throws when chunk count would exceed 26 (a-z limit)' {
+        # 27 chunks of 125 = 3375 classifiers
+        $classifiers = 1..3375 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        { Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125 } | Should -Throw "*maximum is 26*"
+    }
+
+    It 'Allows exactly 26 chunks (3250 classifiers at 125)' {
+        $classifiers = 1..3250 | ForEach-Object { @{ Name = "SIT-$_"; Id = [guid]::NewGuid().ToString() } }
+        $result = @(Split-ClassifierChunks -ClassifierList $classifiers -MaxPerRule 125)
+        $result.Count | Should -Be 26
+    }
+}
+
+Describe 'Get-ChunkLetter' {
+    It 'Returns a for index 1' {
+        Get-ChunkLetter -ChunkIndex 1 | Should -Be 'a'
+    }
+
+    It 'Returns z for index 26' {
+        Get-ChunkLetter -ChunkIndex 26 | Should -Be 'z'
+    }
+
+    It 'Throws for index 0' {
+        { Get-ChunkLetter -ChunkIndex 0 } | Should -Throw "*out of range*"
+    }
+
+    It 'Throws for index 27' {
+        { Get-ChunkLetter -ChunkIndex 27 } | Should -Throw "*out of range*"
+    }
+
+    It 'Throws for negative index' {
+        { Get-ChunkLetter -ChunkIndex -1 } | Should -Throw "*out of range*"
+    }
 }

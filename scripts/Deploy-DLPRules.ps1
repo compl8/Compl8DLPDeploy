@@ -239,7 +239,7 @@ foreach ($policy in $Policies) {
         foreach ($chunk in $chunks) {
             $chunkIndex++
             if ($chunks.Count -gt 1) {
-                $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                 $name = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
             } else {
                 $name = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
@@ -342,7 +342,7 @@ foreach ($policy in $Policies) {
 
             # Build rule name: append chunk letter to R-number only when split
             if ($chunks.Count -gt 1) {
-                $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                 $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
             } else {
                 $ruleName = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix

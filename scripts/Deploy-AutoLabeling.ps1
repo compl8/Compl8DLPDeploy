@@ -311,7 +311,7 @@ foreach ($l in $Labels) {
         foreach ($chunk in $chunks) {
             $ci++
             if ($chunks.Count -gt 1) {
-                $cl = [char]([int][char]'a' + $ci - 1)
+                $cl = Get-ChunkLetter -ChunkIndex $ci
                 $allPlannedRuleNames += "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $pn, $rn, $cl, $wl.Code, $l.code, $Config.namingSuffix
             } else {
                 $allPlannedRuleNames += "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $pn, $rn, $wl.Code, $l.code, $Config.namingSuffix
@@ -425,7 +425,7 @@ foreach ($label in $Labels) {
 
             # Build rule name: AL{policy}-R{rule}{chunk}-{workload}-{label}-{suffix}
             if ($chunks.Count -gt 1) {
-                $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                 $ruleName = "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $wl.Code, $labelCode, $Config.namingSuffix
             } else {
                 $ruleName = "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wl.Code, $labelCode, $Config.namingSuffix

@@ -308,7 +308,7 @@ if ($doRules -and $Policies -and $Classifiers) {
             foreach ($chunk in $chunks) {
                 $chunkIndex++
                 if ($chunks.Count -gt 1) {
-                    $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                    $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                     $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
                 } else {
                     $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
@@ -352,7 +352,7 @@ if ($doRules -and $Policies -and $Classifiers) {
                 foreach ($chunk in $chunks) {
                     $chunkIndex++
                     if ($chunks.Count -gt 1) {
-                        $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                        $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                         $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
                         $chunkNote = " [chunk $chunkIndex/$($chunks.Count)]"
                     } else {
@@ -380,7 +380,7 @@ if ($doRules -and $Policies -and $Classifiers) {
                 foreach ($chunk in $chunks) {
                     $chunkIndex++
                     if ($chunks.Count -gt 1) {
-                        $chunkLetter = [char]([int][char]'a' + $chunkIndex - 1)
+                        $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
                         $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
                     } else {
                         $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix

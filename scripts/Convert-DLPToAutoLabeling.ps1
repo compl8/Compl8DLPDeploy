@@ -685,7 +685,7 @@ if ($Execute) {
                 $chunkCount = [math]::Ceiling($sitCount / 125)
                 if ($chunkCount -lt 1) { $chunkCount = 1 }
                 for ($ci = 1; $ci -le $chunkCount; $ci++) {
-                    $cs = if ($chunkCount -gt 1) { [char](96 + $ci) } else { '' }
+                    $cs = if ($chunkCount -gt 1) { Get-ChunkLetter -ChunkIndex $ci } else { '' }
                     $plannedRuleNames += "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $rpn, $rrn, $wlCode, $lc, $namingSuffix, $cs
                 }
             }
@@ -918,7 +918,7 @@ if ($Execute) {
             foreach ($chunk in $sitChunks) {
                 $chunkIdx++
                 # Append chunk letter suffix for multi-chunk rules (a, b, c...)
-                $chunkSuffix = if ($sitChunks.Count -gt 1) { [char](96 + $chunkIdx) } else { '' }
+                $chunkSuffix = if ($sitChunks.Count -gt 1) { Get-ChunkLetter -ChunkIndex $chunkIdx } else { '' }
                 $ruleName = "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wlCode, $labelCode, $namingSuffix, $chunkSuffix
 
                 $chunkCCSI = [ordered]@{

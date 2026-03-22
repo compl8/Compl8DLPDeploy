@@ -915,6 +915,7 @@ function Split-ClassifierChunks {
     .SYNOPSIS
         Splits a classifier list into even chunks of at most $MaxPerRule entries.
         When splitting is needed, divides evenly (not 125 + remainder) to balance rule sizes.
+        Errors if the split would produce more than 26 chunks (a-z limit).
     .OUTPUTS
         Array of arrays. Each inner array is a chunk of classifier entries.
     #>
@@ -930,6 +931,9 @@ function Split-ClassifierChunks {
         return @(, $ClassifierList)
     }
     $chunkCount = [math]::Ceiling($total / $MaxPerRule)
+    if ($chunkCount -gt 26) {
+        throw "Cannot split $total classifiers into chunks of $MaxPerRule — would need $chunkCount chunks but maximum is 26 (a-z). Reduce classifier count or increase MaxPerRule."
+    }
     $chunkSize = [math]::Ceiling($total / $chunkCount)
     $chunks = @()
     for ($i = 0; $i -lt $total; $i += $chunkSize) {
@@ -937,6 +941,19 @@ function Split-ClassifierChunks {
         $chunks += , @($ClassifierList[$i..($end - 1)])
     }
     return $chunks
+}
+
+function Get-ChunkLetter {
+    <#
+    .SYNOPSIS
+        Returns the chunk letter (a-z) for a 1-based chunk index.
+        Throws if index is outside 1-26 range.
+    #>
+    param([Parameter(Mandatory)][int]$ChunkIndex)
+    if ($ChunkIndex -lt 1 -or $ChunkIndex -gt 26) {
+        throw "Chunk index $ChunkIndex is out of range (1-26). This indicates a bug in classifier splitting — rule names only support a-z suffixes."
+    }
+    return [char]([int][char]'a' + $ChunkIndex - 1)
 }
 #endregion
 
@@ -1163,5 +1180,6 @@ Export-ModuleMember -Function @(
     'Start-DeploymentLog'
     'Test-SITRulePackageXml'
     'Split-ClassifierChunks'
+    'Get-ChunkLetter'
     'Sync-DlpKeywordDictionaries'
 )
