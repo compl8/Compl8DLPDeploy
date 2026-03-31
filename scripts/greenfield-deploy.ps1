@@ -208,6 +208,11 @@ if (-not $xmlFiles -or $xmlFiles.Count -eq 0) {
             $content = $content -replace '<PublisherName>[^<]+</PublisherName>', "<PublisherName>$($Config.publisher)</PublisherName>"
         }
 
+        # Patch SIT entity name prefix (replace "TestPattern - " with configured prefix)
+        if ($Config.sitPrefix) {
+            $content = $content -replace 'TestPattern - ', "$($Config.sitPrefix) - "
+        }
+
         if ($content -match '\{\{DICT_') {
             Write-Warning "  $($xmlFile.BaseName): unpatched placeholders, skipping"
             $uploadFailed++
@@ -222,12 +227,19 @@ if (-not $xmlFiles -or $xmlFiles.Count -eq 0) {
 
         try {
             New-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop | Out-Null
-            Write-Host " OK" -ForegroundColor Green
+            Write-Host " OK (created)" -ForegroundColor Green
             $uploadSuccess++
         } catch {
-            Write-Host " FAILED" -ForegroundColor Red
-            Write-Host "    $($_.Exception.Message)" -ForegroundColor Red
-            $uploadFailed++
+            # Package already exists — try update instead
+            try {
+                Set-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop | Out-Null
+                Write-Host " OK (updated)" -ForegroundColor Green
+                $uploadSuccess++
+            } catch {
+                Write-Host " FAILED" -ForegroundColor Red
+                Write-Host "    $($_.Exception.Message)" -ForegroundColor Red
+                $uploadFailed++
+            }
         }
         Start-Sleep 10
     }

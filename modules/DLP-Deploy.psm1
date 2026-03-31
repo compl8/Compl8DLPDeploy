@@ -32,6 +32,8 @@ function Get-ModuleDefaults {
         labelPolicyName          = "DLP-Label-Policy"
         # Data pipeline
         inputSpreadsheet         = ""
+        # SIT entity name prefix — replaces "TestPattern" in entity display names at deploy time
+        sitPrefix                = ""
     }
 }
 #endregion

@@ -12,6 +12,7 @@
     "overwriteLabel": false,
     "deploymentTier": "full",
     "publisher": "Queensland Government CSU",
+    "sitPrefix": "QGISCF",
     "labelPolicyName": "QGISCF-Label-Policy",
     "inputSpreadsheet": "SIT-Inputs-Example.xlsx",
     "_sitOverrides_comment": "Reserved for future use. Intended to override per-label SIT thresholds at the settings level. Not currently consumed by any script.",
