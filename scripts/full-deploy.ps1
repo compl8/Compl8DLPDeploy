@@ -25,6 +25,7 @@ param(
     [ValidateSet("All", "Labels", "Dictionaries", "Classifiers", "DLPRules", "Cleanup")]
     [string]$Phase = "All",
     [string]$PublishTo,
+    [string]$Tenant,
     [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
     [switch]$SkipLabels,
@@ -53,7 +54,9 @@ $cleanupPrefix = $Config.namingPrefix
 
 # ── Connect ──────────────────────────────────────────────────────────────────
 Write-Host "`n=== Connecting to $UPN ===" -ForegroundColor Cyan
-$connected = Connect-DLPSession -UPN $UPN
+$connectArgs = @{ UPN = $UPN }
+if ($Tenant) { $connectArgs["Tenant"] = $Tenant }
+$connected = Connect-DLPSession @connectArgs
 if (-not $connected) {
     Write-Error "Connection failed. Aborting."
     return

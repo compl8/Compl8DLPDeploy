@@ -45,8 +45,14 @@ function Connect-DLPSession {
         Connects to Security & Compliance Center (IPPS session).
     .PARAMETER UPN
         User principal name for authentication.
+    .PARAMETER Tenant
+        Target tenant domain for cross-tenant/delegated access (e.g. "target.onmicrosoft.com").
+        Uses Connect-IPPSSession -DelegatedOrganization.
     #>
-    param([string]$UPN)
+    param(
+        [string]$UPN,
+        [string]$Tenant
+    )
 
     if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
         Write-Error "ExchangeOnlineManagement module not installed. Run: Install-Module ExchangeOnlineManagement -Scope CurrentUser"
@@ -56,6 +62,11 @@ function Connect-DLPSession {
 
     $connectParams = @{}
     if ($UPN) { $connectParams["UserPrincipalName"] = $UPN }
+    if ($Tenant) {
+        $connectParams["DelegatedOrganization"] = $Tenant
+        $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/organizations"
+        Write-Host "  Delegated access to tenant: $Tenant" -ForegroundColor Gray
+    }
     try {
         Connect-IPPSSession @connectParams -ErrorAction Stop
         Write-Host "  Connected to Security & Compliance Center." -ForegroundColor Green

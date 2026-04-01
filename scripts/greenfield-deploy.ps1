@@ -14,6 +14,7 @@ param(
     [string]$Tier = "medium",
     [string]$Scope = "universal,en-government,au",
     [Parameter(Mandatory)][string]$PublishTo,
+    [string]$Tenant,
     [switch]$SkipCleanup,
     [switch]$WhatIf
 )
@@ -39,7 +40,9 @@ Write-Host "============================================================`n" -For
 
 # ── Connect ──────────────────────────────────────────────────────────────────
 Write-Host "=== Connecting ===" -ForegroundColor Cyan
-$connected = Connect-DLPSession -UPN $UPN
+$connectArgs = @{ UPN = $UPN }
+if ($Tenant) { $connectArgs["Tenant"] = $Tenant }
+$connected = Connect-DLPSession @connectArgs
 if (-not $connected) { Write-Error "Connection failed."; return }
 Write-Host "  Connected.`n" -ForegroundColor Green
 
