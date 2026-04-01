@@ -46,12 +46,18 @@ function Connect-DLPSession {
     .PARAMETER UPN
         User principal name for authentication.
     .PARAMETER Tenant
-        Target tenant domain for cross-tenant/delegated access (e.g. "target.onmicrosoft.com").
-        Uses Connect-IPPSSession -DelegatedOrganization.
+        Target tenant for cross-tenant access. Accepts a tenant GUID, .onmicrosoft.com domain,
+        or any verified domain. Forces the auth flow to the specified tenant so MFA and login
+        happen in the correct context (guest account scenario), or uses DelegatedOrganization
+        for CSP/GDAP scenarios.
+    .PARAMETER Delegated
+        Use CSP/GDAP delegated admin mode instead of guest-account auth. Requires -Tenant to
+        be the target's primary .onmicrosoft.com domain.
     #>
     param(
         [string]$UPN,
-        [string]$Tenant
+        [string]$Tenant,
+        [switch]$Delegated
     )
 
     if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
@@ -63,9 +69,16 @@ function Connect-DLPSession {
     $connectParams = @{}
     if ($UPN) { $connectParams["UserPrincipalName"] = $UPN }
     if ($Tenant) {
-        $connectParams["DelegatedOrganization"] = $Tenant
-        $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/organizations"
-        Write-Host "  Delegated access to tenant: $Tenant" -ForegroundColor Gray
+        if ($Delegated) {
+            # CSP/GDAP: use DelegatedOrganization (requires .onmicrosoft.com domain)
+            $connectParams["DelegatedOrganization"] = $Tenant
+            $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/organizations"
+            Write-Host "  Delegated admin to tenant: $Tenant" -ForegroundColor Gray
+        } else {
+            # Guest account: force auth flow to target tenant
+            $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/$Tenant"
+            Write-Host "  Cross-tenant auth to: $Tenant" -ForegroundColor Gray
+        }
     }
     try {
         Connect-IPPSSession @connectParams -ErrorAction Stop
