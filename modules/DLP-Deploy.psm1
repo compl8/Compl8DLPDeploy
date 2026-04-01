@@ -75,9 +75,12 @@ function Connect-DLPSession {
             $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/organizations"
             Write-Host "  Delegated admin to tenant: $Tenant" -ForegroundColor Gray
         } else {
-            # Guest account: force auth flow to target tenant
+            # Guest account: force auth flow to target tenant.
+            # Drop UPN to avoid null-ref conflict between home-tenant UPN and cross-tenant auth endpoint.
+            $connectParams.Remove("UserPrincipalName")
+            $connectParams["ConnectionUri"] = "https://ps.compliance.protection.outlook.com/powershell-liveid/"
             $connectParams["AzureADAuthorizationEndpointUri"] = "https://login.microsoftonline.com/$Tenant"
-            Write-Host "  Cross-tenant auth to: $Tenant" -ForegroundColor Gray
+            Write-Host "  Cross-tenant auth to: $Tenant (login prompt will appear)" -ForegroundColor Gray
         }
     }
     try {
