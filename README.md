@@ -110,25 +110,26 @@ pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.co
 
 ### Phased Deployment
 
-For more control, deploy in phases:
+For more control, deploy in phases. `-PublishTo` is only required for `Labels` and `All` phases — Dictionaries, Classifiers, DLPRules, and Cleanup don't need it:
 
 ```powershell
-# Phase 1: Labels only (PublishTo is mandatory)
+# Phase 1: Labels only (PublishTo required)
 pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
 
-# Phase 1.5: Keyword dictionaries
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries -PublishTo "DL-InfoSec@agency.gov"
+# Phase 1.5: Keyword dictionaries (no PublishTo needed)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
 
-# Phase 2: SIT classifier packages
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers -PublishTo "DL-InfoSec@agency.gov"
+# Phase 2: SIT classifier packages (no PublishTo needed)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
 
-# Phase 3: DLP rules (wait 1-24h after Phase 2 for SIT propagation)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules -PublishTo "DL-InfoSec@agency.gov"
+# Phase 3: DLP rules — wait 4-24h after Phase 2 for SIT propagation (no PublishTo needed)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
 
-# Cleanup everything
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -PublishTo "DL-InfoSec@agency.gov"
+# Cleanup everything (no PublishTo needed)
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup
+pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels  # keep labels
 
-# Dry run
+# Dry run (all phases, PublishTo required)
 pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf -PublishTo "DL-InfoSec@agency.gov"
 ```
 
@@ -208,6 +209,7 @@ All tenant resources are named using a consistent convention driven by `namingPr
 | `namingPrefix` | `DLP` | Identifies your deployment across all resource types | `QGISCF`, `NZISM`, `ACME` |
 | `namingSuffix` | `EXT-ADT` | Encodes deployment mode | `EXT-ADT`, `INT-BLK` |
 | `publisher` | (empty) | Publisher name on SIT rule packages | `Queensland Government CSU` |
+| `sitPrefix` | (empty) | Replaces `TestPattern - ` in SIT entity display names | `QGISCF` |
 | `labelPolicyName` | `DLP-Label-Policy` | Name of the sensitivity label publishing policy | `QGISCF-Label-Policy` |
 
 The suffix encodes two things: **scoping** (`EXT` = external/outbound, `INT` = internal) and **enforcement mode** (`ADT` = audit, `NFY` = notify, `BLK` = block).
@@ -293,6 +295,12 @@ All deployment behaviour is driven by JSON config files:
 ## Keyword Dictionaries
 
 The toolkit integrates with [testpattern.dev's keyword dictionary system](https://testpattern.dev). Shared keyword lists (noise exclusion, domain context, classification markers, name lists) are created as Purview keyword dictionaries — these don't consume SIT package slots and are referenced by SIT entities via GUID placeholders.
+
+The manifest currently includes 10 dictionaries, notably:
+- **Australian Forenames** (10,961 terms) — consolidated from BDM and QLD Unclaimed Money Register
+- **Australian Surnames** (23,065 terms) — consolidated from immigration, unclaimed money, and cultural sources
+
+These are referenced in SIT XML as `{{DICT_AU_FORENAMES}}` and `{{DICT_AU_SURNAMES}}` placeholders, resolved to tenant dictionary GUIDs during the Classifiers phase. Package 08 includes a **Legal Full Name** SIT that uses these dictionaries as corroborative evidence — a tunable alternative to the Microsoft built-in "All Full Names" classifier.
 
 Both `greenfield-deploy.ps1` and `full-deploy.ps1` automatically:
 1. Fetch the dictionary manifest from testpattern.dev

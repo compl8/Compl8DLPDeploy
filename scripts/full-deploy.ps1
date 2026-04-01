@@ -24,7 +24,7 @@ param(
     [Parameter(Mandatory)][string]$UPN,
     [ValidateSet("All", "Labels", "Dictionaries", "Classifiers", "DLPRules", "Cleanup")]
     [string]$Phase = "All",
-    [Parameter(Mandatory)][string]$PublishTo,
+    [string]$PublishTo,
     [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
     [switch]$SkipLabels,
@@ -43,6 +43,12 @@ $Defaults    = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
 if (-not (Assert-ConfigCustomised -Config $Config)) { return }
+
+# PublishTo is required for Labels and All phases
+if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $PublishTo) {
+    Write-Error "-PublishTo is required for Labels and All phases (e.g. -PublishTo 'user@domain.com')"
+    return
+}
 $cleanupPrefix = $Config.namingPrefix
 
 # ── Connect ──────────────────────────────────────────────────────────────────
