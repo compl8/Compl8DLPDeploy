@@ -5,6 +5,7 @@ archive/
 Thumbs.db
 *.swp
 .vscode/
+.codex/memory/
 __pycache__/
 plans/
 docs/plans/

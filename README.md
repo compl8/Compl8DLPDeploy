@@ -133,6 +133,25 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLab
 pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf -PublishTo "DL-InfoSec@agency.gov"
 ```
 
+### Classifier Safety Workflow
+
+`Deploy-Classifiers.ps1` now starts in an interactive, plan-first mode by default:
+
+```powershell
+pwsh -File scripts/Deploy-Classifiers.ps1 -Connect -UPN admin@tenant.com
+```
+
+Before classifier changes it validates every selected package XML, evaluates the connected tenant, checks optional tenant fingerprints, runs impact/capacity assessment, shows the embedded dry-run plan, and asks for confirmation. Available actions include `Interactive`, `Validate`, `Upload`, `Impact`, `CapacityPlan`, `AdoptPlan`, `Prune`, `Canary`, `Remove`, `Rollback`, `List`, and `Estimate`.
+
+Useful pre-test commands:
+
+```powershell
+pwsh -File scripts/Invoke-CIChecks.ps1 -SkipPester
+pwsh -File scripts/Deploy-Classifiers.ps1 -Action Canary -Connect -UPN admin@tenant.com
+```
+
+Copy `config/tenant-fingerprints.example.json` to `config/tenant-fingerprints.json` and populate the tenant name/GUID fields to pin nonprod/prod environments. Use `mode: "block"` for production once confirmed.
+
 ## The Input Spreadsheet
 
 The included `SIT-Inputs-Example.xlsx` is an example spreadsheet for the QGISCF framework. To create your own, use a workbook with a sheet named **"SIT Risk Analysis"** containing these columns (0-indexed):
@@ -169,7 +188,9 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 | `full-deploy.ps1` | Phased deployment with propagation checks and dictionary support |
 | `Deploy-Labels.ps1` | Deploy sensitivity labels and label policy (requires named `-PublishTo` target; `-ApproveOpenPublish` needed for `"All"`) |
 | `Deploy-DLPRules.ps1` | Deploy DLP policies and rules across workloads (auto-splits >125 SITs) |
-| `Deploy-Classifiers.ps1` | Upload, validate, list, or remove custom SIT packages |
+| `Deploy-Classifiers.ps1` | Guided classifier bundle manager with validation, impact, capacity, prune, canary, upload, remove, and rollback actions |
+| `Test-DeploymentReadiness.ps1` | Parse and consistency checks for labels, classifier config, policy/rule generation, and deploy XML packages |
+| `Invoke-CIChecks.ps1` | Local parser/readiness/XML validation entrypoint |
 
 ### Data Pipeline — Spreadsheet
 

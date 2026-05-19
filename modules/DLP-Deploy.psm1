@@ -932,9 +932,433 @@ function Start-DeploymentLog {
         New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     }
     $transcriptPath = Join-Path $LogDir "${ScriptName}_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-    Start-Transcript -Path $transcriptPath -Append
+    Start-Transcript -Path $transcriptPath -Append | Out-Null
     Write-Host "Logging to: $transcriptPath" -ForegroundColor Gray
     return $transcriptPath
+}
+
+function Stop-DeploymentLog {
+    <#
+    .SYNOPSIS
+        Stops the active transcript even when the caller is running with -WhatIf.
+    #>
+    $previousWhatIf = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        Stop-Transcript | Out-Null
+    } catch {
+    } finally {
+        $WhatIfPreference = $previousWhatIf
+    }
+}
+
+function Get-DeploymentObjectProperty {
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [Parameter(Mandatory)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $prop = $InputObject.PSObject.Properties[$name]
+        if ($prop -and -not [string]::IsNullOrWhiteSpace($prop.Value)) {
+            return $prop.Value.ToString()
+        }
+    }
+    return $null
+}
+
+function Get-DeploymentTenantInfo {
+    $tenant = [ordered]@{
+        name           = $null
+        id             = $null
+        guid           = $null
+        tenantId       = $null
+        organizationId = $null
+        userPrincipalName = $null
+        connectionUri  = $null
+        source         = $null
+        status         = "Unknown"
+    }
+
+    try {
+        $org = Get-OrganizationConfig -ErrorAction Stop
+        if ($org) {
+            $tenant.name = $org.Name
+            $tenant.id = if ($org.Id) { $org.Id.ToString() } else { $null }
+            $tenant.guid = if ($org.Guid) { $org.Guid.ToString() } else { $null }
+            $tenant.organizationId = if ($org.OrganizationId) { $org.OrganizationId.ToString() } else { $null }
+            $tenant.source = "Get-OrganizationConfig"
+            $tenant.status = "Connected"
+        }
+    } catch {
+        $tenant.status = "OrganizationConfigUnavailable"
+    }
+
+    try {
+        if (Get-Command Get-ConnectionInformation -ErrorAction SilentlyContinue) {
+            $connections = @(Get-ConnectionInformation -ErrorAction Stop)
+            $connection = $connections |
+                Where-Object {
+                    (Get-DeploymentObjectProperty -InputObject $_ -Names @("State")) -eq "Connected" -and
+                    ((Get-DeploymentObjectProperty -InputObject $_ -Names @("ConnectionUri")) -match "compliance|protection\.outlook|ps\.compliance")
+                } |
+                Select-Object -First 1
+
+            if (-not $connection) {
+                $connection = $connections |
+                    Where-Object { (Get-DeploymentObjectProperty -InputObject $_ -Names @("State")) -eq "Connected" } |
+                    Select-Object -First 1
+            }
+            if (-not $connection) {
+                $connection = $connections | Select-Object -First 1
+            }
+
+            if ($connection) {
+                $organization = Get-DeploymentObjectProperty -InputObject $connection -Names @("Organization", "Tenant", "TenantName")
+                $tenantId = Get-DeploymentObjectProperty -InputObject $connection -Names @("TenantID", "TenantId", "TenantGuid", "ExternalDirectoryOrganizationId")
+
+                if (-not $tenant.name -and $organization) { $tenant.name = $organization }
+                if (-not $tenant.organizationId -and $organization) { $tenant.organizationId = $organization }
+                if (-not $tenant.id -and $tenantId) { $tenant.id = $tenantId }
+                if (-not $tenant.guid -and $tenantId) { $tenant.guid = $tenantId }
+                if (-not $tenant.tenantId -and $tenantId) { $tenant.tenantId = $tenantId }
+                $tenant.userPrincipalName = Get-DeploymentObjectProperty -InputObject $connection -Names @("UserPrincipalName", "UserName")
+                $tenant.connectionUri = Get-DeploymentObjectProperty -InputObject $connection -Names @("ConnectionUri")
+                $tenant.source = if ($tenant.source) { "$($tenant.source)+Get-ConnectionInformation" } else { "Get-ConnectionInformation" }
+                $tenant.status = "Connected"
+            }
+        }
+    } catch {
+        if ($tenant.status -eq "Unknown") {
+            $tenant.status = "Unavailable"
+        }
+    }
+
+    return $tenant
+}
+
+function New-DeploymentManifest {
+    param(
+        [Parameter(Mandatory)][string]$ScriptName,
+        [Parameter(Mandatory)][string]$Operation,
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [hashtable]$Parameters
+    )
+
+    $runId = [guid]::NewGuid().ToString()
+    return [ordered]@{
+        schemaVersion     = 1
+        runId             = $runId
+        scriptName        = $ScriptName
+        operation         = $Operation
+        startedUtc        = (Get-Date).ToUniversalTime().ToString("o")
+        completedUtc      = $null
+        status            = "Started"
+        projectRoot       = $ProjectRoot
+        operator          = [ordered]@{
+            userName     = $env:USERNAME
+            userDomain   = $env:USERDOMAIN
+            computerName = $env:COMPUTERNAME
+        }
+        powershellVersion = $PSVersionTable.PSVersion.ToString()
+        tenant            = Get-DeploymentTenantInfo
+        tenantFingerprint = $null
+        parameters        = if ($Parameters) { $Parameters } else { @{} }
+        targets           = @()
+        impact            = $null
+        decisions         = @()
+        artifacts         = @()
+        flightRecorder    = $null
+        results           = @()
+        warnings          = @()
+        errors            = @()
+    }
+}
+
+function Add-DeploymentManifestEvent {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Manifest,
+        [ValidateSet("Decision", "Result", "Warning", "Error", "Artifact")]
+        [Parameter(Mandatory)][string]$Type,
+        [Parameter(Mandatory)][object]$Data
+    )
+
+    $entry = [ordered]@{
+        timestampUtc = (Get-Date).ToUniversalTime().ToString("o")
+        data         = $Data
+    }
+
+    switch ($Type) {
+        "Decision" { $Manifest.decisions += $entry }
+        "Result"   { $Manifest.results += $entry }
+        "Warning"  { $Manifest.warnings += $entry }
+        "Error"    { $Manifest.errors += $entry }
+        "Artifact" { $Manifest.artifacts += $entry }
+    }
+}
+
+function Complete-DeploymentManifest {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Manifest,
+        [Parameter(Mandatory)][string]$Status
+    )
+
+    $Manifest.completedUtc = (Get-Date).ToUniversalTime().ToString("o")
+    $Manifest.status = $Status
+    $Manifest.tenant = Get-DeploymentTenantInfo
+    return $Manifest
+}
+
+function ConvertTo-DeploymentRelativePath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ProjectRoot
+    )
+
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    $resolvedRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
+    if ($resolvedPath.StartsWith($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return ($resolvedPath.Substring($resolvedRoot.Length).TrimStart('\', '/') -replace '\\', '/')
+    }
+    return ($resolvedPath -replace '\\', '/')
+}
+
+function Save-DeploymentManifest {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Manifest,
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$ReportDir,
+        [string]$TranscriptPath
+    )
+
+    if (-not $ReportDir) {
+        $ReportDir = Join-Path (Join-Path $ProjectRoot "reports") "deployments"
+    }
+    if (-not (Test-Path -LiteralPath $ReportDir)) {
+        New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null
+    }
+
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $safeScript = $Manifest.scriptName -replace '[^a-zA-Z0-9\-]', ''
+    $safeOperation = $Manifest.operation -replace '[^a-zA-Z0-9\-]', ''
+    $runDir = Join-Path $ReportDir "${timestamp}_${safeScript}_${safeOperation}_$($Manifest.runId)"
+    if (-not (Test-Path -LiteralPath $runDir)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $manifestPath = Join-Path $runDir "manifest.json"
+    $Manifest.flightRecorder = [ordered]@{
+        folder       = ConvertTo-DeploymentRelativePath -Path $runDir -ProjectRoot $ProjectRoot
+        manifestPath = ConvertTo-DeploymentRelativePath -Path $manifestPath -ProjectRoot $ProjectRoot
+        transcriptPath = $null
+        artifactCopies = @()
+    }
+
+    $artifactCopyDir = Join-Path $runDir "artifacts"
+    $artifactCopies = @()
+    $copyEntries = @()
+    $copyEntries += @($Manifest.artifacts)
+    $copyEntries += @($Manifest.targets | Where-Object { $_.path })
+    foreach ($entry in @($copyEntries)) {
+        $artifact = if ($entry.data) { $entry.data } else { $entry }
+        if (-not $artifact.path) { continue }
+        $artifactRole = if ($artifact.role) { $artifact.role } elseif ($artifact.type) { $artifact.type } else { "artifact" }
+        if ($artifactRole -in @("live-transcript", "transcript-log")) { continue }
+
+        $artifactPath = $artifact.path.ToString()
+        $sourcePath = if ([System.IO.Path]::IsPathRooted($artifactPath)) {
+            $artifactPath
+        } else {
+            Join-Path $ProjectRoot ($artifactPath -replace '/', '\')
+        }
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { continue }
+
+        $resolvedSource = [System.IO.Path]::GetFullPath($sourcePath)
+        if ($resolvedSource.StartsWith([System.IO.Path]::GetFullPath($runDir), [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        if (-not (Test-Path -LiteralPath $artifactCopyDir)) {
+            New-Item -ItemType Directory -Path $artifactCopyDir -Force | Out-Null
+        }
+
+        $safeName = "$artifactRole`_$($artifactPath)" -replace '[\\/:*?"<>|]+', '_'
+        $safeName = $safeName.Trim('_')
+        $destPath = Join-Path $artifactCopyDir $safeName
+        try {
+            Copy-Item -LiteralPath $sourcePath -Destination $destPath -Force -ErrorAction Stop
+            $copyArtifact = Get-DeploymentFileArtifact -Path $destPath -Role $artifactRole -ProjectRoot $ProjectRoot
+            $artifactCopies += [ordered]@{
+                role       = $artifactRole
+                sourcePath = ($artifactPath -replace '\\', '/')
+                copyPath   = $copyArtifact.path
+                sha256     = $copyArtifact.sha256
+                sizeBytes  = $copyArtifact.sizeBytes
+            }
+        } catch {
+            Add-DeploymentManifestEvent -Manifest $Manifest -Type "Warning" -Data @{
+                message = "Could not copy artifact into flight recorder"
+                path    = $artifactPath
+                error   = $_.Exception.Message
+            }
+        }
+    }
+    $Manifest.flightRecorder.artifactCopies = @($artifactCopies)
+
+    if ($TranscriptPath -and (Test-Path -LiteralPath $TranscriptPath)) {
+        $transcriptDest = Join-Path $runDir "transcript.log"
+        try {
+            Copy-Item -LiteralPath $TranscriptPath -Destination $transcriptDest -Force -ErrorAction Stop
+            $transcriptArtifact = Get-DeploymentFileArtifact -Path $transcriptDest -Role "transcript-log" -ProjectRoot $ProjectRoot
+            $Manifest.artifacts += $transcriptArtifact
+            $Manifest.flightRecorder.transcriptPath = $transcriptArtifact.path
+        } catch {
+            Add-DeploymentManifestEvent -Manifest $Manifest -Type "Warning" -Data @{
+                message = "Could not copy transcript into flight recorder"
+                path    = $TranscriptPath
+                error   = $_.Exception.Message
+            }
+        }
+    }
+
+    $Manifest | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    Write-Host "Deployment flight recorder: $runDir" -ForegroundColor Gray
+    return $manifestPath
+}
+
+function Get-DeploymentFileArtifact {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Role,
+        [string]$ProjectRoot
+    )
+
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $relativePath = $item.FullName
+    if ($ProjectRoot -and $item.FullName.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $relativePath = $item.FullName.Substring($ProjectRoot.Length).TrimStart('\', '/')
+    }
+
+    return [ordered]@{
+        role         = $Role
+        path         = $relativePath -replace '\\', '/'
+        sizeBytes    = $item.Length
+        sha256       = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        lastWriteUtc = $item.LastWriteTimeUtc.ToString("o")
+    }
+}
+
+function Test-DeploymentTenantFingerprint {
+    <#
+    .SYNOPSIS
+        Compares the connected tenant against optional expected fingerprints.
+    .PARAMETER ProjectRoot
+        Repository root used to find config/tenant-fingerprints.json.
+    .PARAMETER TargetEnvironment
+        Environment key under the config file's environments object.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$TargetEnvironment,
+        [string]$FingerprintPath
+    )
+
+    if (-not $FingerprintPath) {
+        $FingerprintPath = Join-Path (Join-Path $ProjectRoot "config") "tenant-fingerprints.json"
+    }
+
+    $actual = Get-DeploymentTenantInfo
+    $result = [ordered]@{
+        checked     = $false
+        configured  = $false
+        passed      = $true
+        matched     = $null
+        mode        = "warn"
+        environment = $TargetEnvironment
+        configPath  = ConvertTo-DeploymentRelativePath -Path $FingerprintPath -ProjectRoot $ProjectRoot
+        expected    = [ordered]@{}
+        actual      = $actual
+        messages    = @()
+        mismatches  = @()
+    }
+
+    if (-not (Test-Path -LiteralPath $FingerprintPath)) {
+        $result.messages += "No tenant fingerprint config found. Create config/tenant-fingerprints.json to pin environments."
+        return [PSCustomObject]$result
+    }
+
+    $result.checked = $true
+    try {
+        $config = Get-Content -LiteralPath $FingerprintPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $result.passed = $false
+        $result.mode = "block"
+        $result.messages += "Tenant fingerprint config could not be parsed: $($_.Exception.Message)"
+        return [PSCustomObject]$result
+    }
+
+    if (-not $TargetEnvironment) {
+        $TargetEnvironment = if ($config.defaultEnvironment) { $config.defaultEnvironment } else { "default" }
+        $result.environment = $TargetEnvironment
+    }
+
+    $envProp = $null
+    if ($config.environments) {
+        $envProp = $config.environments.PSObject.Properties | Where-Object { $_.Name -eq $TargetEnvironment } | Select-Object -First 1
+    }
+    if (-not $envProp) {
+        $result.messages += "No fingerprint entry found for environment '$TargetEnvironment'."
+        return [PSCustomObject]$result
+    }
+
+    $expectedConfig = $envProp.Value
+    $mode = if ($expectedConfig.mode) { $expectedConfig.mode.ToString().ToLowerInvariant() } else { "warn" }
+    if ($mode -notin @("warn", "block")) {
+        $result.messages += "Fingerprint mode '$mode' is not valid; using warn."
+        $mode = "warn"
+    }
+    $result.mode = $mode
+
+    foreach ($field in @("name", "id", "guid", "tenantId", "organizationId")) {
+        $value = $expectedConfig.$field
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $result.expected[$field] = $value.ToString()
+        }
+    }
+
+    if ($result.expected.Count -eq 0) {
+        $result.messages += "Fingerprint entry '$TargetEnvironment' has no expected tenant fields. Populate name, id, guid, or organizationId to enforce it."
+        return [PSCustomObject]$result
+    }
+
+    $result.configured = $true
+    $mismatches = @()
+    foreach ($field in @($result.expected.Keys)) {
+        $expectedValue = $result.expected[$field]
+        $actualValue = $actual[$field]
+        if ([string]::IsNullOrWhiteSpace($actualValue) -or $actualValue.ToString() -ne $expectedValue) {
+            $mismatches += [ordered]@{
+                field    = $field
+                expected = $expectedValue
+                actual   = $actualValue
+            }
+        }
+    }
+
+    if ($mismatches.Count -eq 0) {
+        $result.matched = $true
+        $result.messages += "Connected tenant matches fingerprint '$TargetEnvironment'."
+        return [PSCustomObject]$result
+    }
+
+    $result.matched = $false
+    $result.mismatches = @($mismatches)
+    $result.messages += "Connected tenant does not match fingerprint '$TargetEnvironment'."
+    if ($mode -eq "block") {
+        $result.passed = $false
+    }
+
+    return [PSCustomObject]$result
 }
 #endregion
 
@@ -1207,8 +1631,17 @@ Export-ModuleMember -Function @(
     'Remove-PurviewObjects'
     'Invoke-WithRetry'
     'Start-DeploymentLog'
+    'Stop-DeploymentLog'
+    'Get-DeploymentTenantInfo'
+    'New-DeploymentManifest'
+    'Add-DeploymentManifestEvent'
+    'Complete-DeploymentManifest'
+    'Save-DeploymentManifest'
+    'Get-DeploymentFileArtifact'
+    'Test-DeploymentTenantFingerprint'
     'Test-SITRulePackageXml'
     'Split-ClassifierChunks'
     'Get-ChunkLetter'
     'Sync-DlpKeywordDictionaries'
 )
+

@@ -1,0 +1,17 @@
+{
+  "defaultEnvironment": "nonprod",
+  "environments": {
+    "nonprod": {
+      "mode": "warn",
+      "name": "",
+      "guid": "",
+      "organizationId": ""
+    },
+    "prod": {
+      "mode": "block",
+      "name": "",
+      "guid": "",
+      "organizationId": ""
+    }
+  }
+}

@@ -190,67 +190,22 @@ if ($WhatIf) {
 Write-Host ""
 
 # ── Phase 3: SIT Packages ───────────────────────────────────────────────────
-Write-Host "=== Phase 3: SIT Packages ===" -ForegroundColor Cyan
+Write-Host "=== Phase 3: SIT Classifier Package Manager ===" -ForegroundColor Cyan
 
-$uploadSuccess = 0
-$uploadFailed = 0
 $xmlFiles = Get-ChildItem -Path $DeployDir -Filter "*.xml" -ErrorAction SilentlyContinue | Sort-Object Name
 if (-not $xmlFiles -or $xmlFiles.Count -eq 0) {
     Write-Warning "  No packages in $DeployDir -- run build-deploy-packages.py first"
 } else {
-    Write-Host "  $($xmlFiles.Count) package(s)"
+    Write-Host "  $($xmlFiles.Count) package(s). Delegating to Deploy-Classifiers safety workflow." -ForegroundColor Gray
+    $classifierArgs = @("-Action", "Upload", "-Scope", $Scope)
+    if ($WhatIf) { $classifierArgs += "-WhatIf" }
+    if ($Tenant) { $classifierArgs += @("-Tenant", $Tenant) }
+    if ($Delegated) { $classifierArgs += "-Delegated" }
+    & (Join-Path $PSScriptRoot "Deploy-Classifiers.ps1") @classifierArgs
 
-    foreach ($xmlFile in $xmlFiles) {
-        $content = [System.IO.File]::ReadAllText($xmlFile.FullName, [System.Text.Encoding]::UTF8)
-
-        # Patch dictionary placeholders
-        foreach ($kv in $guidMap.GetEnumerator()) {
-            $content = $content -replace [regex]::Escape($kv.Key), $kv.Value
-        }
-
-        # Patch publisher
-        if ($Config.publisher) {
-            $content = $content -replace '<PublisherName>[^<]+</PublisherName>', "<PublisherName>$($Config.publisher)</PublisherName>"
-        }
-
-        # Patch SIT entity name prefix (replace "TestPattern - " with configured prefix)
-        if ($Config.sitPrefix) {
-            $content = $content -replace 'TestPattern - ', "$($Config.sitPrefix) - "
-        }
-
-        if ($content -match '\{\{DICT_') {
-            Write-Warning "  $($xmlFile.BaseName): unpatched placeholders, skipping"
-            $uploadFailed++
-            continue
-        }
-
-        $fileBytes = [System.Text.Encoding]::UTF8.GetBytes($content)
-        $sizeKB = [math]::Round($fileBytes.Length / 1KB, 1)
-        Write-Host "  $($xmlFile.BaseName) (${sizeKB}KB)..." -NoNewline
-
-        if ($WhatIf) { Write-Host " [WHATIF]" -ForegroundColor Yellow; $uploadSuccess++; continue }
-
-        try {
-            New-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop | Out-Null
-            Write-Host " OK (created)" -ForegroundColor Green
-            $uploadSuccess++
-        } catch {
-            # Package already exists — try update instead
-            try {
-                Set-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop | Out-Null
-                Write-Host " OK (updated)" -ForegroundColor Green
-                $uploadSuccess++
-            } catch {
-                Write-Host " FAILED" -ForegroundColor Red
-                Write-Host "    $($_.Exception.Message)" -ForegroundColor Red
-                $uploadFailed++
-            }
-        }
-        Start-Sleep 10
+    if (-not $WhatIf) {
+        @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $xmlFiles.Count } | ConvertTo-Json | Out-File (Join-Path $ConfigPath "last-classifier-upload.json") -Encoding utf8
     }
-
-    Write-Host "`n  Packages: $uploadSuccess OK, $uploadFailed failed"
-    @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $uploadSuccess } | ConvertTo-Json | Out-File (Join-Path $ConfigPath "last-classifier-upload.json") -Encoding utf8
 }
 Write-Host ""
 
@@ -270,6 +225,6 @@ Write-Host "`n============================================================" -For
 Write-Host "  Greenfield Deployment Complete" -ForegroundColor Green
 Write-Host "  Dictionaries: $($guidMap.Count) resolved" -ForegroundColor Green
 Write-Host "  Labels: deployed + published" -ForegroundColor Green
-if ($uploadSuccess) { Write-Host "  SIT Packages: $uploadSuccess" -ForegroundColor Green }
+if ($xmlFiles) { Write-Host "  SIT Packages: $($xmlFiles.Count)" -ForegroundColor Green }
 Write-Host "  DLP Rules: deployed" -ForegroundColor Green
 Write-Host "============================================================`n" -ForegroundColor Green

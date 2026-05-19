@@ -236,7 +236,7 @@ if ($Phase -eq "All" -or $Phase -eq "Dictionaries" -or $Phase -eq "Classifiers")
 
 # ── Phase 2: SIT Classifier Packages ─────────────────────────────────────────
 if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
-    Write-Host "=== Phase 2: Uploading SIT Packages ===" -ForegroundColor Cyan
+    Write-Host "=== Phase 2: SIT Classifier Package Manager ===" -ForegroundColor Cyan
 
     $deployPath = Join-Path $ProjectRoot $DeployDir
     $xmlFiles = Get-ChildItem -Path $deployPath -Filter "*.xml" | Sort-Object Name
@@ -244,60 +244,12 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
     if ($xmlFiles.Count -eq 0) {
         Write-Warning "No XML files found in $deployPath"
     } else {
-        Write-Host "  Found $($xmlFiles.Count) package(s)"
-        $uploadSuccess = 0
-        $uploadFailed = 0
-
-        foreach ($xmlFile in $xmlFiles) {
-            $content = [System.IO.File]::ReadAllText($xmlFile.FullName, [System.Text.Encoding]::UTF8)
-
-            # Patch dictionary placeholders if we have a GUID map
-            if ($guidMap) {
-                foreach ($kv in $guidMap.GetEnumerator()) {
-                    $content = $content -replace [regex]::Escape($kv.Key), $kv.Value
-                }
-            }
-
-            # Patch publisher
-            if ($Config.publisher) {
-                $content = $content -replace '<PublisherName>[^<]+</PublisherName>', "<PublisherName>$($Config.publisher)</PublisherName>"
-            }
-
-            # Patch SIT entity name prefix (replace "TestPattern - " with configured prefix)
-            if ($Config.sitPrefix) {
-                $content = $content -replace 'TestPattern - ', "$($Config.sitPrefix) - "
-            }
-
-            # Check for unpatched placeholders
-            if ($content -match '\{\{DICT_') {
-                Write-Warning "  $($xmlFile.BaseName): unpatched dictionary placeholders, skipping"
-                $uploadFailed++
-                continue
-            }
-
-            $fileData = [System.Text.Encoding]::UTF8.GetBytes($content)
-            $sizeKB = [math]::Round($fileData.Length / 1KB, 1)
-            Write-Host "  $($xmlFile.BaseName) (${sizeKB}KB)..." -NoNewline
-            if ($WhatIf) { Write-Host " [WHATIF]" -ForegroundColor Yellow; $uploadSuccess++; continue }
-            try {
-                New-DlpSensitiveInformationTypeRulePackage -FileData $fileData -Confirm:$false -ErrorAction Stop | Out-Null
-                Write-Host " OK (created)" -ForegroundColor Green
-                $uploadSuccess++
-            } catch {
-                # Package already exists — try update instead
-                try {
-                    Set-DlpSensitiveInformationTypeRulePackage -FileData $fileData -Confirm:$false -ErrorAction Stop | Out-Null
-                    Write-Host " OK (updated)" -ForegroundColor Green
-                    $uploadSuccess++
-                } catch {
-                    Write-Host " FAILED" -ForegroundColor Red
-                    Write-Host "    $($_.Exception.Message)" -ForegroundColor Red
-                    $uploadFailed++
-                }
-            }
-            Start-Sleep 10
-        }
-        Write-Host "`n  Upload: $uploadSuccess succeeded, $uploadFailed failed"
+        Write-Host "  Found $($xmlFiles.Count) package(s). Delegating to Deploy-Classifiers safety workflow." -ForegroundColor Gray
+        $classifierArgs = @("-Action", "Upload", "-Scope", $Scope)
+        if ($WhatIf) { $classifierArgs += "-WhatIf" }
+        if ($Tenant) { $classifierArgs += @("-Tenant", $Tenant) }
+        if ($Delegated) { $classifierArgs += "-Delegated" }
+        & (Join-Path $PSScriptRoot "Deploy-Classifiers.ps1") @classifierArgs
 
         if ($Phase -eq "Classifiers" -or $Phase -eq "All") {
             Write-Host ""
@@ -309,7 +261,9 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
 
             # Record upload timestamp for propagation check
             $timestampFile = Join-Path $ProjectRoot "config" "last-classifier-upload.json"
-            @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $uploadSuccess } | ConvertTo-Json | Out-File $timestampFile -Encoding utf8
+            if (-not $WhatIf) {
+                @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $xmlFiles.Count } | ConvertTo-Json | Out-File $timestampFile -Encoding utf8
+            }
         }
     }
 

@@ -2,6 +2,13 @@
 
 All notable changes to the QGISCF DLP Deployment Toolkit will be documented in this file.
 
+## Unreleased
+
+- Promoted the classifier deployment workflow to a guided, plan-first manager with impact assessment, capacity planning, prune selection, rollback support, and canary mode.
+- Added deployment flight recorder manifests, tenant fingerprint checks, and UTF-16LE+BOM upload encoding for Purview rule package writes.
+- Added `Test-DeploymentReadiness.ps1` and `Invoke-CIChecks.ps1` for parser, config, generated DLP payload, and deploy XML validation.
+- Adapted the safety workflow to Compl8's `xml/deploy/deploy-registry.json` package output while retaining legacy `classifiers-registry.json` compatibility.
+
 ## [1.0.0] - 2026-02-23
 
 Initial production release. JSON-driven DLP deployment with WhatIf, Cleanup, retry logic, and pre-flight validation.
