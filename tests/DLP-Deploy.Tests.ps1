@@ -422,3 +422,47 @@ Describe 'Show-CleanupPlan' {
         (Show-CleanupPlan -Targets @() -Tenant 't' -Quiet).Total | Should -Be 0
     }
 }
+
+Describe 'Test-DLPSessionMatch' {
+    BeforeAll {
+        $script:conn = [pscustomobject]@{
+            State             = 'Connected'
+            ConnectionUri     = 'https://eur02b.ps.compliance.protection.outlook.com/'
+            Organization      = 'qgov.onmicrosoft.com'
+            TenantId          = '11111111-2222-3333-4444-555555555555'
+            UserPrincipalName = 'admin@qgov.onmicrosoft.com'
+        }
+    }
+
+    It 'matches any live session when neither UPN nor Tenant given' {
+        Test-DLPSessionMatch -Connection $script:conn | Should -BeTrue
+    }
+
+    It 'matches on exact tenant GUID' {
+        Test-DLPSessionMatch -Connection $script:conn -Tenant '11111111-2222-3333-4444-555555555555' | Should -BeTrue
+    }
+
+    It 'matches when tenant is a substring of the organization domain' {
+        Test-DLPSessionMatch -Connection $script:conn -Tenant 'qgov' | Should -BeTrue
+    }
+
+    It 'matches full onmicrosoft domain against organization' {
+        Test-DLPSessionMatch -Connection $script:conn -Tenant 'qgov.onmicrosoft.com' | Should -BeTrue
+    }
+
+    It 'does not match a different tenant' {
+        Test-DLPSessionMatch -Connection $script:conn -Tenant 'contoso.onmicrosoft.com' | Should -BeFalse
+    }
+
+    It 'matches on exact UPN' {
+        Test-DLPSessionMatch -Connection $script:conn -UPN 'admin@qgov.onmicrosoft.com' | Should -BeTrue
+    }
+
+    It 'matches a different user in the same domain' {
+        Test-DLPSessionMatch -Connection $script:conn -UPN 'someoneelse@qgov.onmicrosoft.com' | Should -BeTrue
+    }
+
+    It 'does not match a UPN in a different domain' {
+        Test-DLPSessionMatch -Connection $script:conn -UPN 'admin@contoso.com' | Should -BeFalse
+    }
+}

@@ -42,6 +42,85 @@ function Get-ModuleDefaults {
 #endregion
 
 #region Connection
+
+# Tracks whether the active SCC session was already live when Connect-DLPSession ran.
+# When true, Disconnect-DLPSession leaves it open so we don't tear down a session the
+# caller (or a prior step) established and may still want.
+$script:DLPSessionReused = $false
+
+function Test-DLPSessionMatch {
+    <#
+    .SYNOPSIS
+        Decides whether an existing Get-ConnectionInformation connection satisfies the
+        requested -UPN / -Tenant target. Pure (no cmdlet calls), so it is unit-testable.
+    .DESCRIPTION
+        With neither UPN nor Tenant supplied, any connection matches (caller just wants
+        "a live SCC session"). A Tenant matches when it equals — or is a substring of, or
+        contains — the connection's Organization, TenantId, or UserPrincipalName (covers
+        GUID, *.onmicrosoft.com, and verified-domain forms). A UPN matches on exact user
+        or shared email domain.
+    #>
+    param(
+        [Parameter(Mandatory)]$Connection,
+        [string]$UPN,
+        [string]$Tenant
+    )
+
+    $org  = Get-DeploymentObjectProperty -InputObject $Connection -Names @("Organization", "Tenant", "TenantName", "DelegatedOrganization")
+    $tid  = Get-DeploymentObjectProperty -InputObject $Connection -Names @("TenantID", "TenantId", "TenantGuid", "ExternalDirectoryOrganizationId")
+    $cupn = Get-DeploymentObjectProperty -InputObject $Connection -Names @("UserPrincipalName", "UserName")
+
+    if (-not $UPN -and -not $Tenant) { return $true }
+
+    $norm = { param($s) if ($null -eq $s) { "" } else { $s.ToString().Trim().ToLowerInvariant() } }
+
+    if ($Tenant) {
+        $t = & $norm $Tenant
+        foreach ($v in @($org, $tid, $cupn)) {
+            $n = & $norm $v
+            if ($n -and ($n -eq $t -or $n.Contains($t) -or $t.Contains($n))) { return $true }
+        }
+        return $false
+    }
+
+    if ($UPN) {
+        $u  = & $norm $UPN
+        $cu = & $norm $cupn
+        if ($cu -and $cu -eq $u) { return $true }
+        if ($u.Contains("@") -and $cu.Contains("@") -and (($u -split "@")[-1] -eq ($cu -split "@")[-1])) { return $true }
+        $o = & $norm $org
+        if ($u.Contains("@") -and $o -and $o -eq ($u -split "@")[-1]) { return $true }
+    }
+
+    return $false
+}
+
+function Get-LiveDLPSession {
+    <#
+    .SYNOPSIS
+        Returns an existing, connected Security & Compliance session that matches the
+        requested -UPN / -Tenant, or $null. Used to avoid a fresh login when one is live.
+    .NOTES
+        Sessions are per-process: this only finds a session established earlier in the
+        SAME PowerShell process (e.g. an interactive session, or sub-scripts invoked with
+        '& ./script.ps1'). A separate 'pwsh -File ...' launch starts a clean process with
+        no session to reuse.
+    #>
+    param([string]$UPN, [string]$Tenant)
+
+    if (-not (Get-Command Get-ConnectionInformation -ErrorAction SilentlyContinue)) { return $null }
+    try { $conns = @(Get-ConnectionInformation -ErrorAction Stop) } catch { return $null }
+
+    $scc = @($conns | Where-Object {
+        (Get-DeploymentObjectProperty -InputObject $_ -Names @("State")) -eq "Connected" -and
+        ((Get-DeploymentObjectProperty -InputObject $_ -Names @("ConnectionUri")) -match "compliance|ps\.compliance|protection\.outlook")
+    })
+    foreach ($c in $scc) {
+        if (Test-DLPSessionMatch -Connection $c -UPN $UPN -Tenant $Tenant) { return $c }
+    }
+    return $null
+}
+
 function Connect-DLPSession {
     <#
     .SYNOPSIS
@@ -56,11 +135,15 @@ function Connect-DLPSession {
     .PARAMETER Delegated
         Use CSP/GDAP delegated admin mode instead of guest-account auth. Requires -Tenant to
         be the target's primary .onmicrosoft.com domain.
+    .PARAMETER ForceNewSession
+        Skip reuse detection and always open a fresh login, even if a matching session is
+        already live in this process.
     #>
     param(
         [string]$UPN,
         [string]$Tenant,
-        [switch]$Delegated
+        [switch]$Delegated,
+        [switch]$ForceNewSession
     )
 
     if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
@@ -68,6 +151,21 @@ function Connect-DLPSession {
         return $false
     }
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
+
+    # Reuse an already-live SCC session for this tenant instead of forcing another login.
+    $script:DLPSessionReused = $false
+    if (-not $ForceNewSession) {
+        $existing = Get-LiveDLPSession -UPN $UPN -Tenant $Tenant
+        if ($existing) {
+            $who = Get-DeploymentObjectProperty -InputObject $existing -Names @("UserPrincipalName", "UserName")
+            $org = Get-DeploymentObjectProperty -InputObject $existing -Names @("Organization", "Tenant", "TenantName")
+            $detail = @($org, $who | Where-Object { $_ }) -join ", "
+            Write-Host "  Reusing existing Security & Compliance session ($detail). No login needed." -ForegroundColor Green
+            Write-Host "  (Use -ForceNewSession to force a fresh login.)" -ForegroundColor DarkGray
+            $script:DLPSessionReused = $true
+            return $true
+        }
+    }
 
     $connectParams = @{}
     if ($UPN) { $connectParams["UserPrincipalName"] = $UPN }
@@ -117,8 +215,17 @@ function Assert-DLPSession {
 function Disconnect-DLPSession {
     <#
     .SYNOPSIS
-        Disconnects the Exchange Online / IPPS session.
+        Disconnects the Exchange Online / IPPS session — unless Connect-DLPSession reused a
+        session that was already live at start, in which case it is left open.
+    .PARAMETER Force
+        Disconnect even if the session was pre-existing/reused.
     #>
+    param([switch]$Force)
+
+    if ($script:DLPSessionReused -and -not $Force) {
+        Write-Host "  Leaving the pre-existing session open (it was live before this run; use -Force to close)." -ForegroundColor Gray
+        return
+    }
     Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host "  Disconnected from Security & Compliance Center." -ForegroundColor Gray
 }
@@ -2196,6 +2303,8 @@ Export-ModuleMember -Function @(
     'Connect-DLPSession'
     'Assert-DLPSession'
     'Disconnect-DLPSession'
+    'Get-LiveDLPSession'
+    'Test-DLPSessionMatch'
     'Import-JsonConfig'
     'Merge-GlobalConfig'
     'Set-DeploymentConfigPrefix'
