@@ -160,6 +160,38 @@ function Require-Connection {
     }
     return $true
 }
+
+function Format-CommandArgument {
+    param([object]$Value)
+
+    $text = [string]$Value
+    if ($text -match '[\s"`$&|;<>]') {
+        return '"' + ($text -replace '"', '\"') + '"'
+    }
+
+    return $text
+}
+
+function Invoke-ToolkitScript {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ScriptName,
+
+        [object[]]$ArgumentList = @()
+    )
+
+    $scriptPath = Join-Path $ScriptsDir $ScriptName
+    $displayArgs = @($ArgumentList | ForEach-Object { Format-CommandArgument $_ })
+    $cmd = "& `"$scriptPath`""
+    if ($displayArgs.Count -gt 0) {
+        $cmd = "$cmd $($displayArgs -join ' ')"
+    }
+
+    Write-Host ""
+    Write-Host "  > $cmd" -ForegroundColor DarkGray
+    Write-Host ""
+    & $scriptPath @ArgumentList
+}
 #endregion
 
 #region Package XML Helpers
@@ -249,16 +281,12 @@ function Invoke-DeployLabels {
     if ($publish) {
         Write-Host '  Publish to (e.g. "All" or "user@domain.com"): ' -NoNewline
         $target = (Read-Host).Trim()
-        if ($target) { $params += "-PublishTo `"$target`"" }
+        if ($target) { $params += @("-PublishTo", $target) }
     } else {
         $params += "-SkipPublish"
     }
 
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Deploy-Labels.ps1')`" $($params -join ' ')"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Deploy-Labels.ps1" -ArgumentList $params
 }
 
 function Invoke-DeployClassifiers {
@@ -274,16 +302,12 @@ function Invoke-DeployClassifiers {
     $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
     $skip   = Read-YesNo "Skip pre-flight checks?"
 
-    $params = @("-Action Upload")
-    if ($tier -in @("narrow", "wide", "full")) { $params += "-Tier $tier" }
+    $params = @("-Action", "Upload")
+    if ($tier -in @("narrow", "wide", "full")) { $params += @("-Tier", $tier) }
     if ($dryRun)  { $params += "-WhatIf" }
     if ($skip)    { $params += "-SkipPreFlight" }
 
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Deploy-Classifiers.ps1')`" $($params -join ' ')"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
 }
 
 function Invoke-DeployDLPRules {
@@ -301,11 +325,7 @@ function Invoke-DeployDLPRules {
     if ($skipVal)   { $params += "-SkipValidation" }
     if ($skipVerif) { $params += "-SkipVerification" }
 
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Deploy-DLPRules.ps1')`" $($params -join ' ')"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $params
 }
 
 function Invoke-ChangePack {
@@ -332,14 +352,10 @@ function Invoke-ChangePack {
 
             $dryRun = Read-YesNo "Dry run (show diff only, don't write CSV)?" -Default $false
 
-            $params = @("-Components $compParam")
+            $params = @("-Components", $compParam)
             if ($dryRun) { $params += "-WhatIf" }
 
-            $cmd = "& `"$(Join-Path $ScriptsDir 'Generate-ChangePack.ps1')`" $($params -join ' ')"
-            Write-Host ""
-            Write-Host "  > $cmd" -ForegroundColor DarkGray
-            Write-Host ""
-            Invoke-Expression $cmd
+            Invoke-ToolkitScript -ScriptName "Generate-ChangePack.ps1" -ArgumentList $params
         }
 
         "2" {
@@ -374,14 +390,10 @@ function Invoke-ChangePack {
 
             $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
 
-            $params = @("-CsvPath `"$csvPath`"")
+            $params = @("-CsvPath", $csvPath)
             if ($dryRun) { $params += "-WhatIf" }
 
-            $cmd = "& `"$(Join-Path $ScriptsDir 'Invoke-ChangePack.ps1')`" $($params -join ' ')"
-            Write-Host ""
-            Write-Host "  > $cmd" -ForegroundColor DarkGray
-            Write-Host ""
-            Invoke-Expression $cmd
+            Invoke-ToolkitScript -ScriptName "Invoke-ChangePack.ps1" -ArgumentList $params
         }
 
         default {
@@ -401,14 +413,10 @@ function Invoke-TestClassifiers {
     $showAll = Read-YesNo "Show all (verbose)?"
 
     $params = @()
-    if ($label)   { $params += "-Label `"$label`"" }
+    if ($label)   { $params += @("-Label", $label) }
     if ($showAll) { $params += "-ShowAll" }
 
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Test-Classifiers.ps1')`" $($params -join ' ')"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Test-Classifiers.ps1" -ArgumentList $params
 }
 
 function Invoke-ListPackages {
@@ -520,11 +528,7 @@ function Invoke-EstimateCapacity {
     param([ref]$Connected)
     if (-not (Require-Connection $Connected)) { return }
 
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Deploy-Classifiers.ps1')`" -Action Estimate"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList @("-Action", "Estimate")
 }
 
 function Invoke-CleanupDLPRules {
@@ -1283,11 +1287,7 @@ function Invoke-RemovePackages {
 }
 
 function Invoke-ValidateXML {
-    $cmd = "& `"$(Join-Path $ScriptsDir 'Deploy-Classifiers.ps1')`" -Action Validate"
-    Write-Host ""
-    Write-Host "  > $cmd" -ForegroundColor DarkGray
-    Write-Host ""
-    Invoke-Expression $cmd
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList @("-Action", "Validate")
 }
 
 #endregion
