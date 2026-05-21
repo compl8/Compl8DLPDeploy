@@ -1069,18 +1069,89 @@ function Get-DlpClassifierRuleReferences {
 function Test-DlpRulePackageRemovalReferenceGuard {
     param(
         [Parameter(Mandatory)][object[]]$Packages,
+        [object[]]$DlpRules,
         [string]$OperationName = "classifier package removal"
     )
 
     $packageEntityIndex = @(Get-DlpRulePackageEntityIds -Packages $Packages)
     $candidateIds = @($packageEntityIndex | ForEach-Object { $_.EntityIds } | Sort-Object -Unique)
+    $referenceIndex = [pscustomobject]@{
+        CandidateIdCount = $candidateIds.Count
+        RulesScanned     = 0
+        MatchingRuleCount = 0
+        References       = @()
+    }
+
     # When no entity IDs could be extracted (e.g. every package failed to parse), there is
-    # nothing to scan for — skip the lookup so the mandatory parameter doesn't throw. The
-    # unparsed-package check below still fails the guard closed.
-    $referenceIndex = if ($candidateIds.Count -gt 0) {
-        Get-DlpClassifierRuleReferences -CandidateIds $candidateIds
-    } else {
-        [pscustomobject]@{ CandidateIdCount = 0; RulesScanned = 0; MatchingRuleCount = 0; References = @() }
+    # nothing to scan for. The unparsed-package check below still fails the guard closed.
+    if ($candidateIds.Count -gt 0) {
+        $rules = @()
+        if ($PSBoundParameters.ContainsKey("DlpRules")) {
+            $rules = @($DlpRules)
+        } else {
+            try {
+                $rules = @(Get-DlpComplianceRule -ErrorAction Stop)
+            } catch {
+                Write-Warning "Could not retrieve DLP rules for classifier reference check: $($_.Exception.Message)"
+            }
+        }
+
+        $referenceIndex.RulesScanned = @($rules).Count
+        if ($referenceIndex.RulesScanned -gt 0) {
+            $candidateLookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($id in @($candidateIds)) {
+                if (-not [string]::IsNullOrWhiteSpace($id)) {
+                    $candidateLookup.Add($id.ToString()) | Out-Null
+                }
+            }
+
+            $graph = Get-DeploymentReferenceGraph -SitPackages $Packages -DlpRules $rules
+            $nodesById = @{}
+            foreach ($node in @($graph.Nodes)) {
+                $nodesById[$node.Id] = $node
+            }
+
+            $referencesByRule = @{}
+            foreach ($edge in @($graph.Edges | Where-Object { $_.Type -eq "sitReferencedByRule" })) {
+                if (-not $edge.From.StartsWith("sit:", [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                $matchedId = $edge.From.Substring(4)
+                if (-not $candidateLookup.Contains($matchedId)) { continue }
+
+                if (-not $referencesByRule.ContainsKey($edge.To)) {
+                    $ruleNode = $nodesById[$edge.To]
+                    $ruleName = if ($ruleNode -and $ruleNode.Name) { $ruleNode.Name } elseif ($edge.To -like "dlpRule:*") { $edge.To.Substring(8) } else { "(unknown)" }
+                    $policyNames = @($graph.Edges |
+                        Where-Object { $_.Type -eq "ruleBelongsToPolicy" -and $_.From -eq $edge.To } |
+                        ForEach-Object {
+                            if ($nodesById.ContainsKey($_.To) -and $nodesById[$_.To].Name) {
+                                $nodesById[$_.To].Name
+                            } elseif ($_.To -like "dlpPolicy:*") {
+                                $_.To.Substring(10)
+                            }
+                        } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                        Sort-Object -Unique)
+                    $referencesByRule[$edge.To] = [pscustomobject]@{
+                        RuleName = $ruleName
+                        PolicyNames = @($policyNames)
+                        MatchedClassifierIds = New-Object System.Collections.Generic.List[string]
+                    }
+                }
+                $referencesByRule[$edge.To].MatchedClassifierIds.Add($matchedId.ToLowerInvariant()) | Out-Null
+            }
+
+            $references = @()
+            foreach ($entry in @($referencesByRule.GetEnumerator() | Sort-Object { $_.Value.RuleName })) {
+                $ids = @($entry.Value.MatchedClassifierIds | Sort-Object -Unique)
+                $references += [pscustomobject]@{
+                    RuleName = $entry.Value.RuleName
+                    PolicyNames = @($entry.Value.PolicyNames)
+                    MatchedClassifierIds = $ids
+                }
+            }
+            $referenceIndex.MatchingRuleCount = @($references).Count
+            $referenceIndex.References = @($references)
+        }
     }
     $referencedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($ref in @($referenceIndex.References)) {
@@ -1134,6 +1205,307 @@ function Test-DlpRulePackageRemovalReferenceGuard {
         References = @($referenceIndex.References)
         ReferencedPackages = @($referencedPackages)
         UnparsedPackages = @($unparsedPackages)
+    }
+}
+
+function New-DeploymentGraphNodeId {
+    param(
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][string]$Value
+    )
+
+    $cleanValue = $Value.Trim()
+    if ($cleanValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        $cleanValue = $cleanValue.ToLowerInvariant()
+    }
+    return ("{0}:{1}" -f $Prefix, $cleanValue)
+}
+
+function Get-DeploymentGraphObjectValue {
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [Parameter(Mandatory)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $prop = $InputObject.PSObject.Properties[$name]
+        if ($prop -and -not [string]::IsNullOrWhiteSpace($prop.Value)) {
+            return $prop.Value.ToString()
+        }
+    }
+    return $null
+}
+
+function Get-DeploymentGraphRulePackageInfo {
+    param([Parameter(Mandatory)][object]$Package)
+
+    $identity = Get-DeploymentGraphObjectValue -InputObject $Package -Names @("Identity", "Id", "Guid")
+    $name = Get-DeploymentGraphObjectValue -InputObject $Package -Names @("Name", "DisplayName")
+    $publisher = Get-DeploymentGraphObjectValue -InputObject $Package -Names @("Publisher")
+    $rawText = Convert-DlpSerializedRulePackageToText -Raw $Package.SerializedClassificationRuleCollection
+
+    $result = [pscustomobject]@{
+        Identity   = $identity
+        Name       = $name
+        Publisher  = $publisher
+        RulePackId = $null
+        Parsed     = $false
+        ParseError  = $null
+        Xml        = $null
+        RawText    = $rawText
+    }
+
+    if (-not $rawText) {
+        $result.ParseError = "SerializedClassificationRuleCollection was empty."
+        return $result
+    }
+
+    try {
+        [xml]$xml = $rawText
+        $result.Xml = $xml
+        $result.Parsed = $true
+        $rulePack = $xml.RulePackage.RulePack
+        if ($rulePack -and $rulePack.id) {
+            $result.RulePackId = $rulePack.id.ToString()
+        }
+        if ($rulePack -and $rulePack.Details -and $rulePack.Details.LocalizedDetails) {
+            $localized = $rulePack.Details.LocalizedDetails | Select-Object -First 1
+            if ($localized -and $localized.Name) {
+                $result.Name = $localized.Name.ToString()
+            }
+        }
+    } catch {
+        $result.ParseError = $_.Exception.Message
+    }
+
+    return $result
+}
+
+function Get-DeploymentReferenceGraph {
+    <#
+    .SYNOPSIS
+        Builds a dependency graph across Purview deployment objects.
+    .DESCRIPTION
+        Produces stable node and edge records for the roadmap substrate:
+        keyword dictionary -> sensitive information type -> DLP rule -> DLP policy -> label.
+        The function is intentionally pure: callers pass already-fetched tenant/config
+        objects so destructive guards can reuse the same parser without introducing new
+        tenant calls in tests or plan-generation paths.
+    #>
+    param(
+        [object[]]$Dictionaries = @(),
+        [object[]]$SitPackages = @(),
+        [object[]]$DlpRules = @(),
+        [object[]]$DlpPolicies = @(),
+        [object[]]$Labels = @()
+    )
+
+    $nodes = New-Object System.Collections.Generic.List[object]
+    $edges = New-Object System.Collections.Generic.List[object]
+    $nodesById = @{}
+    $edgesByKey = @{}
+    $knownSitIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $labelIdByCode = @{}
+    $unparsedPackageCount = 0
+
+    function Add-GraphNode {
+        param(
+            [Parameter(Mandatory)][string]$Id,
+            [Parameter(Mandatory)][string]$Type,
+            [string]$Name,
+            [string]$Identity,
+            [string]$Source,
+            [hashtable]$Properties = @{}
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Id)) { return $null }
+        if (-not $nodesById.ContainsKey($Id)) {
+            $node = [pscustomobject]@{
+                Id         = $Id
+                Type       = $Type
+                Name       = $Name
+                Identity   = $Identity
+                Source     = $Source
+                Properties = [pscustomobject]$Properties
+            }
+            $nodesById[$Id] = $node
+            $nodes.Add($node) | Out-Null
+        } else {
+            $node = $nodesById[$Id]
+            if ([string]::IsNullOrWhiteSpace($node.Name) -and -not [string]::IsNullOrWhiteSpace($Name)) {
+                $node.Name = $Name
+            }
+            if ([string]::IsNullOrWhiteSpace($node.Identity) -and -not [string]::IsNullOrWhiteSpace($Identity)) {
+                $node.Identity = $Identity
+            }
+        }
+        return $Id
+    }
+
+    function Add-GraphEdge {
+        param(
+            [Parameter(Mandatory)][string]$From,
+            [Parameter(Mandatory)][string]$To,
+            [Parameter(Mandatory)][string]$Type,
+            [string]$Source,
+            [hashtable]$Properties = @{}
+        )
+
+        if ([string]::IsNullOrWhiteSpace($From) -or [string]::IsNullOrWhiteSpace($To)) { return }
+        $key = "{0}|{1}|{2}" -f $From, $To, $Type
+        if ($edgesByKey.ContainsKey($key)) { return }
+        $edge = [pscustomobject]@{
+            From       = $From
+            To         = $To
+            Type       = $Type
+            Source     = $Source
+            Properties = [pscustomobject]$Properties
+        }
+        $edgesByKey[$key] = $true
+        $edges.Add($edge) | Out-Null
+    }
+
+    foreach ($dictionary in @($Dictionaries)) {
+        if (-not $dictionary) { continue }
+        $identity = Get-DeploymentGraphObjectValue -InputObject $dictionary -Names @("Identity", "Guid", "Id")
+        $name = Get-DeploymentGraphObjectValue -InputObject $dictionary -Names @("Name", "DisplayName")
+        $nodeValue = if ($identity) { $identity } elseif ($name) { $name } else { $null }
+        if (-not $nodeValue) { continue }
+        $nodeId = New-DeploymentGraphNodeId -Prefix "dictionary" -Value $nodeValue
+        Add-GraphNode -Id $nodeId -Type "KeywordDictionary" -Name $name -Identity $identity -Source "KeywordDictionary" -Properties @{ Missing = $false } | Out-Null
+    }
+
+    foreach ($label in @($Labels)) {
+        if (-not $label) { continue }
+        $code = Get-DeploymentGraphObjectValue -InputObject $label -Names @("code", "Code", "LabelCode")
+        $name = Get-DeploymentGraphObjectValue -InputObject $label -Names @("name", "Name", "fullName", "displayName", "DisplayName")
+        $identity = Get-DeploymentGraphObjectValue -InputObject $label -Names @("Identity", "Guid", "Id")
+        $nodeValue = if ($identity) { $identity } elseif ($name) { $name } elseif ($code) { $code } else { $null }
+        if (-not $nodeValue) { continue }
+        $nodeId = New-DeploymentGraphNodeId -Prefix "label" -Value $nodeValue
+        Add-GraphNode -Id $nodeId -Type "Label" -Name $name -Identity $identity -Source "LabelConfig" -Properties @{ Code = $code } | Out-Null
+        if ($code -and -not $labelIdByCode.ContainsKey($code)) {
+            $labelIdByCode[$code] = $nodeId
+        }
+    }
+
+    foreach ($policy in @($DlpPolicies)) {
+        if (-not $policy) { continue }
+        $name = Get-DeploymentGraphObjectValue -InputObject $policy -Names @("Name", "Identity", "DisplayName")
+        $identity = Get-DeploymentGraphObjectValue -InputObject $policy -Names @("Identity", "Id", "Guid")
+        $nodeValue = if ($name) { $name } elseif ($identity) { $identity } else { $null }
+        if (-not $nodeValue) { continue }
+        $nodeId = New-DeploymentGraphNodeId -Prefix "dlpPolicy" -Value $nodeValue
+        Add-GraphNode -Id $nodeId -Type "DlpPolicy" -Name $name -Identity $identity -Source "DlpPolicy" -Properties @{ Missing = $false } | Out-Null
+    }
+
+    foreach ($package in @($SitPackages)) {
+        if (-not $package) { continue }
+        $info = Get-DeploymentGraphRulePackageInfo -Package $package
+        if (-not $info.Parsed) { $unparsedPackageCount++ }
+        $packageValue = if ($info.RulePackId) { $info.RulePackId } elseif ($info.Identity) { $info.Identity } elseif ($info.Name) { $info.Name } else { $null }
+        if (-not $packageValue) { continue }
+
+        $packageNodeId = New-DeploymentGraphNodeId -Prefix "sitPackage" -Value $packageValue
+        Add-GraphNode -Id $packageNodeId -Type "SitPackage" -Name $info.Name -Identity $info.Identity -Source "DlpRulePackage" -Properties @{
+            RulePackId = $info.RulePackId
+            Publisher = $info.Publisher
+            Parsed = [bool]$info.Parsed
+            ParseError = $info.ParseError
+        } | Out-Null
+
+        if (-not $info.Parsed -or -not $info.Xml) { continue }
+        $rules = $info.Xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" } | Select-Object -First 1
+        if (-not $rules) { continue }
+
+        foreach ($entity in @($rules.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq "Entity" })) {
+            $entityId = $entity.GetAttribute("id")
+            if ([string]::IsNullOrWhiteSpace($entityId)) { continue }
+            $entityId = $entityId.ToLowerInvariant()
+            $sitNodeId = New-DeploymentGraphNodeId -Prefix "sit" -Value $entityId
+            $knownSitIds.Add($entityId) | Out-Null
+            Add-GraphNode -Id $sitNodeId -Type "SensitiveInformationType" -Name $null -Identity $entityId -Source "RulePackageEntity" -Properties @{
+                RulePackId = $info.RulePackId
+                PackageIdentity = $info.Identity
+                PackageName = $info.Name
+            } | Out-Null
+            Add-GraphEdge -From $packageNodeId -To $sitNodeId -Type "packageContainsSit" -Source "RulePackageEntity" -Properties @{ RulePackId = $info.RulePackId } | Out-Null
+
+            foreach ($dictionaryId in @(Get-DictionaryGuidReferences -PackageXmlText $entity.OuterXml)) {
+                $dictionaryNodeId = New-DeploymentGraphNodeId -Prefix "dictionary" -Value $dictionaryId
+                $missing = -not $nodesById.ContainsKey($dictionaryNodeId)
+                Add-GraphNode -Id $dictionaryNodeId -Type "KeywordDictionary" -Name $null -Identity $dictionaryId -Source "RulePackageDictionaryReference" -Properties @{ Missing = $missing } | Out-Null
+                Add-GraphEdge -From $dictionaryNodeId -To $sitNodeId -Type "dictionaryFeedsSit" -Source "RulePackageEntity" -Properties @{ RulePackId = $info.RulePackId } | Out-Null
+            }
+        }
+    }
+
+    $labelCodesByLength = @($labelIdByCode.Keys | Sort-Object { $_.Length } -Descending)
+    $guidPattern = '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+    foreach ($rule in @($DlpRules)) {
+        if (-not $rule) { continue }
+        $ruleName = Get-DeploymentGraphObjectValue -InputObject $rule -Names @("Name", "Identity", "DisplayName")
+        $ruleIdentity = Get-DeploymentGraphObjectValue -InputObject $rule -Names @("Identity", "Id", "Guid")
+        $ruleValue = if ($ruleName) { $ruleName } elseif ($ruleIdentity) { $ruleIdentity } else { $null }
+        if (-not $ruleValue) { continue }
+        $ruleNodeId = New-DeploymentGraphNodeId -Prefix "dlpRule" -Value $ruleValue
+        Add-GraphNode -Id $ruleNodeId -Type "DlpRule" -Name $ruleName -Identity $ruleIdentity -Source "DlpRule" -Properties @{} | Out-Null
+
+        $ruleText = Get-DlpRuleClassifierReferenceText -Rule $rule
+        if ($ruleText) {
+            $matchedSitIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($match in [regex]::Matches($ruleText, $guidPattern)) {
+                if ($knownSitIds.Contains($match.Value)) {
+                    $matchedSitIds.Add($match.Value.ToLowerInvariant()) | Out-Null
+                }
+            }
+            foreach ($sitId in @($matchedSitIds | Sort-Object)) {
+                $sitNodeId = New-DeploymentGraphNodeId -Prefix "sit" -Value $sitId
+                Add-GraphEdge -From $sitNodeId -To $ruleNodeId -Type "sitReferencedByRule" -Source "DlpRule" -Properties @{} | Out-Null
+            }
+        }
+
+        $policyNames = @(Get-DlpRulePolicyNames -Rule $rule)
+        foreach ($policyName in $policyNames) {
+            if ([string]::IsNullOrWhiteSpace($policyName)) { continue }
+            $policyNodeId = New-DeploymentGraphNodeId -Prefix "dlpPolicy" -Value $policyName
+            Add-GraphNode -Id $policyNodeId -Type "DlpPolicy" -Name $policyName -Identity $policyName -Source "DlpRulePolicyReference" -Properties @{ Missing = -not $nodesById.ContainsKey($policyNodeId) } | Out-Null
+            Add-GraphEdge -From $ruleNodeId -To $policyNodeId -Type "ruleBelongsToPolicy" -Source "DlpRule" -Properties @{} | Out-Null
+        }
+
+        foreach ($labelCode in $labelCodesByLength) {
+            if ([string]::IsNullOrWhiteSpace($labelCode) -or [string]::IsNullOrWhiteSpace($ruleName)) { continue }
+            $escapedCode = [regex]::Escape($labelCode)
+            if (-not [regex]::IsMatch($ruleName, "(^|-)$escapedCode(-|$)", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                continue
+            }
+            $labelNodeId = $labelIdByCode[$labelCode]
+            foreach ($policyName in $policyNames) {
+                if ([string]::IsNullOrWhiteSpace($policyName)) { continue }
+                $policyNodeId = New-DeploymentGraphNodeId -Prefix "dlpPolicy" -Value $policyName
+                Add-GraphEdge -From $policyNodeId -To $labelNodeId -Type "policyTargetsLabel" -Source "DlpRuleName" -Properties @{ LabelCode = $labelCode; RuleName = $ruleName } | Out-Null
+            }
+            break
+        }
+    }
+
+    $nodeArray = @($nodes.ToArray())
+    $edgeArray = @($edges.ToArray())
+
+    return [pscustomobject]@{
+        Nodes   = $nodeArray
+        Edges   = $edgeArray
+        Summary = [pscustomobject]@{
+            NodeCount            = $nodeArray.Count
+            EdgeCount            = $edgeArray.Count
+            DictionaryCount      = @($nodeArray | Where-Object { $_.Type -eq "KeywordDictionary" }).Count
+            SitPackageCount      = @($nodeArray | Where-Object { $_.Type -eq "SitPackage" }).Count
+            SitCount             = @($nodeArray | Where-Object { $_.Type -eq "SensitiveInformationType" }).Count
+            DlpRuleCount         = @($nodeArray | Where-Object { $_.Type -eq "DlpRule" }).Count
+            DlpPolicyCount       = @($nodeArray | Where-Object { $_.Type -eq "DlpPolicy" }).Count
+            LabelCount           = @($nodeArray | Where-Object { $_.Type -eq "Label" }).Count
+            UnparsedPackageCount = $unparsedPackageCount
+        }
     }
 }
 #endregion
@@ -1361,16 +1733,40 @@ function Resolve-CleanupTargets {
         }
     }
 
+    function Get-ProvenanceMatchedBy {
+        param(
+            [Parameter(Mandatory)][object]$InputObject,
+            [Parameter(Mandatory)][string]$Component
+        )
+
+        $ownership = Test-DeploymentProvenanceOwnership -InputObject $InputObject -Prefix $prefix -Component $Component
+        if ($ownership.IsOwned) {
+            return "provenance '$($ownership.Stamp.Prefix)'/$Component"
+        }
+        if ($ownership.Stamp) {
+            return "__foreign_provenance__"
+        }
+        return $null
+    }
+
     foreach ($p in @($Objects['AutoLabelPolicy'])) {
         if (-not $p) { continue }
-        if ($p.Name -like "AL*-$prefix-$suffix") {
+        $provenance = Get-ProvenanceMatchedBy -InputObject $p -Component "AutoLabelPolicy"
+        if ($provenance -eq "__foreign_provenance__") { continue }
+        if ($provenance) {
+            $manifest.Add((New-CleanupTarget $p.Name "AutoLabelPolicy" "Auto-labeling policy" $provenance "scoped" "Get-AutoSensitivityLabelPolicy" "Remove-AutoSensitivityLabelPolicy" $p))
+        } elseif ($p.Name -like "AL*-$prefix-$suffix") {
             $manifest.Add((New-CleanupTarget $p.Name "AutoLabelPolicy" "Auto-labeling policy" "prefix '$prefix' + suffix '$suffix'" "scoped" "Get-AutoSensitivityLabelPolicy" "Remove-AutoSensitivityLabelPolicy" $p))
         }
     }
 
     foreach ($p in @($Objects['DlpPolicy'])) {
         if (-not $p) { continue }
-        if ($p.Name -like "*$prefix*") {
+        $provenance = Get-ProvenanceMatchedBy -InputObject $p -Component "DlpPolicy"
+        if ($provenance -eq "__foreign_provenance__") { continue }
+        if ($provenance) {
+            $manifest.Add((New-CleanupTarget $p.Name "DlpPolicy" "DLP policy" $provenance "scoped" "Get-DlpCompliancePolicy" "Remove-DlpCompliancePolicy" $p))
+        } elseif ($p.Name -like "*$prefix*") {
             $manifest.Add((New-CleanupTarget $p.Name "DlpPolicy" "DLP policy" "prefix '$prefix'" "scoped" "Get-DlpCompliancePolicy" "Remove-DlpCompliancePolicy" $p))
         } elseif ($p.Name -like "P0*-*") {
             $manifest.Add((New-CleanupTarget $p.Name "DlpPolicy" "DLP policy" "heuristic 'P0*-*' (NOT prefix-scoped)" "broad" "Get-DlpCompliancePolicy" "Remove-DlpCompliancePolicy" $p))
@@ -1387,7 +1783,11 @@ function Resolve-CleanupTargets {
 
     foreach ($d in @($Objects['KeywordDictionary'])) {
         if (-not $d) { continue }
-        if ($d.Name -like "$prefix*") {
+        $provenance = Get-ProvenanceMatchedBy -InputObject $d -Component "KeywordDictionary"
+        if ($provenance -eq "__foreign_provenance__") { continue }
+        if ($provenance) {
+            $manifest.Add((New-CleanupTarget $d.Identity "KeywordDictionary" "Keyword dictionary" $provenance "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
+        } elseif ($d.Name -like "$prefix*") {
             $manifest.Add((New-CleanupTarget $d.Identity "KeywordDictionary" "Keyword dictionary" "prefix '$prefix'" "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
         }
     }
@@ -1395,7 +1795,11 @@ function Resolve-CleanupTargets {
     if ($IncludeLabels) {
         foreach ($lp in @($Objects['LabelPolicy'])) {
             if (-not $lp) { continue }
-            if ($lp.Name -like "*$prefix*") {
+            $provenance = Get-ProvenanceMatchedBy -InputObject $lp -Component "LabelPolicy"
+            if ($provenance -eq "__foreign_provenance__") { continue }
+            if ($provenance) {
+                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" $provenance "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
+            } elseif ($lp.Name -like "*$prefix*") {
                 $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "prefix '$prefix'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
             } elseif ($labelPolicyName -and $lp.Name -eq $labelPolicyName) {
                 $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "configured labelPolicyName '$labelPolicyName'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
@@ -1403,7 +1807,11 @@ function Resolve-CleanupTargets {
         }
         foreach ($l in @($Objects['Label'])) {
             if (-not $l) { continue }
-            if ($l.Name -like "*$prefix*") {
+            $provenance = Get-ProvenanceMatchedBy -InputObject $l -Component "SensitivityLabel"
+            if ($provenance -eq "__foreign_provenance__") { continue }
+            if ($provenance) {
+                $manifest.Add((New-CleanupTarget $l.Name "Label" "Sensitivity label" $provenance "scoped" "Get-Label" "Remove-Label" $l))
+            } elseif ($l.Name -like "*$prefix*") {
                 $manifest.Add((New-CleanupTarget $l.Name "Label" "Sensitivity label" "prefix '$prefix'" "scoped" "Get-Label" "Remove-Label" $l))
             } elseif ($l.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)") {
                 $manifest.Add((New-CleanupTarget $l.Name "Label" "Sensitivity label" "built-in classification regex (NOT prefix-scoped)" "broad" "Get-Label" "Remove-Label" $l))
@@ -1681,6 +2089,155 @@ function Get-DeploymentObjectProperty {
         }
     }
     return $null
+}
+
+function ConvertTo-DeploymentProvenanceFieldValue {
+    param([string]$Value)
+
+    if ($null -eq $Value) { return "" }
+    return [System.Uri]::EscapeDataString($Value)
+}
+
+function ConvertFrom-DeploymentProvenanceFieldValue {
+    param([string]$Value)
+
+    if ($null -eq $Value) { return $null }
+    return [System.Uri]::UnescapeDataString($Value)
+}
+
+function New-DeploymentProvenanceStamp {
+    <#
+    .SYNOPSIS
+        Creates a compact ownership marker for Purview Comment/Description fields.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][string]$Component,
+        [string]$DeploymentId,
+        [string]$TargetEnvironment,
+        [hashtable]$Metadata = @{}
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DeploymentId)) {
+        $DeploymentId = if ($env:COMPL8_DEPLOYMENT_ID) { $env:COMPL8_DEPLOYMENT_ID } else { Get-Date -Format "yyyyMMdd" }
+    }
+
+    $fields = [ordered]@{
+        prefix       = $Prefix
+        component    = $Component
+        deploymentId = $DeploymentId
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TargetEnvironment)) {
+        $fields.environment = $TargetEnvironment
+    }
+    foreach ($key in @($Metadata.Keys | Sort-Object)) {
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        $safeKey = ($key.ToString() -replace '[^A-Za-z0-9_]', '')
+        if ([string]::IsNullOrWhiteSpace($safeKey) -or $fields.Contains($safeKey)) { continue }
+        $fields[$safeKey] = $Metadata[$key]
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $fields.GetEnumerator()) {
+        if ($null -eq $entry.Value -or [string]::IsNullOrWhiteSpace($entry.Value.ToString())) { continue }
+        $parts.Add(("{0}={1}" -f $entry.Key, (ConvertTo-DeploymentProvenanceFieldValue -Value $entry.Value.ToString()))) | Out-Null
+    }
+
+    return "[[Compl8DLPDeploy:provenance:v1;$($parts -join ';')]]"
+}
+
+function Get-DeploymentProvenanceStamp {
+    <#
+    .SYNOPSIS
+        Reads a Compl8DLPDeploy provenance marker from text.
+    #>
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $pattern = '\[\[Compl8DLPDeploy:provenance:v(?<version>\d+)(?<fields>(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*)\]\]'
+    $match = [regex]::Match($Text, $pattern)
+    if (-not $match.Success) { return $null }
+
+    $fields = [ordered]@{}
+    foreach ($fieldMatch in [regex]::Matches($match.Groups["fields"].Value, ';(?<key>[A-Za-z][A-Za-z0-9_]*)=(?<value>[^\]\r\n;]*)')) {
+        $fields[$fieldMatch.Groups["key"].Value] = ConvertFrom-DeploymentProvenanceFieldValue -Value $fieldMatch.Groups["value"].Value
+    }
+
+    return [pscustomobject]@{
+        Found             = $true
+        Toolkit           = "Compl8DLPDeploy"
+        Version           = [int]$match.Groups["version"].Value
+        Prefix            = $fields["prefix"]
+        Component         = $fields["component"]
+        DeploymentId      = $fields["deploymentId"]
+        TargetEnvironment = $fields["environment"]
+        Fields            = [pscustomobject]$fields
+        Raw               = $match.Value
+    }
+}
+
+function Add-DeploymentProvenanceStamp {
+    <#
+    .SYNOPSIS
+        Appends or replaces the provenance marker in a Comment/Description string.
+    #>
+    param(
+        [string]$Text,
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][string]$Component,
+        [string]$DeploymentId,
+        [string]$TargetEnvironment,
+        [hashtable]$Metadata = @{},
+        [int]$MaxLength = 1000
+    )
+
+    $stamp = New-DeploymentProvenanceStamp -Prefix $Prefix -Component $Component -DeploymentId $DeploymentId -TargetEnvironment $TargetEnvironment -Metadata $Metadata
+    $pattern = '\[\[Compl8DLPDeploy:provenance:v\d+(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*\]\]'
+    $cleanText = if ($Text) { ([regex]::Replace($Text, $pattern, "")).Trim() } else { "" }
+    $combined = if ($cleanText) { "$cleanText`n$stamp" } else { $stamp }
+
+    if ($MaxLength -gt 0 -and $combined.Length -gt $MaxLength -and $cleanText) {
+        $available = $MaxLength - $stamp.Length - 1
+        if ($available -gt 3) {
+            $combined = "$($cleanText.Substring(0, $available - 3))...`n$stamp"
+        } else {
+            $combined = $stamp
+        }
+    }
+
+    return $combined
+}
+
+function Test-DeploymentProvenanceOwnership {
+    <#
+    .SYNOPSIS
+        Classifies an object as toolkit-owned only when a matching provenance marker exists.
+    #>
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [string]$Prefix,
+        [string]$Component
+    )
+
+    $stamp = $null
+    foreach ($propertyName in @("Comment", "Description")) {
+        $prop = $InputObject.PSObject.Properties[$propertyName]
+        if (-not $prop -or [string]::IsNullOrWhiteSpace($prop.Value)) { continue }
+        $stamp = Get-DeploymentProvenanceStamp -Text $prop.Value.ToString()
+        if ($stamp) { break }
+    }
+
+    if (-not $stamp) {
+        return [pscustomobject]@{ IsOwned = $false; Stamp = $null; Reason = "no provenance marker" }
+    }
+    if ($Prefix -and $stamp.Prefix -ne $Prefix) {
+        return [pscustomobject]@{ IsOwned = $false; Stamp = $stamp; Reason = "provenance prefix '$($stamp.Prefix)' did not match '$Prefix'" }
+    }
+    if ($Component -and $stamp.Component -ne $Component) {
+        return [pscustomobject]@{ IsOwned = $false; Stamp = $stamp; Reason = "provenance component '$($stamp.Component)' did not match '$Component'" }
+    }
+
+    return [pscustomobject]@{ IsOwned = $true; Stamp = $stamp; Reason = "matching provenance marker" }
 }
 
 function Get-DeploymentTenantInfo {
@@ -2203,8 +2760,13 @@ function Sync-DlpKeywordDictionaries {
                     break
                 }
                 try {
+                    $description = Add-DeploymentProvenanceStamp `
+                        -Text $dict.description `
+                        -Prefix $(if ($NamePrefix) { $NamePrefix } else { "UNSCOPED" }) `
+                        -Component "KeywordDictionary" `
+                        -Metadata @{ Placeholder = $dict.placeholder }
                     $result = Invoke-WithRetry -OperationName "New-Dictionary $name" -ScriptBlock {
-                        New-DlpKeywordDictionary -Name $name -Description $dict.description -FileData (& $toBytes $dict.terms) -Confirm:$false -ErrorAction Stop
+                        New-DlpKeywordDictionary -Name $name -Description $description -FileData (& $toBytes $dict.terms) -Confirm:$false -ErrorAction Stop
                     } -MaxRetries 2 -BaseDelaySec 30
                     $guid = $result.Identity
                     $tenantBytes += Get-DictionaryCompressedSize -Terms $dict.terms
@@ -2648,6 +3210,10 @@ Export-ModuleMember -Function @(
     'Invoke-WithRetry'
     'Start-DeploymentLog'
     'Stop-DeploymentLog'
+    'New-DeploymentProvenanceStamp'
+    'Add-DeploymentProvenanceStamp'
+    'Get-DeploymentProvenanceStamp'
+    'Test-DeploymentProvenanceOwnership'
     'Get-DeploymentTenantInfo'
     'New-DeploymentManifest'
     'Add-DeploymentManifestEvent'
@@ -2657,6 +3223,7 @@ Export-ModuleMember -Function @(
     'Test-DeploymentTenantFingerprint'
     'Convert-DlpSerializedRulePackageToText'
     'Get-DlpRulePackageEntityIds'
+    'Get-DeploymentReferenceGraph'
     'Get-DlpClassifierRuleReferences'
     'Test-DlpRulePackageRemovalReferenceGuard'
     'Test-SITRulePackageXml'

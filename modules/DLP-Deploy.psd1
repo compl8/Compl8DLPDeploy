@@ -17,6 +17,7 @@
     # surface is the intersection of this list and that one, so both must match.
     FunctionsToExport = @(
         'Add-DeploymentManifestEvent'
+        'Add-DeploymentProvenanceStamp'
         'Assert-ConfigCustomised'
         'Assert-DLPSession'
         'Assert-PurviewObjectNameSafety'
@@ -33,6 +34,8 @@
         'Get-LiveDLPSession'
         'Get-NormalizedDictionaryTerms'
         'Get-DeploymentFileArtifact'
+        'Get-DeploymentProvenanceStamp'
+        'Get-DeploymentReferenceGraph'
         'Get-DeploymentTenantInfo'
         'Get-DlpClassifierRuleReferences'
         'Get-DlpRulePackageEntityIds'
@@ -46,6 +49,7 @@
         'Merge-GlobalConfig'
         'New-AdvancedRuleJson'
         'New-DeploymentManifest'
+        'New-DeploymentProvenanceStamp'
         'New-DLPSITCondition'
         'Remove-PurviewObject'
         'Remove-PurviewObjects'
@@ -68,6 +72,7 @@
         'Test-DictionaryBudget'
         'Test-DictionaryRemovalAllowed'
         'Test-DeploymentTenantFingerprint'
+        'Test-DeploymentProvenanceOwnership'
         'Test-DLPSessionMatch'
         'Test-DlpRulePackageRemovalReferenceGuard'
         'Test-PurviewNameConflicts'

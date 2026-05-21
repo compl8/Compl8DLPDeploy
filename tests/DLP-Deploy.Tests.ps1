@@ -376,6 +376,25 @@ Describe 'Resolve-CleanupTargets' {
         @($m | Where-Object { $_.Category -eq 'DlpPolicy' -and $_.Risk -eq 'broad' }).Count | Should -Be 1
     }
 
+    It 'matches provenance-stamped objects even when the name is not prefix-shaped' {
+        $comment = Add-DeploymentProvenanceStamp -Text 'Managed policy' -Prefix 'QGISCF' -Component 'DlpPolicy' -DeploymentId 'deploy-001'
+        $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'CustomerFriendlyPolicyName'; Comment = $comment }) }
+
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects $objs
+
+        $dlp = @($m | Where-Object { $_.Category -eq 'DlpPolicy' })
+        $dlp.Count | Should -Be 1
+        $dlp[0].Risk | Should -Be 'scoped'
+        $dlp[0].MatchedBy | Should -Match 'provenance'
+    }
+
+    It 'does not fall back to broad heuristics when foreign provenance is present' {
+        $comment = Add-DeploymentProvenanceStamp -Text 'Foreign policy' -Prefix 'OTHER' -Component 'DlpPolicy' -DeploymentId 'deploy-001'
+        $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'P09-SomeoneElsesPolicy'; Comment = $comment }) }
+
+        (Resolve-CleanupTargets -Config $script:cfg -Objects $objs).Count | Should -Be 0
+    }
+
     It 'never matches Microsoft-published SIT packages' {
         $objs = @{ SitPackage = @(
             [pscustomobject]@{ Identity = 'ms-pkg'; Publisher = 'Microsoft Corporation' },
@@ -556,6 +575,115 @@ Describe 'Test-DlpRulePackageRemovalReferenceGuard' {
         $global:FakeRules = @()
         $bad = [pscustomobject]@{ Identity='bad'; Publisher='X'; Name='bad'; SerializedClassificationRuleCollection='<RulePackage><Rules><Entity id=' }
         (Test-DlpRulePackageRemovalReferenceGuard -Packages @($bad)).Safe | Should -BeFalse
+    }
+}
+
+Describe 'Get-DeploymentReferenceGraph' {
+    BeforeAll {
+        $script:graphDictionaryId = 'dddddddd-1111-2222-3333-444444444444'
+        $script:graphSitId = 'aaaaaaaa-1111-2222-3333-444444444444'
+        $script:graphRulePackId = '11111111-1111-2222-3333-444444444444'
+        $script:graphXml = @"
+<RulePackage>
+  <RulePack id="$($script:graphRulePackId)">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Details><LocalizedDetails languageId="en-us"><Name>Pkg One</Name></LocalizedDetails></Details>
+  </RulePack>
+  <Rules>
+    <Entity id="$($script:graphSitId)">
+      <Pattern>
+        <Match idRef="$($script:graphDictionaryId)" />
+        <Match idRef="$($script:graphDictionaryId)" />
+      </Pattern>
+    </Entity>
+  </Rules>
+</RulePackage>
+"@
+    }
+
+    It 'builds dictionary to SIT to rule to policy to label dependencies' {
+        $dictionary = [pscustomobject]@{ Name='QGISCF-AU Names'; Identity=$script:graphDictionaryId }
+        $package = [pscustomobject]@{ Identity='tenant-pkg-one'; Publisher='Compl8'; Name='Pkg One'; SerializedClassificationRuleCollection=$script:graphXml }
+        $rule = [pscustomobject]@{
+            Name = 'P01-R01-ECH-SENS_Fin-EXT-ADT'
+            Policy = @('P01-ECH-QGISCF-EXT-ADT')
+            ContentContainsSensitiveInformation = @(@{ id = $script:graphSitId })
+        }
+        $policy = [pscustomobject]@{ Name='P01-ECH-QGISCF-EXT-ADT' }
+        $label = [pscustomobject]@{ code='SENS_Fin'; name='SENSITIVE-Financial'; displayName='SENSITIVE Financial' }
+
+        $graph = Get-DeploymentReferenceGraph -Dictionaries @($dictionary) -SitPackages @($package) -DlpRules @($rule) -DlpPolicies @($policy) -Labels @($label)
+
+        $graph.Summary.DictionaryCount | Should -Be 1
+        $graph.Summary.SitPackageCount | Should -Be 1
+        $graph.Summary.SitCount | Should -Be 1
+        $graph.Summary.DlpRuleCount | Should -Be 1
+        $graph.Summary.DlpPolicyCount | Should -Be 1
+        $graph.Summary.LabelCount | Should -Be 1
+
+        $dictionaryNode = "dictionary:$($script:graphDictionaryId)"
+        $packageNode = "sitPackage:$($script:graphRulePackId)"
+        $sitNode = "sit:$($script:graphSitId)"
+        $ruleNode = 'dlpRule:P01-R01-ECH-SENS_Fin-EXT-ADT'
+        $policyNode = 'dlpPolicy:P01-ECH-QGISCF-EXT-ADT'
+        $labelNode = 'label:SENSITIVE-Financial'
+
+        @($graph.Edges | Where-Object { $_.From -eq $dictionaryNode -and $_.To -eq $sitNode -and $_.Type -eq 'dictionaryFeedsSit' }).Count | Should -Be 1
+        @($graph.Edges | Where-Object { $_.From -eq $packageNode -and $_.To -eq $sitNode -and $_.Type -eq 'packageContainsSit' }).Count | Should -Be 1
+        @($graph.Edges | Where-Object { $_.From -eq $sitNode -and $_.To -eq $ruleNode -and $_.Type -eq 'sitReferencedByRule' }).Count | Should -Be 1
+        @($graph.Edges | Where-Object { $_.From -eq $ruleNode -and $_.To -eq $policyNode -and $_.Type -eq 'ruleBelongsToPolicy' }).Count | Should -Be 1
+        @($graph.Edges | Where-Object { $_.From -eq $policyNode -and $_.To -eq $labelNode -and $_.Type -eq 'policyTargetsLabel' }).Count | Should -Be 1
+    }
+
+    It 'marks dictionary references missing when no dictionary inventory is supplied' {
+        $package = [pscustomobject]@{ Identity='tenant-pkg-one'; SerializedClassificationRuleCollection=$script:graphXml }
+
+        $graph = Get-DeploymentReferenceGraph -SitPackages @($package)
+        $missing = $graph.Nodes | Where-Object { $_.Id -eq "dictionary:$($script:graphDictionaryId)" }
+
+        $missing | Should -Not -BeNullOrEmpty
+        $missing.Properties.Missing | Should -BeTrue
+    }
+
+    It 'de-duplicates repeated graph edges' {
+        $package = [pscustomobject]@{ Identity='tenant-pkg-one'; SerializedClassificationRuleCollection=$script:graphXml }
+
+        $graph = Get-DeploymentReferenceGraph -SitPackages @($package)
+
+        @($graph.Edges | Where-Object { $_.Type -eq 'dictionaryFeedsSit' }).Count | Should -Be 1
+    }
+}
+
+Describe 'Deployment provenance stamps' {
+    It 'creates and parses a stable marker' {
+        $stamp = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'nonprod' -Metadata @{ LabelCode='SENS_Fin' }
+        $parsed = Get-DeploymentProvenanceStamp -Text "Human comment`n$stamp"
+
+        $parsed.Toolkit | Should -Be 'Compl8DLPDeploy'
+        $parsed.Version | Should -Be 1
+        $parsed.Prefix | Should -Be 'QGISCF'
+        $parsed.Component | Should -Be 'DlpRule'
+        $parsed.DeploymentId | Should -Be 'deploy-001'
+        $parsed.TargetEnvironment | Should -Be 'nonprod'
+        $parsed.Fields.LabelCode | Should -Be 'SENS_Fin'
+    }
+
+    It 'replaces an existing marker instead of stacking duplicates' {
+        $first = Add-DeploymentProvenanceStamp -Text 'Comment' -Prefix 'OLD' -Component 'DlpRule' -DeploymentId 'one'
+        $second = Add-DeploymentProvenanceStamp -Text $first -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'two'
+
+        ([regex]::Matches($second, 'Compl8DLPDeploy:provenance')).Count | Should -Be 1
+        $second | Should -Match '^Comment'
+        (Get-DeploymentProvenanceStamp -Text $second).Prefix | Should -Be 'QGISCF'
+    }
+
+    It 'classifies ownership only when prefix and component match' {
+        $comment = Add-DeploymentProvenanceStamp -Text 'Rule comment' -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001'
+        $obj = [pscustomobject]@{ Name='R01'; Comment=$comment }
+
+        (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'DlpRule').IsOwned | Should -BeTrue
+        (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'OTHER' -Component 'DlpRule').IsOwned | Should -BeFalse
+        (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'Label').IsOwned | Should -BeFalse
     }
 }
 
