@@ -6,6 +6,7 @@
 #
 # Usage:
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect                  # Deploy (simulation mode)
+#   .\scripts\Deploy-AutoLabeling.ps1 -Connect -Tenant customer.gov.au -TargetEnvironment customer-profile
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -WhatIf          # Dry run
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -Cleanup         # Remove policies/rules
 #   .\scripts\Deploy-AutoLabeling.ps1 -Connect -SkipValidation  # Skip SIT check
@@ -20,7 +21,11 @@ param(
     [switch]$Cleanup,
     [switch]$StartSimulation,
     [switch]$Connect,
-    [string]$UPN
+    [string]$UPN,
+    [string]$Tenant,
+    [switch]$Delegated,
+    [string]$TargetEnvironment,
+    [string]$Prefix
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -30,6 +35,36 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-TenantFingerprintGate {
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+
+    Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
+    Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
+    Write-Host "  Mode:        $($fingerprint.mode)" -ForegroundColor Gray
+    if ($fingerprint.actual.name) {
+        Write-Host "  Tenant:      $($fingerprint.actual.name)" -ForegroundColor Gray
+    }
+    if ($fingerprint.actual.guid) {
+        Write-Host "  Tenant GUID: $($fingerprint.actual.guid)" -ForegroundColor Gray
+    }
+
+    foreach ($message in @($fingerprint.messages)) {
+        $color = if (-not $fingerprint.passed) { "Red" } elseif ($fingerprint.configured -and $fingerprint.matched) { "Green" } else { "Yellow" }
+        Write-Host "  $message" -ForegroundColor $color
+    }
+
+    foreach ($mismatch in @($fingerprint.mismatches)) {
+        Write-Host "  MISMATCH $($mismatch.field): expected '$($mismatch.expected)', actual '$($mismatch.actual)'" -ForegroundColor Red
+    }
+
+    if (-not $fingerprint.passed) {
+        Write-Error "Tenant fingerprint check failed. Aborting before auto-labeling changes."
+        return $false
+    }
+
+    return $true
+}
 
 # Auto-labeling workloads (only Exchange, SharePoint, OneDrive are supported)
 # Auto-labeling supported workloads — mapped from policies.json codes
@@ -55,9 +90,11 @@ if (-not $labelsJson -or -not $policiesJson -or -not $classifiersJson) {
 }
 
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $globalJson
+$Config      = Set-DeploymentConfigPrefix -Config $Config -Prefix $Prefix
 $Labels      = Resolve-LabelConfig -LabelsJson $labelsJson
 $Policies    = Resolve-PolicyConfig -PoliciesJson $policiesJson
 $Classifiers = Resolve-ClassifierConfig -ClassifiersJson $classifiersJson -Defaults $Defaults
+$DeploymentId = if ($env:COMPL8_DEPLOYMENT_ID) { $env:COMPL8_DEPLOYMENT_ID } else { Get-Date -Format "yyyyMMdd" }
 
 # Build auto-labeling workloads from policies.json, filtering to supported workloads
 $AutoLabelWorkloads = @()
@@ -132,15 +169,60 @@ foreach ($l in $Labels) {
 }
 $totalClassifiers = ($Classifiers.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
 Write-Host "  Labels: $($Labels.Count), Policies: $totalPolicies, Rules: $totalRules (across $($AutoLabelWorkloads.Count) workloads), Classifiers: $totalClassifiers" -ForegroundColor Gray
+
+if (-not $Cleanup -and -not $StartSimulation) {
+    $plannedPolicyNames = @()
+    $plannedRuleNames = @()
+    $policyNum = 0
+    foreach ($label in $Labels) {
+        $policyNum++
+        $plannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $label.code, $Config.namingPrefix, $Config.namingSuffix
+        $chunks = @(Split-ClassifierChunks -ClassifierList $Classifiers[$label.code] -MaxPerRule 125)
+        $ruleNum = 0
+        foreach ($wl in $AutoLabelWorkloads) {
+            $ruleNum++
+            $chunkIndex = 0
+            foreach ($chunk in $chunks) {
+                $chunkIndex++
+                if ($chunks.Count -gt 1) {
+                    $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
+                    $plannedRuleNames += "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $wl.Code, $label.code, $Config.namingSuffix
+                } else {
+                    $plannedRuleNames += "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wl.Code, $label.code, $Config.namingSuffix
+                }
+            }
+        }
+    }
+
+    try {
+        $null = Assert-PurviewObjectNameSafety -Names $plannedPolicyNames -ObjectType "auto-labeling policy"
+        $null = Assert-PurviewObjectNameSafety -Names $plannedRuleNames -ObjectType "auto-labeling rule"
+        Write-Host "  Name safety: generated auto-labeling policy/rule names are ASCII deployment-safe." -ForegroundColor Green
+    } catch {
+        Write-Error $_.Exception.Message
+        return
+    }
+}
 #endregion
 
 #region Connection & Session
 if ($Connect) {
-    $connected = Connect-DLPSession -UPN $UPN
+    $previousWhatIf = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        $connectArgs = @{}
+        if ($UPN) { $connectArgs["UPN"] = $UPN }
+        if ($Tenant) { $connectArgs["Tenant"] = $Tenant }
+        if ($Delegated) { $connectArgs["Delegated"] = $true }
+        $connected = Connect-DLPSession @connectArgs
+    } finally {
+        $WhatIfPreference = $previousWhatIf
+    }
     if (-not $connected) { return }
 }
 
 if (-not (Assert-DLPSession)) { return }
+if (-not (Invoke-TenantFingerprintGate)) { return }
 #endregion
 
 #region Logging
@@ -335,6 +417,16 @@ foreach ($polName in $allPlannedPolicyNames) {
 Write-Host "  Planned: $($allPlannedPolicyNames.Count) policies, $($allPlannedRuleNames.Count) rules" -ForegroundColor Gray
 Write-Host "  Existing: $($allExistingALPolicies.Count) policies, $($allExistingALRules.Count) rules" -ForegroundColor Gray
 
+try {
+    $null = Assert-PurviewObjectNameSafety -Names $allPlannedPolicyNames -ObjectType "auto-labeling policy"
+    $null = Assert-PurviewObjectNameSafety -Names $allPlannedRuleNames -ObjectType "auto-labeling rule"
+    Write-Host "  Name safety: generated auto-labeling policy/rule names are ASCII deployment-safe." -ForegroundColor Green
+} catch {
+    Write-Error $_.Exception.Message
+    try { Stop-Transcript } catch { }
+    return
+}
+
 $safe = Test-PurviewNameConflicts -PlannedNames $allPlannedRuleNames -ExistingObjects $allExistingALRules -ObjectType "AL rule"
 if (-not $safe) { try { Stop-Transcript } catch { }; return }
 #endregion
@@ -367,6 +459,13 @@ foreach ($label in $Labels) {
 
     $existingPolicy = $null
     try { $existingPolicy = Get-AutoSensitivityLabelPolicy -Identity $policyName -ErrorAction Stop } catch { }
+    $policyComment = Add-DeploymentProvenanceStamp `
+        -Text "Auto-label $($label.fullName) ($labelCode)" `
+        -Prefix $Config.namingPrefix `
+        -Component "AutoLabelPolicy" `
+        -DeploymentId $DeploymentId `
+        -TargetEnvironment $TargetEnvironment `
+        -Metadata @{ LabelCode = $labelCode }
 
     try {
         if ($existingPolicy) {
@@ -375,7 +474,7 @@ foreach ($label in $Labels) {
                 $setPolicyParams = @{
                     Identity              = $policyName
                     ApplySensitivityLabel = $labelName
-                    Comment              = "Auto-label $($label.fullName) ($labelCode)"
+                    Comment              = $policyComment
                     Mode                 = "TestWithoutNotifications"
                     Confirm              = $false
                     ErrorAction          = "Stop"
@@ -390,7 +489,7 @@ foreach ($label in $Labels) {
             $newPolicyParams = @{
                 Name                    = $policyName
                 ApplySensitivityLabel   = $labelName
-                Comment                 = "Auto-label $($label.fullName) ($labelCode)"
+                Comment                 = $policyComment
                 Mode                    = "TestWithoutNotifications"
             }
             if ($Config.overwriteLabel) { $newPolicyParams['OverwriteLabel'] = $true }
@@ -438,12 +537,19 @@ foreach ($label in $Labels) {
             $scopeNote = if ($wl.ScopeParam) { ", $($wl.ScopeParam)=$($wl.ScopeValue)" } else { "" }
             $chunkNote = if ($chunks.Count -gt 1) { " [chunk $chunkIndex/$($chunks.Count)]" } else { "" }
             Write-Host "  Creating Rule: $ruleName ($($wl.Workload)$chunkNote, $($chunk.Count) classifiers$scopeNote)" -ForegroundColor Cyan
+            $ruleComment = Add-DeploymentProvenanceStamp `
+                -Text "$($label.fullName) - $($wl.Workload)$chunkNote ($($chunk.Count) classifiers)" `
+                -Prefix $Config.namingPrefix `
+                -Component "AutoLabelRule" `
+                -DeploymentId $DeploymentId `
+                -TargetEnvironment $TargetEnvironment `
+                -Metadata @{ LabelCode = $labelCode; Workload = $wl.Code; Chunk = $chunkIndex }
 
             $ruleParams = @{
                 Name                = $ruleName
                 Policy              = $policyName
                 Workload            = $wl.Workload
-                Comment             = "$($label.fullName) - $($wl.Workload)$chunkNote ($($chunk.Count) classifiers)"
+                Comment             = $ruleComment
                 ReportSeverityLevel = "Low"
                 Disabled            = $false
             }

@@ -5,6 +5,7 @@
 #
 # Usage:
 #   .\scripts\Deploy-DLPRules.ps1 -Connect                  # Deploy
+#   .\scripts\Deploy-DLPRules.ps1 -Connect -Tenant compl8.dev -TargetEnvironment nonprod
 #   .\scripts\Deploy-DLPRules.ps1 -Connect -WhatIf          # Dry run
 #   .\scripts\Deploy-DLPRules.ps1 -Connect -Cleanup         # Remove policies/rules
 #   .\scripts\Deploy-DLPRules.ps1 -Connect -SkipValidation  # Skip SIT check
@@ -17,7 +18,11 @@ param(
     [switch]$SkipVerification,
     [switch]$Cleanup,
     [switch]$Connect,
-    [string]$UPN
+    [string]$UPN,
+    [string]$Tenant,
+    [switch]$Delegated,
+    [string]$TargetEnvironment,
+    [string]$Prefix
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -27,6 +32,36 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-TenantFingerprintGate {
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+
+    Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
+    Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
+    Write-Host "  Mode:        $($fingerprint.mode)" -ForegroundColor Gray
+    if ($fingerprint.actual.name) {
+        Write-Host "  Tenant:      $($fingerprint.actual.name)" -ForegroundColor Gray
+    }
+    if ($fingerprint.actual.guid) {
+        Write-Host "  Tenant GUID: $($fingerprint.actual.guid)" -ForegroundColor Gray
+    }
+
+    foreach ($message in @($fingerprint.messages)) {
+        $color = if (-not $fingerprint.passed) { "Red" } elseif ($fingerprint.configured -and $fingerprint.matched) { "Green" } else { "Yellow" }
+        Write-Host "  $message" -ForegroundColor $color
+    }
+
+    foreach ($mismatch in @($fingerprint.mismatches)) {
+        Write-Host "  MISMATCH $($mismatch.field): expected '$($mismatch.expected)', actual '$($mismatch.actual)'" -ForegroundColor Red
+    }
+
+    if (-not $fingerprint.passed) {
+        Write-Error "Tenant fingerprint check failed. Aborting before DLP rule changes."
+        return $false
+    }
+
+    return $true
+}
 
 #region Config Loading & Validation
 Write-Host "=== Loading Configuration ===" -ForegroundColor Cyan
@@ -44,11 +79,13 @@ if (-not $labelsJson -or -not $policiesJson -or -not $classifiersJson) {
 }
 
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $globalJson
+$Config      = Set-DeploymentConfigPrefix -Config $Config -Prefix $Prefix
 $Labels      = Resolve-LabelConfig -LabelsJson $labelsJson
 $Policies    = Resolve-PolicyConfig -PoliciesJson $policiesJson
 $Classifiers = Resolve-ClassifierConfig -ClassifiersJson $classifiersJson -Defaults $Defaults
 $Overrides   = Resolve-RuleOverrides -OverridesJson $overridesJson
 $PolicyMode  = Resolve-PolicyMode -AuditMode $Config.auditMode -NotifyUser $Config.notifyUser
+$DeploymentId = if ($env:COMPL8_DEPLOYMENT_ID) { $env:COMPL8_DEPLOYMENT_ID } else { Get-Date -Format "yyyyMMdd" }
 
 Write-Host "  Policy Mode: $PolicyMode" -ForegroundColor Gray
 
@@ -101,15 +138,54 @@ $totalClassifiers = ($Classifiers.Values | ForEach-Object { $_.Count } | Measure
 $totalTCs = ($Classifiers.Values | ForEach-Object { ($_ | Where-Object { $_.ClassifierType -eq "MLModel" }).Count } | Measure-Object -Sum).Sum
 $totalSITs = $totalClassifiers - $totalTCs
 Write-Host "  Labels: $($Labels.Count), Policies: $($Policies.Count), Rules: $totalRules, Classifiers: $totalClassifiers ($totalSITs SITs, $totalTCs TCs)" -ForegroundColor Gray
+
+if (-not $Cleanup) {
+    $plannedPolicyNames = @()
+    $plannedRuleNames = @()
+    foreach ($policy in ($Policies | Where-Object { $_.Enabled })) {
+        $plannedPolicyNames += Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+        $ruleNum = 0
+        foreach ($label in $Labels) {
+            $ruleNum++
+            $chunks = @(Split-ClassifierChunks -ClassifierList $Classifiers[$label.code] -MaxPerRule 125)
+            $chunkIndex = 0
+            foreach ($chunk in $chunks) {
+                $chunkIndex++
+                if ($chunks.Count -gt 1) {
+                    $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
+                    $plannedRuleNames += "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $label.code, $Config.namingSuffix
+                } else {
+                    $plannedRuleNames += Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $Config.namingSuffix
+                }
+            }
+        }
+    }
+
+    try {
+        $null = Assert-PurviewObjectNameSafety -Names $plannedPolicyNames -ObjectType "DLP policy"
+        $null = Assert-PurviewObjectNameSafety -Names $plannedRuleNames -ObjectType "DLP rule"
+        Write-Host "  Name safety: generated DLP policy/rule names are ASCII deployment-safe." -ForegroundColor Green
+    } catch {
+        Write-Error $_.Exception.Message
+        return
+    }
+}
 #endregion
 
 #region Connection & Session
 if ($Connect) {
-    $connected = Connect-DLPSession -UPN $UPN
+    $previousWhatIf = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        $connected = Connect-DLPSession -UPN $UPN -Tenant $Tenant -Delegated:$Delegated
+    } finally {
+        $WhatIfPreference = $previousWhatIf
+    }
     if (-not $connected) { return }
 }
 
 if (-not (Assert-DLPSession)) { return }
+if (-not (Invoke-TenantFingerprintGate)) { return }
 #endregion
 
 #region Logging
@@ -226,10 +302,13 @@ Write-Host "Starting deployment at $(Get-Date)" -ForegroundColor Cyan
 
 #region Pre-flight: check for name conflicts across all policies
 Write-Host "`n=== Pre-flight: Checking for name conflicts ===" -ForegroundColor Cyan
+$allPlannedPolicyNames = @()
 $allPlannedNames = @()
 foreach ($policy in $Policies) {
     if (-not $policy.Enabled) { continue }
     $policyNum = $policy.Number
+    $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+    $allPlannedPolicyNames += $policyName
     $ruleNum = 0
     foreach ($label in $Labels) {
         $ruleNum++
@@ -247,6 +326,15 @@ foreach ($policy in $Policies) {
             $allPlannedNames += $name
         }
     }
+}
+
+try {
+    $null = Assert-PurviewObjectNameSafety -Names $allPlannedPolicyNames -ObjectType "DLP policy"
+    $null = Assert-PurviewObjectNameSafety -Names $allPlannedNames -ObjectType "DLP rule"
+    Write-Host "  Name safety: generated policy/rule names are ASCII deployment-safe." -ForegroundColor Green
+} catch {
+    Write-Error $_.Exception.Message
+    return
 }
 
 # Query all existing rules across target policies
@@ -279,10 +367,17 @@ foreach ($policy in $Policies) {
     $policyNum  = $policy.Number
 
     Write-Host "`n--- Policy: $policyName ---" -ForegroundColor Green
+    $policyComment = Add-DeploymentProvenanceStamp `
+        -Text $policy.Comment `
+        -Prefix $Config.namingPrefix `
+        -Component "DlpPolicy" `
+        -DeploymentId $DeploymentId `
+        -TargetEnvironment $TargetEnvironment `
+        -Metadata @{ PolicyCode = $policy.Code }
 
     $newPolicyParams = @{
         Name    = $policyName
-        Comment = $policy.Comment
+        Comment = $policyComment
         Mode    = $PolicyMode
     }
     foreach ($loc in $policy.Location.GetEnumerator()) {
@@ -297,7 +392,7 @@ foreach ($policy in $Policies) {
             Write-Host "  Policy exists. Updating..." -ForegroundColor Yellow
             $updatePolicyParams = @{
                 Identity = $policyName
-                Comment  = $policy.Comment
+                Comment  = $policyComment
                 Mode     = $PolicyMode
             }
             if ($PSCmdlet.ShouldProcess($policyName, "Set-DlpCompliancePolicy")) {
@@ -379,6 +474,13 @@ foreach ($policy in $Policies) {
             }
 
             $finalRuleParams = Get-MergedRuleParams -BaseParams $baseRuleParams -Overrides $Overrides -LabelCode $labelCode -PolicyCode $policy.Code -RuleName $ruleName
+            $finalRuleParams["Comment"] = Add-DeploymentProvenanceStamp `
+                -Text $finalRuleParams["Comment"] `
+                -Prefix $Config.namingPrefix `
+                -Component "DlpRule" `
+                -DeploymentId $DeploymentId `
+                -TargetEnvironment $TargetEnvironment `
+                -Metadata @{ LabelCode = $labelCode; PolicyCode = $policy.Code; Chunk = $chunkIndex }
 
             $existingRule = $null
             try { $existingRule = Get-DlpComplianceRule -Identity $ruleName -ErrorAction Stop } catch { }

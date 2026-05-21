@@ -732,6 +732,13 @@ if ($Execute) {
         }
 
         $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $labelCode, $namingPrefix, $namingSuffix
+        try {
+            $null = Assert-PurviewObjectNameSafety -Names @($policyName) -ObjectType "auto-labeling policy"
+        } catch {
+            Write-Error $_.Exception.Message
+            $failPolicies++
+            continue
+        }
 
         Write-Host "`n--- Creating policy: $policyName (label: $labelDisplayName -> $labelName) ---" -ForegroundColor Green
 
@@ -920,6 +927,14 @@ if ($Execute) {
                 # Append chunk letter suffix for multi-chunk rules (a, b, c...)
                 $chunkSuffix = if ($sitChunks.Count -gt 1) { Get-ChunkLetter -ChunkIndex $chunkIdx } else { '' }
                 $ruleName = "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wlCode, $labelCode, $namingSuffix, $chunkSuffix
+                try {
+                    $null = Assert-PurviewObjectNameSafety -Names @($ruleName) -ObjectType "auto-labeling rule"
+                } catch {
+                    Write-Warning "    Skipping unsafe rule name '$ruleName': $($_.Exception.Message)"
+                    $failRules++
+                    $allChunksOk = $false
+                    continue
+                }
 
                 $chunkCCSI = [ordered]@{
                     operator = 'And'

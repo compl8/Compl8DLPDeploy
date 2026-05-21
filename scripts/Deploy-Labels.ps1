@@ -5,6 +5,7 @@
 #
 # Usage:
 #   .\scripts\Deploy-Labels.ps1 -Connect                                       # Deploy, prompt-free
+#   .\scripts\Deploy-Labels.ps1 -Connect -Tenant customer.gov.au -TargetEnvironment customer-profile
 #   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "DL-InfoSec@agency.gov"    # Publish to named group
 #   .\scripts\Deploy-Labels.ps1 -Connect -PublishTo "All" -ApproveOpenPublish  # Publish to all (requires explicit approval)
 #   .\scripts\Deploy-Labels.ps1 -Connect -SkipPublish                          # Create labels only
@@ -21,7 +22,11 @@ param(
     [switch]$NoMarking,
     [switch]$Cleanup,
     [switch]$Connect,
-    [string]$UPN
+    [string]$UPN,
+    [string]$Tenant,
+    [switch]$Delegated,
+    [string]$TargetEnvironment,
+    [string]$Prefix
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -32,10 +37,42 @@ Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-TenantFingerprintGate {
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+
+    Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
+    Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
+    Write-Host "  Mode:        $($fingerprint.mode)" -ForegroundColor Gray
+    if ($fingerprint.actual.name) {
+        Write-Host "  Tenant:      $($fingerprint.actual.name)" -ForegroundColor Gray
+    }
+    if ($fingerprint.actual.guid) {
+        Write-Host "  Tenant GUID: $($fingerprint.actual.guid)" -ForegroundColor Gray
+    }
+
+    foreach ($message in @($fingerprint.messages)) {
+        $color = if (-not $fingerprint.passed) { "Red" } elseif ($fingerprint.configured -and $fingerprint.matched) { "Green" } else { "Yellow" }
+        Write-Host "  $message" -ForegroundColor $color
+    }
+
+    foreach ($mismatch in @($fingerprint.mismatches)) {
+        Write-Host "  MISMATCH $($mismatch.field): expected '$($mismatch.expected)', actual '$($mismatch.actual)'" -ForegroundColor Red
+    }
+
+    if (-not $fingerprint.passed) {
+        Write-Error "Tenant fingerprint check failed. Aborting before label changes."
+        return $false
+    }
+
+    return $true
+}
+
 #region Config
 $Defaults     = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config       = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
+$Config       = Set-DeploymentConfigPrefix -Config $Config -Prefix $Prefix
+$DeploymentId = if ($env:COMPL8_DEPLOYMENT_ID) { $env:COMPL8_DEPLOYMENT_ID } else { Get-Date -Format "yyyyMMdd" }
 
 $labelsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "labels.json") -Description "label definitions"
 if (-not $labelsJson) {
@@ -46,14 +83,39 @@ if (-not $labelsJson) {
 $LabelDefinitions = $labelsJson
 #endregion
 
+if (-not $Cleanup) {
+    try {
+        $plannedLabelNames = @($LabelDefinitions | ForEach-Object { $_.name })
+        $null = Assert-PurviewObjectNameSafety -Names $plannedLabelNames -ObjectType "label name"
+        if (-not $SkipPublish -and $PublishTo) {
+            $null = Assert-PurviewObjectNameSafety -Names @($Config.labelPolicyName) -ObjectType "label policy"
+        }
+        Write-Host "  Name safety: generated label names are ASCII deployment-safe." -ForegroundColor Green
+    } catch {
+        Write-Error $_.Exception.Message
+        return
+    }
+}
+
 #region Connection
 if ($Connect) {
-    $connected = Connect-DLPSession -UPN $UPN
+    $previousWhatIf = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        $connectArgs = @{}
+        if ($UPN) { $connectArgs["UPN"] = $UPN }
+        if ($Tenant) { $connectArgs["Tenant"] = $Tenant }
+        if ($Delegated) { $connectArgs["Delegated"] = $true }
+        $connected = Connect-DLPSession @connectArgs
+    } finally {
+        $WhatIfPreference = $previousWhatIf
+    }
     if (-not $connected) { return }
 }
 
 # Verify session
 if (-not (Assert-DLPSession -CommandToTest "Get-Label")) { return }
+if (-not (Invoke-TenantFingerprintGate)) { return }
 #endregion
 
 #region Logging
@@ -152,7 +214,13 @@ foreach ($label in $sortedLabels) {
     $labelParams = @{
         DisplayName = $label.displayName
         Tooltip     = $label.tooltip
-        Comment     = "$($Config.namingPrefix) label deployed $(Get-Date -Format 'yyyy-MM-dd'). Priority: $($label.priority)."
+        Comment     = (Add-DeploymentProvenanceStamp `
+            -Text "$($Config.namingPrefix) label deployed $(Get-Date -Format 'yyyy-MM-dd'). Priority: $($label.priority)." `
+            -Prefix $Config.namingPrefix `
+            -Component "SensitivityLabel" `
+            -DeploymentId $DeploymentId `
+            -TargetEnvironment $TargetEnvironment `
+            -Metadata @{ LabelCode = $label.code; LabelName = $label.name })
     }
 
     if ($label.isGroup) {
@@ -274,6 +342,20 @@ if ($SkipPublish) {
 
     $existingPolicy = $null
     try { $existingPolicy = Get-LabelPolicy -Identity $policyName -ErrorAction Stop } catch { }
+    $labelPolicySetComment = Add-DeploymentProvenanceStamp `
+        -Text "$($Config.namingPrefix) labels published $(Get-Date -Format 'yyyy-MM-dd')" `
+        -Prefix $Config.namingPrefix `
+        -Component "LabelPolicy" `
+        -DeploymentId $DeploymentId `
+        -TargetEnvironment $TargetEnvironment `
+        -Metadata @{ Scope = $PublishTo }
+    $labelPolicyCreateComment = Add-DeploymentProvenanceStamp `
+        -Text "$($Config.namingPrefix) label policy - scope: $PublishTo" `
+        -Prefix $Config.namingPrefix `
+        -Component "LabelPolicy" `
+        -DeploymentId $DeploymentId `
+        -TargetEnvironment $TargetEnvironment `
+        -Metadata @{ Scope = $PublishTo }
 
     $locationParams = @{}
     if ($PublishTo -eq "All") {
@@ -290,7 +372,7 @@ if ($SkipPublish) {
                     Invoke-WithRetry -OperationName "Set-LabelPolicy $policyName" -ScriptBlock {
                         Set-LabelPolicy -Identity $policyName `
                             -AddLabels $publishableLabels `
-                            -Comment "$($Config.namingPrefix) labels published $(Get-Date -Format 'yyyy-MM-dd')" `
+                            -Comment $labelPolicySetComment `
                             -ErrorAction Stop
                     } -MaxRetries 2 -BaseDelaySec 30
                 } catch {
@@ -308,7 +390,7 @@ if ($SkipPublish) {
                     New-LabelPolicy -Name $policyName `
                         -Labels $publishableLabels `
                         @locationParams `
-                        -Comment "$($Config.namingPrefix) label policy - scope: $PublishTo" `
+                        -Comment $labelPolicyCreateComment `
                         -ErrorAction Stop
                 } -MaxRetries 2 -BaseDelaySec 30
             }

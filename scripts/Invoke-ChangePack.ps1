@@ -102,6 +102,18 @@ if (-not $hasComponent) {
         if ($action -eq "add" -and (-not $row.Policy.Trim() -or -not $row.LabelCode.Trim())) {
             $errors += "Row ${rowNum}: 'add' requires Policy and LabelCode"
         }
+        if ($action -eq "add") {
+            $nameSafety = Test-PurviewObjectNameSafety -Name $row.RuleName.Trim() -ObjectType "DLP rule"
+            if (-not $nameSafety.IsSafe) {
+                $errors += "Row ${rowNum}: unsafe DLP rule name '$($row.RuleName)': $($nameSafety.Reasons -join ' ')"
+            }
+            if ($row.Policy.Trim()) {
+                $policyNameSafety = Test-PurviewObjectNameSafety -Name $row.Policy.Trim() -ObjectType "DLP policy"
+                if (-not $policyNameSafety.IsSafe) {
+                    $errors += "Row ${rowNum}: unsafe DLP policy name '$($row.Policy)': $($policyNameSafety.Reasons -join ' ')"
+                }
+            }
+        }
         if ($action -eq "update" -and -not $row.LabelCode.Trim()) {
             $errors += "Row ${rowNum}: 'update' requires LabelCode"
         }
@@ -379,8 +391,10 @@ if (-not $hasComponent) {
     $rowNum = 1
     foreach ($row in $changes) {
         $rowNum++
-        $comp   = $row.Component.Trim()
-        $action = $row.Action.Trim().ToLower()
+        $comp      = $row.Component.Trim()
+        $action    = $row.Action.Trim().ToLower()
+        $policyVal = if ($row.PSObject.Properties.Name -contains "Policy") { $row.Policy.Trim() } else { "" }
+        $labelVal  = if ($row.PSObject.Properties.Name -contains "LabelCode") { $row.LabelCode.Trim() } else { "" }
 
         if ($comp -notin $ValidComponents) {
             $errors += "Row ${rowNum}: Invalid Component '$comp'. Valid: $($ValidComponents -join ', ')"
@@ -391,11 +405,28 @@ if (-not $hasComponent) {
         if (-not $row.Identity.Trim()) {
             $errors += "Row ${rowNum}: Identity is blank"
         }
+        if ($action -eq "add" -and $comp -in @("Label", "DLPPolicy", "DLPRule")) {
+            $objectType = switch ($comp) {
+                "Label"     { "label name" }
+                "DLPPolicy" { "DLP policy" }
+                "DLPRule"   { "DLP rule" }
+            }
+            $nameSafety = Test-PurviewObjectNameSafety -Name $row.Identity.Trim() -ObjectType $objectType
+            if (-not $nameSafety.IsSafe) {
+                $errors += "Row ${rowNum}: unsafe $objectType '$($row.Identity)': $($nameSafety.Reasons -join ' ')"
+            }
+        }
         # DLPRule add requires Policy and LabelCode
-        if ($comp -eq "DLPRule" -and $action -eq "add" -and (-not $row.Policy.Trim() -or -not $row.LabelCode.Trim())) {
+        if ($comp -eq "DLPRule" -and $action -eq "add" -and (-not $policyVal -or -not $labelVal)) {
             $errors += "Row ${rowNum}: DLPRule 'add' requires Policy and LabelCode"
         }
-        if ($comp -eq "DLPRule" -and $action -eq "update" -and -not $row.LabelCode.Trim()) {
+        if ($comp -eq "DLPRule" -and $action -eq "add" -and $policyVal) {
+            $policyNameSafety = Test-PurviewObjectNameSafety -Name $policyVal -ObjectType "DLP policy"
+            if (-not $policyNameSafety.IsSafe) {
+                $errors += "Row ${rowNum}: unsafe DLP policy name '$($row.Policy)': $($policyNameSafety.Reasons -join ' ')"
+            }
+        }
+        if ($comp -eq "DLPRule" -and $action -eq "update" -and -not $labelVal) {
             $errors += "Row ${rowNum}: DLPRule 'update' requires LabelCode"
         }
     }

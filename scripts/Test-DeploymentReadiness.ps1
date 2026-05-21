@@ -19,6 +19,8 @@ param(
     [switch]$Connect,
     [string]$UPN,
     [string]$Tenant,
+    [string]$TargetEnvironment,
+    [string]$Prefix,
     [switch]$Delegated,
     [switch]$RequireTenant,
     [string]$TrainableClassifierInventory,
@@ -44,6 +46,15 @@ function Add-ReadyError {
 function Add-ReadyWarning {
     param([string]$Message)
     $script:Warnings.Add($Message)
+}
+
+function Add-PurviewNameSafetyError {
+    param([Parameter(Mandatory)][object]$Result)
+
+    if ($Result.IsSafe) { return }
+
+    $name = if ($null -eq $Result.Name) { "<null>" } else { $Result.Name }
+    Add-ReadyError "$($Result.ObjectType) '$name' uses an unsafe Purview object name: $($Result.Reasons -join ' ')"
 }
 
 function Read-JsonFile {
@@ -209,6 +220,7 @@ function Test-LabelsConfig {
             if ($names.ContainsKey($label.name)) { Add-ReadyWarning "Duplicate label name '$($label.name)'; verify this is intentional before label deployment." }
             $names[$label.name] = $true
             $result.LabelNames[$label.name] = $label
+            Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $label.name -ObjectType "label name")
         }
         if ($null -ne $label.priority) {
             $p = $label.priority.ToString()
@@ -497,13 +509,21 @@ function Test-GeneratedDlpPayloads {
         $overrides = Resolve-RuleOverrides -OverridesJson $OverridesJson
 
         $ruleNames = @{}
+        $policyNames = @{}
         foreach ($policy in $policies) {
             if (-not $policy.Enabled) { continue }
+            $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $config.namingPrefix -Suffix $config.namingSuffix
+            if (-not $policyNames.ContainsKey($policyName)) {
+                Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $policyName -ObjectType "generated DLP policy")
+                $policyNames[$policyName] = $true
+            }
+
             $ruleNum = 0
             foreach ($label in $labels) {
                 $ruleNum++
                 if (-not $classifiers.ContainsKey($label.code)) { continue }
                 $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $config.namingSuffix
+                Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $ruleName -ObjectType "generated DLP rule")
                 if ($ruleNames.ContainsKey($ruleName)) {
                     Add-ReadyError "Generated duplicate DLP rule name '$ruleName'"
                 }
@@ -520,7 +540,7 @@ function Test-GeneratedDlpPayloads {
 
                 $baseRuleParams = @{
                     Name = $ruleName
-                    Policy = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $config.namingPrefix -Suffix $config.namingSuffix
+                    Policy = $policyName
                     Comment = "$($label.fullName) ($($classifiers[$label.code].Count) classifiers)"
                     ReportSeverityLevel = if ($config.generateIncidentReport) { $config.incidentReportSeverity } else { "Low" }
                     Disabled = $false
@@ -673,6 +693,15 @@ if (-not $Tier -and $settingsJson -and $settingsJson.deploymentTier) { $Tier = $
 if (-not $Tier) { $Tier = "full" }
 Write-Host "  Tier:  $Tier" -ForegroundColor Gray
 
+$defaultsForPrefix = Get-ModuleDefaults
+$effectiveSettings = Merge-GlobalConfig -Defaults $defaultsForPrefix -GlobalJson $settingsJson
+$effectiveSettings = Set-DeploymentConfigPrefix -Config $effectiveSettings -Prefix $Prefix
+if ($Prefix -and $settingsJson) {
+    $settingsJson.namingPrefix = $effectiveSettings.namingPrefix
+    $settingsJson.sitPrefix = $effectiveSettings.sitPrefix
+    $settingsJson.labelPolicyName = $effectiveSettings.labelPolicyName
+}
+
 Test-SettingsConfig -SettingsJson $settingsJson
 $labelResult = Test-LabelsConfig -LabelsJson @($labelsJson)
 $policyResult = Test-PoliciesConfig -PoliciesJson @($policiesJson)
@@ -689,6 +718,23 @@ if ($Connect) {
 }
 
 if ($RequireTenant -or $Connect) {
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+    Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
+    Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
+    Write-Host "  Mode:        $($fingerprint.mode)" -ForegroundColor Gray
+    if ($fingerprint.actual.name) { Write-Host "  Tenant:      $($fingerprint.actual.name)" -ForegroundColor Gray }
+    if ($fingerprint.actual.guid) { Write-Host "  Tenant GUID: $($fingerprint.actual.guid)" -ForegroundColor Gray }
+    foreach ($message in @($fingerprint.messages)) {
+        $color = if (-not $fingerprint.passed) { "Red" } elseif ($fingerprint.configured -and $fingerprint.matched) { "Green" } else { "Yellow" }
+        Write-Host "  $message" -ForegroundColor $color
+    }
+    foreach ($mismatch in @($fingerprint.mismatches)) {
+        Write-Host "  MISMATCH $($mismatch.field): expected '$($mismatch.expected)', actual '$($mismatch.actual)'" -ForegroundColor Red
+    }
+    if (-not $fingerprint.passed) {
+        Add-ReadyError "Tenant fingerprint check failed for environment '$($fingerprint.environment)'"
+    }
+
     Test-TenantReadiness `
         -ClassifierIndex $classifierResult `
         -LocalSitIds $registryResult.LocalSitIds `
