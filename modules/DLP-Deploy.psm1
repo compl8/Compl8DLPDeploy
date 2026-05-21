@@ -1510,6 +1510,25 @@ function Invoke-CleanupPlan {
             $items = @(@($items | Where-Object { $_.InputObject.ParentId }       | Sort-Object { $_.InputObject.Priority } -Descending) +
                        @($items | Where-Object { -not $_.InputObject.ParentId }   | Sort-Object { $_.InputObject.Priority } -Descending))
         }
+        if ($cat -eq "KeywordDictionary" -and $items.Count -gt 0) {
+            # Keep any dictionary still referenced by a package that will REMAIN after this run
+            # (SIT packages are deleted earlier in $order, so only out-of-scope packages remain).
+            $remaining = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction SilentlyContinue |
+                Where-Object { $sitTargets.Identity -notcontains $_.Identity })
+            $referenced = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($p in $remaining) {
+                $txt = Convert-DlpSerializedRulePackageToText -Raw $p.SerializedClassificationRuleCollection
+                if ($txt) { foreach ($g in Get-DictionaryGuidReferences -PackageXmlText $txt) { [void]$referenced.Add($g) } }
+            }
+            $items = @($items | Where-Object {
+                $dictGuid = if ($_.InputObject.Identity) { $_.InputObject.Identity.ToString().ToLowerInvariant() } else { "" }
+                $allow = Test-DictionaryRemovalAllowed -IsOurs $true -ReferencedByGuids @($referenced) -DictGuid $dictGuid
+                if (-not $allow.Allowed) {
+                    Write-Host "    KEPT dictionary $($_.Identity): $($allow.Reason)" -ForegroundColor DarkYellow
+                    $false
+                } else { $true }
+            })
+        }
         if ($items.Count -eq 0) { continue }
 
         $deleted = 0
