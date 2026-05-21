@@ -175,6 +175,40 @@ function Merge-GlobalConfig {
     return $merged
 }
 
+function Set-DeploymentConfigPrefix {
+    <#
+    .SYNOPSIS
+        Applies a command-line naming prefix override to a merged deployment config.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [string]$Prefix
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Prefix)) {
+        return $Config
+    }
+
+    $prefixValue = $Prefix.Trim()
+    $oldPrefix = if ($Config.ContainsKey("namingPrefix")) { $Config["namingPrefix"] } else { $null }
+    $oldLabelPolicy = if ($Config.ContainsKey("labelPolicyName")) { $Config["labelPolicyName"] } else { $null }
+
+    $Config["namingPrefix"] = $prefixValue
+    $Config["sitPrefix"] = $prefixValue
+
+    if ([string]::IsNullOrWhiteSpace($oldLabelPolicy)) {
+        $Config["labelPolicyName"] = "$prefixValue-Label-Policy"
+    } elseif (-not [string]::IsNullOrWhiteSpace($oldPrefix) -and $oldLabelPolicy -match "^$([regex]::Escape($oldPrefix))(?=-|$)") {
+        $Config["labelPolicyName"] = [regex]::Replace($oldLabelPolicy, "^$([regex]::Escape($oldPrefix))", $prefixValue, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    } elseif ($oldLabelPolicy -eq "DLP-Label-Policy") {
+        $Config["labelPolicyName"] = "$prefixValue-Label-Policy"
+    }
+
+    Write-Host "  Prefix override: namingPrefix/sitPrefix = $prefixValue" -ForegroundColor Gray
+    Write-Host "  Label policy:    $($Config["labelPolicyName"])" -ForegroundColor Gray
+    return $Config
+}
+
 function Assert-ConfigCustomised {
     <#
     .SYNOPSIS
@@ -347,6 +381,108 @@ function Get-RuleName {
         [string]$Suffix
     )
     return "P{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $PolicyNumber, $RuleNumber, $PolicyCode, $LabelCode, $Suffix
+}
+
+function Get-PurviewUnsafeNameCharacterSummary {
+    param([AllowNull()][string]$Name)
+
+    if ($null -eq $Name) { return @() }
+
+    $seen = [ordered]@{}
+    foreach ($char in $Name.ToCharArray()) {
+        $value = [int][char]$char
+        $charText = [string]$char
+        $isAllowed = ($charText -cmatch '^[A-Za-z0-9_.-]$')
+        if ($value -lt 32 -or $value -gt 126 -or -not $isAllowed) {
+            $label = switch ($value) {
+                9  { "tab"; break }
+                10 { "line feed"; break }
+                13 { "carriage return"; break }
+                32 { "space"; break }
+                default {
+                    if ($value -lt 32 -or $value -gt 126) { "U+{0:X4}" -f $value }
+                    else { "'$charText'" }
+                }
+            }
+            if (-not $seen.Contains($label)) {
+                $seen[$label] = $true
+            }
+        }
+    }
+
+    return @($seen.Keys)
+}
+
+function Test-PurviewObjectNameSafety {
+    <#
+    .SYNOPSIS
+        Validates a generated Purview object identity against the deployment-safe
+        naming policy.
+
+    .DESCRIPTION
+        Purview and Security & Compliance cmdlets can accept names that later
+        become hard to query or remove. This guard intentionally uses a stricter
+        deployment policy than a permissive service-side parser: ASCII letters,
+        digits, underscore, dot, and hyphen only.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Name,
+        [string]$ObjectType = "Purview object",
+        [int]$MaxLength = 128
+    )
+
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Name) {
+        $reasons.Add("Name is null.")
+    } elseif ([string]::IsNullOrWhiteSpace($Name)) {
+        $reasons.Add("Name is empty or whitespace.")
+    } else {
+        if ($Name -ne $Name.Trim()) {
+            $reasons.Add("Name has leading or trailing whitespace.")
+        }
+        if ($Name.Length -gt $MaxLength) {
+            $reasons.Add("Name length $($Name.Length) exceeds max $MaxLength.")
+        }
+        if ($Name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') {
+            $unsafeChars = @(Get-PurviewUnsafeNameCharacterSummary -Name $Name)
+            if ($unsafeChars.Count -gt 0) {
+                $reasons.Add("Name contains unsupported character(s): $($unsafeChars -join ', ').")
+            }
+            $reasons.Add("Name must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$.")
+        }
+    }
+
+    return [PSCustomObject]@{
+        IsSafe         = ($reasons.Count -eq 0)
+        Name           = $Name
+        ObjectType     = $ObjectType
+        MaxLength      = $MaxLength
+        AllowedPattern = '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+        Reasons        = @($reasons)
+    }
+}
+
+function Assert-PurviewObjectNameSafety {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][array]$Names,
+        [string]$ObjectType = "Purview object",
+        [int]$MaxLength = 128
+    )
+
+    $failures = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @($Names)) {
+        $result = Test-PurviewObjectNameSafety -Name $name -ObjectType $ObjectType -MaxLength $MaxLength
+        if (-not $result.IsSafe) {
+            $displayName = if ($null -eq $result.Name) { "<null>" } else { "'$($result.Name)'" }
+            $failures.Add("$ObjectType $displayName`: $($result.Reasons -join ' ')")
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        throw "Unsafe Purview object name(s) blocked before tenant submission:`n  - $($failures -join "`n  - ")"
+    }
+
+    return $true
 }
 #endregion
 
@@ -651,6 +787,240 @@ function Test-PurviewNameConflicts {
 }
 #endregion
 
+#region Classifier Reference Guards
+function Convert-DlpSerializedRulePackageToText {
+    param([object]$Raw)
+
+    if ($null -eq $Raw) { return $null }
+    if ($Raw -is [byte[]]) {
+        $bytes = [byte[]]$Raw
+        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+            return [System.Text.Encoding]::Unicode.GetString($bytes)
+        }
+        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+            return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
+        }
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            return [System.Text.Encoding]::UTF8.GetString($bytes)
+        }
+        if ($bytes -contains 0) {
+            return [System.Text.Encoding]::Unicode.GetString($bytes)
+        }
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    }
+
+    return $Raw.ToString()
+}
+
+function Get-DlpRulePackageEntityIds {
+    param([Parameter(Mandatory)][object[]]$Packages)
+
+    $results = @()
+    foreach ($pkg in @($Packages)) {
+        $entityIds = @()
+        $rulePackId = $null
+        $packageName = $null
+        $parsed = $false
+        $parseError = $null
+        $rawText = Convert-DlpSerializedRulePackageToText -Raw $pkg.SerializedClassificationRuleCollection
+        if ($rawText) {
+            try {
+                [xml]$xml = $rawText
+                $parsed = $true
+                $rulePack = $xml.RulePackage.RulePack
+                if ($rulePack -and $rulePack.id) {
+                    $rulePackId = $rulePack.id.ToString()
+                }
+                if ($rulePack -and $rulePack.Details -and $rulePack.Details.LocalizedDetails) {
+                    $packageName = ($rulePack.Details.LocalizedDetails | Select-Object -First 1).Name
+                }
+                $rules = $xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" } | Select-Object -First 1
+                if ($rules) {
+                    $entityIds = @($rules.ChildNodes |
+                        Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq "Entity" } |
+                        ForEach-Object { $_.GetAttribute("id") } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                        Sort-Object -Unique)
+                }
+            } catch {
+                $parseError = $_.Exception.Message
+                Write-Warning "Could not parse classifier package XML for '$($pkg.Identity)': $parseError"
+            }
+        } else {
+            $parseError = "SerializedClassificationRuleCollection was empty."
+        }
+
+        $results += [pscustomobject]@{
+            Identity   = if ($pkg.Identity) { $pkg.Identity.ToString() } else { $null }
+            Name       = if ($packageName) { $packageName } elseif ($pkg.Name) { $pkg.Name.ToString() } else { $null }
+            Publisher  = if ($pkg.Publisher) { $pkg.Publisher.ToString() } else { $null }
+            RulePackId = $rulePackId
+            EntityIds  = @($entityIds)
+            Parsed     = [bool]$parsed
+            ParseError  = $parseError
+            Package    = $pkg
+        }
+    }
+
+    return $results
+}
+
+function Get-DlpRulePolicyNames {
+    param([Parameter(Mandatory)][object]$Rule)
+
+    $names = New-Object System.Collections.Generic.List[string]
+    if ($Rule.ParentPolicyName) {
+        $names.Add($Rule.ParentPolicyName.ToString()) | Out-Null
+    }
+    foreach ($policy in @($Rule.Policy)) {
+        if ($policy) {
+            $names.Add($policy.ToString()) | Out-Null
+        }
+    }
+
+    return @($names | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+}
+
+function Get-DlpRuleClassifierReferenceText {
+    param([Parameter(Mandatory)][object]$Rule)
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($propertyName in @(
+        "ContentContainsSensitiveInformation",
+        "ExceptIfContentContainsSensitiveInformation",
+        "AdvancedRule",
+        "Conditions",
+        "Exceptions"
+    )) {
+        $property = $Rule.PSObject.Properties[$propertyName]
+        if (-not $property -or $null -eq $property.Value) { continue }
+        try {
+            $parts.Add(($property.Value | ConvertTo-Json -Depth 20 -Compress)) | Out-Null
+        } catch {
+            $parts.Add($property.Value.ToString()) | Out-Null
+        }
+    }
+
+    return ($parts -join "`n")
+}
+
+function Get-DlpClassifierRuleReferences {
+    param([Parameter(Mandatory)][string[]]$CandidateIds)
+
+    $candidateLookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in @($CandidateIds)) {
+        if (-not [string]::IsNullOrWhiteSpace($id)) {
+            $candidateLookup.Add($id.ToString()) | Out-Null
+        }
+    }
+
+    $result = [pscustomobject]@{
+        CandidateIdCount = $candidateLookup.Count
+        RulesScanned     = 0
+        MatchingRuleCount = 0
+        References       = @()
+    }
+    if ($candidateLookup.Count -eq 0) { return $result }
+
+    try {
+        $rules = @(Get-DlpComplianceRule -ErrorAction Stop)
+    } catch {
+        Write-Warning "Could not retrieve DLP rules for classifier reference check: $($_.Exception.Message)"
+        return $result
+    }
+
+    $guidPattern = '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+    $references = @()
+    foreach ($rule in $rules) {
+        $result.RulesScanned++
+        $ruleText = Get-DlpRuleClassifierReferenceText -Rule $rule
+        if (-not $ruleText) { continue }
+
+        $matchedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($match in [regex]::Matches($ruleText, $guidPattern)) {
+            if ($candidateLookup.Contains($match.Value)) {
+                $matchedIds.Add($match.Value.ToLowerInvariant()) | Out-Null
+            }
+        }
+        if ($matchedIds.Count -eq 0) { continue }
+
+        $references += [pscustomobject]@{
+            RuleName = if ($rule.Name) { $rule.Name.ToString() } elseif ($rule.Identity) { $rule.Identity.ToString() } else { "(unknown)" }
+            PolicyNames = @(Get-DlpRulePolicyNames -Rule $rule)
+            MatchedClassifierIds = @($matchedIds | Sort-Object)
+        }
+    }
+
+    $result.MatchingRuleCount = @($references).Count
+    $result.References = @($references)
+    return $result
+}
+
+function Test-DlpRulePackageRemovalReferenceGuard {
+    param(
+        [Parameter(Mandatory)][object[]]$Packages,
+        [string]$OperationName = "classifier package removal"
+    )
+
+    $packageEntityIndex = @(Get-DlpRulePackageEntityIds -Packages $Packages)
+    $candidateIds = @($packageEntityIndex | ForEach-Object { $_.EntityIds } | Sort-Object -Unique)
+    $referenceIndex = Get-DlpClassifierRuleReferences -CandidateIds $candidateIds
+    $referencedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($ref in @($referenceIndex.References)) {
+        foreach ($id in @($ref.MatchedClassifierIds)) {
+            $referencedIds.Add($id) | Out-Null
+        }
+    }
+
+    $referencedPackages = @($packageEntityIndex | Where-Object {
+        $hit = $false
+        foreach ($id in @($_.EntityIds)) {
+            if ($referencedIds.Contains($id)) {
+                $hit = $true
+                break
+            }
+        }
+        $hit
+    })
+    $unparsedPackages = @($packageEntityIndex | Where-Object { -not $_.Parsed })
+
+    $safe = ($referenceIndex.MatchingRuleCount -eq 0 -and $unparsedPackages.Count -eq 0)
+    Write-Host "`n=== Classifier Reference Guard ===" -ForegroundColor Cyan
+    Write-Host "  Operation:          $OperationName" -ForegroundColor Gray
+    Write-Host "  Packages checked:   $(@($Packages).Count)" -ForegroundColor Gray
+    Write-Host "  Entity IDs checked: $($referenceIndex.CandidateIdCount)" -ForegroundColor Gray
+    Write-Host "  DLP rules scanned:  $($referenceIndex.RulesScanned)" -ForegroundColor Gray
+    if ($unparsedPackages.Count -gt 0) {
+        Write-Host "  Unparsed packages:  $($unparsedPackages.Count)" -ForegroundColor Red
+        foreach ($pkg in @($unparsedPackages | Select-Object -First 8)) {
+            Write-Host "    - $($pkg.Identity): $($pkg.ParseError)" -ForegroundColor Red
+        }
+    }
+    $color = if ($safe) { "Green" } else { "Red" }
+    Write-Host "  Referencing rules:  $($referenceIndex.MatchingRuleCount)" -ForegroundColor $color
+
+    if (-not $safe) {
+        foreach ($ref in @($referenceIndex.References | Select-Object -First 12)) {
+            Write-Host "    - $($ref.RuleName) [$(@($ref.PolicyNames) -join ', ')]" -ForegroundColor Red
+        }
+        if ($referenceIndex.MatchingRuleCount -gt 12) {
+            Write-Host "    ... $($referenceIndex.MatchingRuleCount - 12) more referencing rule(s)" -ForegroundColor Red
+        }
+    }
+
+    return [pscustomobject]@{
+        Safe = [bool]$safe
+        PackagesChecked = @($Packages).Count
+        EntityIdsChecked = $referenceIndex.CandidateIdCount
+        RulesScanned = $referenceIndex.RulesScanned
+        ReferencingRuleCount = $referenceIndex.MatchingRuleCount
+        References = @($referenceIndex.References)
+        ReferencedPackages = @($referencedPackages)
+        UnparsedPackages = @($unparsedPackages)
+    }
+}
+#endregion
+
 #region Deletion
 function Remove-PurviewObject {
     <#
@@ -828,6 +1198,216 @@ function Remove-PurviewObjects {
 
     Write-Host "    Done: $total processed ($deleted deleted, $skipped skipped, $($cooldowns.Count) retried)" -ForegroundColor Green
     return $deleted
+}
+
+function Resolve-CleanupTargets {
+    <#
+    .SYNOPSIS
+        Applies cleanup match rules to already-fetched tenant object lists and returns
+        a concrete deletion manifest. Pure: callers fetch objects, this decides what
+        would be deleted and records WHY each object matched.
+    .PARAMETER Objects
+        Hashtable keyed by category (AutoLabelPolicy, DlpPolicy, SitPackage,
+        KeywordDictionary, LabelPolicy, Label) whose values are arrays of objects from
+        the matching Get-* cmdlet.
+    .PARAMETER IncludeLabels
+        When set, label policies and labels are considered for removal.
+    .OUTPUTS
+        An array of target objects: Identity, Category, Type, MatchedBy, Risk
+        ("scoped" = matched only by configured prefix/suffix/publisher;
+        "broad" = matched by a heuristic that may hit objects this toolkit did not create),
+        GetCommand, RemoveCommand, InputObject.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable]$Objects,
+        [switch]$IncludeLabels
+    )
+
+    $prefix          = $Config.namingPrefix
+    $suffix          = $Config.namingSuffix
+    $publisher       = $Config.publisher
+    $labelPolicyName = $Config.labelPolicyName
+    $manifest        = [System.Collections.Generic.List[object]]::new()
+
+    function New-CleanupTarget {
+        param($Identity, $Category, $Type, $MatchedBy, $Risk, $GetCommand, $RemoveCommand, $InputObject)
+        [pscustomobject]@{
+            Identity      = $Identity
+            Category      = $Category
+            Type          = $Type
+            MatchedBy     = $MatchedBy
+            Risk          = $Risk
+            GetCommand    = $GetCommand
+            RemoveCommand = $RemoveCommand
+            InputObject   = $InputObject
+        }
+    }
+
+    foreach ($p in @($Objects['AutoLabelPolicy'])) {
+        if (-not $p) { continue }
+        if ($p.Name -like "AL*-$prefix-$suffix") {
+            $manifest.Add((New-CleanupTarget $p.Name "AutoLabelPolicy" "Auto-labeling policy" "prefix '$prefix' + suffix '$suffix'" "scoped" "Get-AutoSensitivityLabelPolicy" "Remove-AutoSensitivityLabelPolicy" $p))
+        }
+    }
+
+    foreach ($p in @($Objects['DlpPolicy'])) {
+        if (-not $p) { continue }
+        if ($p.Name -like "*$prefix*") {
+            $manifest.Add((New-CleanupTarget $p.Name "DlpPolicy" "DLP policy" "prefix '$prefix'" "scoped" "Get-DlpCompliancePolicy" "Remove-DlpCompliancePolicy" $p))
+        } elseif ($p.Name -like "P0*-*") {
+            $manifest.Add((New-CleanupTarget $p.Name "DlpPolicy" "DLP policy" "heuristic 'P0*-*' (NOT prefix-scoped)" "broad" "Get-DlpCompliancePolicy" "Remove-DlpCompliancePolicy" $p))
+        }
+    }
+
+    foreach ($pkg in @($Objects['SitPackage'])) {
+        if (-not $pkg -or -not $pkg.Identity) { continue }
+        if ($pkg.Publisher -eq "Microsoft Corporation" -or $pkg.Publisher -eq "Microsoft") { continue }
+        if ($publisher -and $pkg.Publisher -eq $publisher) {
+            $manifest.Add((New-CleanupTarget $pkg.Identity "SitPackage" "SIT rule package" "publisher '$publisher'" "scoped" "Get-DlpSensitiveInformationTypeRulePackage" "Remove-DlpSensitiveInformationTypeRulePackage" $pkg))
+        }
+    }
+
+    foreach ($d in @($Objects['KeywordDictionary'])) {
+        if (-not $d) { continue }
+        if ($d.Name -like "$prefix*") {
+            $manifest.Add((New-CleanupTarget $d.Identity "KeywordDictionary" "Keyword dictionary" "prefix '$prefix'" "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
+        }
+    }
+
+    if ($IncludeLabels) {
+        foreach ($lp in @($Objects['LabelPolicy'])) {
+            if (-not $lp) { continue }
+            if ($lp.Name -like "*$prefix*") {
+                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "prefix '$prefix'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
+            } elseif ($labelPolicyName -and $lp.Name -eq $labelPolicyName) {
+                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "configured labelPolicyName '$labelPolicyName'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
+            }
+        }
+        foreach ($l in @($Objects['Label'])) {
+            if (-not $l) { continue }
+            if ($l.Name -like "*$prefix*") {
+                $manifest.Add((New-CleanupTarget $l.Name "Label" "Sensitivity label" "prefix '$prefix'" "scoped" "Get-Label" "Remove-Label" $l))
+            } elseif ($l.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)") {
+                $manifest.Add((New-CleanupTarget $l.Name "Label" "Sensitivity label" "built-in classification regex (NOT prefix-scoped)" "broad" "Get-Label" "Remove-Label" $l))
+            }
+        }
+    }
+
+    return $manifest.ToArray()
+}
+
+function Get-CleanupConfirmationPhrase {
+    <#
+    .SYNOPSIS
+        Builds the typed-confirmation phrase a user must enter to authorise cleanup.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][string]$Tenant
+    )
+    return "DELETE $Prefix $Tenant"
+}
+
+function Show-CleanupPlan {
+    <#
+    .SYNOPSIS
+        Renders the deletion manifest grouped by category, listing every object and the
+        pattern that matched it. Broad (non-prefix-scoped) matches are highlighted.
+        Returns a summary object. -Quiet suppresses console output (for tests).
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Targets,
+        [Parameter(Mandatory)][string]$Tenant,
+        [switch]$Quiet
+    )
+
+    $byCat = [ordered]@{}
+    foreach ($t in $Targets) {
+        if (-not $byCat.Contains($t.Category)) { $byCat[$t.Category] = [System.Collections.Generic.List[object]]::new() }
+        $byCat[$t.Category].Add($t)
+    }
+    $broad = @($Targets | Where-Object { $_.Risk -eq "broad" })
+
+    if (-not $Quiet) {
+        Write-Host "`n=== Cleanup Plan: objects that WILL be deleted from $Tenant ===" -ForegroundColor Cyan
+        if ($Targets.Count -eq 0) {
+            Write-Host "  Nothing matched. No objects will be deleted." -ForegroundColor Green
+        }
+        foreach ($cat in $byCat.Keys) {
+            $items = $byCat[$cat]
+            Write-Host "`n  $cat ($($items.Count)):" -ForegroundColor Yellow
+            foreach ($i in $items) {
+                $color = if ($i.Risk -eq "broad") { "Red" } else { "Gray" }
+                Write-Host "    - $($i.Identity)   [matched by: $($i.MatchedBy)]" -ForegroundColor $color
+            }
+        }
+        if ($broad.Count -gt 0) {
+            Write-Host "`n  WARNING: $($broad.Count) object(s) matched by BROAD heuristics that are not prefix-scoped." -ForegroundColor Red
+            Write-Host "  These may include objects this toolkit did not create. Review each line above carefully." -ForegroundColor Red
+        }
+    }
+
+    $catCounts = [ordered]@{}
+    foreach ($cat in $byCat.Keys) { $catCounts[$cat] = $byCat[$cat].Count }
+    return [pscustomobject]@{
+        Total      = $Targets.Count
+        BroadCount = $broad.Count
+        Categories = $catCounts
+    }
+}
+
+function Invoke-CleanupPlan {
+    <#
+    .SYNOPSIS
+        Deletes exactly the objects in a manifest produced by Resolve-CleanupTargets.
+        Honors -WhatIf. Applies the SIT rule-package reference guard before deleting
+        any SitPackage targets. Never re-queries the tenant with broad patterns.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Targets,
+        [switch]$AllowBreakingClassifierReferences,
+        [int]$MaxRetries = 2,
+        [int]$BaseDelaySec = 30
+    )
+
+    $order   = @("AutoLabelPolicy", "DlpPolicy", "SitPackage", "KeywordDictionary", "LabelPolicy", "Label")
+    $results = [ordered]@{}
+
+    # Reference guard before any SIT package deletion.
+    $sitTargets = @($Targets | Where-Object { $_.Category -eq "SitPackage" })
+    if ($sitTargets.Count -gt 0) {
+        $guard = Test-DlpRulePackageRemovalReferenceGuard -Packages @($sitTargets.InputObject) -OperationName "cleanup SIT package removal"
+        if (-not $guard.Safe -and -not $AllowBreakingClassifierReferences) {
+            throw "SIT package cleanup blocked: live DLP rules still reference classifier IDs in these package(s). Rerun with -AllowBreakingClassifierReferences after explicit approval, or refit first."
+        } elseif (-not $guard.Safe) {
+            Write-Host "  WARNING: proceeding despite DLP rule references (-AllowBreakingClassifierReferences)." -ForegroundColor Red
+        }
+    }
+
+    foreach ($cat in $order) {
+        $items = @($Targets | Where-Object { $_.Category -eq $cat })
+        if ($cat -eq "Label") {
+            # Sublabels (have ParentId) first, then parents; highest priority first within each group.
+            $items = @(@($items | Where-Object { $_.InputObject.ParentId }       | Sort-Object { $_.InputObject.Priority } -Descending) +
+                       @($items | Where-Object { -not $_.InputObject.ParentId }   | Sort-Object { $_.InputObject.Priority } -Descending))
+        }
+        if ($items.Count -eq 0) { continue }
+
+        $deleted = 0
+        foreach ($t in $items) {
+            Write-Host "    $($t.Type): $($t.Identity)" -ForegroundColor Yellow -NoNewline
+            $status = Remove-PurviewObject -Identity $t.Identity -InputObject $t.InputObject `
+                -GetCommand $t.GetCommand -RemoveCommand $t.RemoveCommand `
+                -OperationName $t.Type -MaxRetries $MaxRetries -BaseDelaySec $BaseDelaySec -WhatIf:$WhatIfPreference
+            if ($status -eq "deleted") { $deleted++ }
+            if (-not $WhatIfPreference) { Start-Sleep 2 }
+        }
+        $results[$cat] = $deleted
+    }
+
+    return $results
 }
 #endregion
 
@@ -1615,6 +2195,7 @@ Export-ModuleMember -Function @(
     'Disconnect-DLPSession'
     'Import-JsonConfig'
     'Merge-GlobalConfig'
+    'Set-DeploymentConfigPrefix'
     'Assert-ConfigCustomised'
     'Resolve-PolicyConfig'
     'Resolve-ClassifierConfig'
@@ -1626,9 +2207,15 @@ Export-ModuleMember -Function @(
     'New-AdvancedRuleJson'
     'Resolve-PolicyMode'
     'Get-MergedRuleParams'
+    'Test-PurviewObjectNameSafety'
+    'Assert-PurviewObjectNameSafety'
     'Test-PurviewNameConflicts'
     'Remove-PurviewObject'
     'Remove-PurviewObjects'
+    'Resolve-CleanupTargets'
+    'Get-CleanupConfirmationPhrase'
+    'Show-CleanupPlan'
+    'Invoke-CleanupPlan'
     'Invoke-WithRetry'
     'Start-DeploymentLog'
     'Stop-DeploymentLog'
@@ -1639,6 +2226,10 @@ Export-ModuleMember -Function @(
     'Save-DeploymentManifest'
     'Get-DeploymentFileArtifact'
     'Test-DeploymentTenantFingerprint'
+    'Convert-DlpSerializedRulePackageToText'
+    'Get-DlpRulePackageEntityIds'
+    'Get-DlpClassifierRuleReferences'
+    'Test-DlpRulePackageRemovalReferenceGuard'
     'Test-SITRulePackageXml'
     'Split-ClassifierChunks'
     'Get-ChunkLetter'

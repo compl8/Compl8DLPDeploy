@@ -45,6 +45,43 @@ Describe 'Get-RuleName' {
     }
 }
 
+Describe 'Test-PurviewObjectNameSafety' {
+    It 'Allows generated deployment-safe names' {
+        $result = Test-PurviewObjectNameSafety -Name 'P01-R01-ECH-SENS_Pvc-EXT-ADT' -ObjectType 'DLP rule'
+
+        $result.IsSafe | Should -Be $true
+        $result.Reasons.Count | Should -Be 0
+    }
+
+    It 'Rejects names with spaces and punctuation outside the deployment-safe set' {
+        $result = Test-PurviewObjectNameSafety -Name 'P01 R01: ECH' -ObjectType 'DLP rule'
+
+        $result.IsSafe | Should -Be $false
+        ($result.Reasons -join ' ') | Should -BeLike '*space*'
+        ($result.Reasons -join ' ') | Should -BeLike "*':'*"
+    }
+
+    It 'Rejects non-ASCII punctuation that Purview cmdlets may accept but later struggle to remove' {
+        $unsafeName = "P01-R01-ECH$([char]0x2013)OFFI-EXT-ADT"
+        $result = Test-PurviewObjectNameSafety -Name $unsafeName -ObjectType 'DLP rule'
+
+        $result.IsSafe | Should -Be $false
+        ($result.Reasons -join ' ') | Should -BeLike '*U+2013*'
+    }
+
+    It 'Requires the name to start with an ASCII letter or digit' {
+        $result = Test-PurviewObjectNameSafety -Name '-P01-R01-ECH-OFFI-EXT-ADT' -ObjectType 'DLP rule'
+
+        $result.IsSafe | Should -Be $false
+        ($result.Reasons -join ' ') | Should -BeLike '*must match*'
+    }
+
+    It 'Throws from Assert-PurviewObjectNameSafety before tenant submission' {
+        { Assert-PurviewObjectNameSafety -Names @('Safe-Name', 'Unsafe Name') -ObjectType 'DLP rule' } |
+            Should -Throw '*Unsafe Purview object name*'
+    }
+}
+
 Describe 'Merge-GlobalConfig' {
     BeforeAll {
         $defaults = Get-ModuleDefaults
@@ -316,5 +353,72 @@ Describe 'Get-ChunkLetter' {
 
     It 'Throws for negative index' {
         { Get-ChunkLetter -ChunkIndex -1 } | Should -Throw "*out of range*"
+    }
+}
+
+Describe 'Resolve-CleanupTargets' {
+    BeforeAll {
+        $script:cfg = @{ namingPrefix = 'QGISCF'; namingSuffix = 'EXT-ADT'; publisher = 'Queensland Government CSU'; labelPolicyName = 'QGISCF-Label-Policy' }
+    }
+
+    It 'matches DLP policies by configured prefix and tags them scoped' {
+        $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'P01-ECH-QGISCF-EXT-ADT' }) }
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects $objs
+        $dlp = @($m | Where-Object { $_.Category -eq 'DlpPolicy' })
+        $dlp.Count | Should -Be 1
+        $dlp[0].Risk | Should -Be 'scoped'
+        $dlp[0].MatchedBy | Should -Match 'QGISCF'
+    }
+
+    It 'flags a P0-pattern policy without the prefix as broad, not scoped' {
+        $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'P09-SomeoneElsesPolicy' }) }
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects $objs
+        @($m | Where-Object { $_.Category -eq 'DlpPolicy' -and $_.Risk -eq 'broad' }).Count | Should -Be 1
+    }
+
+    It 'never matches Microsoft-published SIT packages' {
+        $objs = @{ SitPackage = @(
+            [pscustomobject]@{ Identity = 'ms-pkg'; Publisher = 'Microsoft Corporation' },
+            [pscustomobject]@{ Identity = 'our-pkg'; Publisher = 'Queensland Government CSU' }
+        )}
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects $objs
+        $pkgs = @($m | Where-Object { $_.Category -eq 'SitPackage' })
+        $pkgs.Count | Should -Be 1
+        $pkgs[0].Identity | Should -Be 'our-pkg'
+    }
+
+    It 'does not match labels unless IncludeLabels is set' {
+        $objs = @{ Label = @([pscustomobject]@{ Name = 'OFFICIAL'; ParentId = $null; Priority = 1 }) }
+        (Resolve-CleanupTargets -Config $script:cfg -Objects $objs).Count | Should -Be 0
+        @(Resolve-CleanupTargets -Config $script:cfg -Objects $objs -IncludeLabels | Where-Object { $_.Category -eq 'Label' }).Count | Should -Be 1
+    }
+
+    It 'returns an empty manifest when nothing matches' {
+        $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'UnrelatedThing' }) }
+        (Resolve-CleanupTargets -Config $script:cfg -Objects $objs).Count | Should -Be 0
+    }
+}
+
+Describe 'Get-CleanupConfirmationPhrase' {
+    It 'builds a DELETE phrase from prefix and tenant' {
+        Get-CleanupConfirmationPhrase -Prefix 'QGISCF' -Tenant 'qgov.onmicrosoft.com' |
+            Should -Be 'DELETE QGISCF qgov.onmicrosoft.com'
+    }
+}
+
+Describe 'Show-CleanupPlan' {
+    It 'returns a summary object with per-category counts and a broad-match flag' {
+        $targets = @(
+            [pscustomobject]@{ Identity='P01-QGISCF'; Category='DlpPolicy'; Type='DLP policy'; MatchedBy='prefix'; Risk='scoped' },
+            [pscustomobject]@{ Identity='OFFICIAL'; Category='Label'; Type='label'; MatchedBy='regex'; Risk='broad' }
+        )
+        $s = Show-CleanupPlan -Targets $targets -Tenant 't' -Quiet
+        $s.Total | Should -Be 2
+        $s.BroadCount | Should -Be 1
+        $s.Categories['DlpPolicy'] | Should -Be 1
+    }
+
+    It 'reports zero for an empty manifest' {
+        (Show-CleanupPlan -Targets @() -Tenant 't' -Quiet).Total | Should -Be 0
     }
 }
