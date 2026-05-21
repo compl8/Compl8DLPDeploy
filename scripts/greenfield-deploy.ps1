@@ -120,7 +120,7 @@ if (-not $SkipCleanup) {
 # ── Phase 1: Keyword Dictionaries ───────────────────────────────────────────
 Write-Host "=== Phase 1: Keyword Dictionaries ===" -ForegroundColor Cyan
 
-$manifestUrl = "https://testpattern.dev/api/export/dictionary-manifest?scope=$Scope"
+$manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
 if ($WhatIf) {
     $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf
 } else {

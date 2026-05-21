@@ -156,7 +156,7 @@ if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
 if ($Phase -eq "All" -or $Phase -eq "Dictionaries" -or $Phase -eq "Classifiers") {
     Write-Host "=== Phase 1.5: Keyword Dictionaries ===" -ForegroundColor Cyan
 
-    $manifestUrl = "https://testpattern.dev/api/export/dictionary-manifest?scope=$Scope"
+    $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
     if ($WhatIf) {
         $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf
     } else {

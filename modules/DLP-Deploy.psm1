@@ -32,6 +32,9 @@ function Get-ModuleDefaults {
         labelPolicyName          = "DLP-Label-Policy"
         # Data pipeline
         inputSpreadsheet         = ""
+        # External pattern registry — base URL for the dictionary manifest export API.
+        # Override in config/settings.json to point at a different registry.
+        dictionaryManifestUrl    = "https://testpattern.dev/api/export/dictionary-manifest"
         # SIT entity name prefix — replaces "TestPattern" in entity display names at deploy time
         sitPrefix                = ""
     }
