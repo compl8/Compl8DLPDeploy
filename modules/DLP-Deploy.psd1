@@ -63,6 +63,7 @@
         'Stop-DeploymentLog'
         'Sync-DlpKeywordDictionaries'
         'Assert-PackageDictionaryReferencesExist'
+        'ConvertFrom-DlpDictionaryTermProperty'
         'Resolve-DictionarySyncDecision'
         'Test-DictionaryBudget'
         'Test-DictionaryRemovalAllowed'

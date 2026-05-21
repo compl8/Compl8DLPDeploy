@@ -2413,6 +2413,25 @@ function Test-DictionaryBudget {
     }
 }
 
+function ConvertFrom-DlpDictionaryTermProperty {
+    <#
+    .SYNOPSIS
+        Normalises the raw value of a Get-DlpKeywordDictionary term property into a string[].
+        Purview returns terms in the 'KeywordDictionary' property as a single delimited
+        string (comma and/or newline separated); some module versions return a collection.
+        Returns @() for null/empty so callers treat it as opaque rather than mis-parsing.
+    #>
+    param([object]$Raw)
+    if ($null -eq $Raw) { return @() }
+    if ($Raw -is [string]) {
+        return @($Raw -split "[`r`n,]+" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    if ($Raw -is [System.Collections.IEnumerable]) {
+        return @($Raw | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    }
+    return @("$Raw".Trim() | Where-Object { $_ })
+}
+
 function Get-DlpDictionaryInventory {
     <#
     .SYNOPSIS
@@ -2433,7 +2452,11 @@ function Get-DlpDictionaryInventory {
     foreach ($d in $dicts) {
         $terms = $null
         foreach ($p in @('KeywordDictionary', 'Keywords', 'Entries', 'Terms')) {
-            if ($d.PSObject.Properties[$p] -and $d.$p) { $terms = @($d.$p); break }
+            if ($d.PSObject.Properties[$p] -and $d.$p) {
+                $parsed = ConvertFrom-DlpDictionaryTermProperty -Raw $d.$p
+                if ($parsed.Count -gt 0) { $terms = $parsed }
+                break
+            }
         }
         $out.Add([pscustomobject]@{
             Name            = $d.Name
@@ -2648,6 +2671,7 @@ Export-ModuleMember -Function @(
     'Test-DictionaryBudget'
     'Test-DictionaryRemovalAllowed'
     'Get-DlpDictionaryInventory'
+    'ConvertFrom-DlpDictionaryTermProperty'
     'Assert-PackageDictionaryReferencesExist'
 )
 

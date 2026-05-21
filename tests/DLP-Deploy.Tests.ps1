@@ -687,3 +687,21 @@ Describe 'Test-DictionaryRemovalAllowed' {
         $r.Allowed | Should -BeFalse; $r.Reason | Should -Match 'not created by this toolkit'
     }
 }
+
+Describe 'ConvertFrom-DlpDictionaryTermProperty' {
+    It 'splits a comma-separated string into terms' {
+        ConvertFrom-DlpDictionaryTermProperty -Raw 'alpha, beta, gamma' | Should -Be @('alpha','beta','gamma')
+    }
+    It 'splits a newline-separated string' {
+        (ConvertFrom-DlpDictionaryTermProperty -Raw "a`nb`r`nc").Count | Should -Be 3
+    }
+    It 'handles mixed comma and newline delimiters and trims' {
+        ConvertFrom-DlpDictionaryTermProperty -Raw "a, b`n c ,d" | Should -Be @('a','b','c','d')
+    }
+    It 'passes through a collection, trimming and dropping empties' {
+        ConvertFrom-DlpDictionaryTermProperty -Raw @(' a ', 'b', '', $null) | Should -Be @('a','b')
+    }
+    It 'returns empty for null' {
+        (ConvertFrom-DlpDictionaryTermProperty -Raw $null).Count | Should -Be 0
+    }
+}
