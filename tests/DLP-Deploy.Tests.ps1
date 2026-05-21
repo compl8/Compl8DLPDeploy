@@ -705,3 +705,14 @@ Describe 'ConvertFrom-DlpDictionaryTermProperty' {
         (ConvertFrom-DlpDictionaryTermProperty -Raw $null).Count | Should -Be 0
     }
 }
+
+Describe 'ConvertFrom-DlpDictionaryTermProperty - comma-in-term (deferred)' {
+    # LOGGED 2026-05-21: current parser splits on commas AND newlines, assuming terms never
+    # contain a literal comma. Nathan believes comma-in-term is not a valid Purview keyword,
+    # so this is parked until we capture a real (Get-DlpKeywordDictionary).KeywordDictionary
+    # sample. If terms CAN contain commas, switch to newline-only splitting and update this.
+    It 'preserves a term that legitimately contains a comma' -Skip {
+        # Replace with the real delimiter behaviour once a tenant sample confirms it.
+        ConvertFrom-DlpDictionaryTermProperty -Raw "Smith, John`nplain" | Should -Be @('Smith, John','plain')
+    }
+}
