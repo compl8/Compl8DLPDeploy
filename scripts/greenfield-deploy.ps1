@@ -122,9 +122,9 @@ Write-Host "=== Phase 1: Keyword Dictionaries ===" -ForegroundColor Cyan
 
 $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
 if ($WhatIf) {
-    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf
+    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -WhatIf
 } else {
-    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl
+    $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix
 }
 Write-Host ""
 

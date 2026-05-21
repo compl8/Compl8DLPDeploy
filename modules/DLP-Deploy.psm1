@@ -2115,11 +2115,17 @@ function Sync-DlpKeywordDictionaries {
         Returns a hashtable mapping placeholder -> GUID.
     .PARAMETER ManifestUrl
         URL to the dictionary manifest endpoint.
+    .PARAMETER NamePrefix
+        Optional deployment naming prefix. When supplied, dictionaries are created and
+        looked up as "<NamePrefix>-<manifest name>" so they are scoped to this deployment
+        and discoverable by the prefix-based cleanup. Packages bind dictionaries by GUID,
+        so the name change does not affect SIT references.
     .PARAMETER WhatIf
         If true, returns dummy GUIDs without making API calls.
     #>
     param(
         [Parameter(Mandatory)][string]$ManifestUrl,
+        [string]$NamePrefix,
         [switch]$WhatIf
     )
 
@@ -2138,6 +2144,9 @@ function Sync-DlpKeywordDictionaries {
     }
 
     foreach ($dict in $manifest.dictionaries) {
+        # Scope the dictionary name to this deployment so prefix-based cleanup can find it.
+        $name = if ($NamePrefix) { "$NamePrefix-$($dict.name)" } else { $dict.name }
+
         # Write terms to temp file and read back as bytes (includes UTF-16LE BOM).
         # Direct [System.Text.Encoding]::Unicode.GetBytes() produces BOM-less bytes
         # that are truncated to 1 char by the REST-based ExchangeOnlineManagement module.
@@ -2150,41 +2159,41 @@ function Sync-DlpKeywordDictionaries {
         }
 
         if ($WhatIf) {
-            Write-Host "  [WHATIF] $($dict.name) ($($dict.terms.Count) terms)"
+            Write-Host "  [WHATIF] $name ($($dict.terms.Count) terms)"
             $guidMap[$dict.placeholder] = "00000000-0000-0000-0000-000000000000"
             continue
         }
 
         $guid = $null
-        if ($existingDicts.ContainsKey($dict.name)) {
+        if ($existingDicts.ContainsKey($name)) {
             # Update existing dictionary with correct content
-            $guid = $existingDicts[$dict.name]
+            $guid = $existingDicts[$name]
             try {
-                Set-DlpKeywordDictionary -Identity $dict.name -FileData $bytes -Confirm:$false -ErrorAction Stop
-                Write-Host "  Updated: $($dict.name) ($($dict.terms.Count) terms) [$guid]"
+                Set-DlpKeywordDictionary -Identity $name -FileData $bytes -Confirm:$false -ErrorAction Stop
+                Write-Host "  Updated: $name ($($dict.terms.Count) terms) [$guid]"
             } catch {
-                Write-Warning "  Failed to update $($dict.name): $($_.Exception.Message)"
-                Write-Host "  Exists: $($dict.name) [$guid]"
+                Write-Warning "  Failed to update ${name}: $($_.Exception.Message)"
+                Write-Host "  Exists: $name [$guid]"
             }
         } else {
             try {
-                $result = Invoke-WithRetry -OperationName "New-Dictionary $($dict.name)" -ScriptBlock {
-                    New-DlpKeywordDictionary -Name $dict.name -Description $dict.description -FileData $bytes -Confirm:$false -ErrorAction Stop
+                $result = Invoke-WithRetry -OperationName "New-Dictionary $name" -ScriptBlock {
+                    New-DlpKeywordDictionary -Name $name -Description $dict.description -FileData $bytes -Confirm:$false -ErrorAction Stop
                 } -MaxRetries 2 -BaseDelaySec 30
                 $guid = $result.Identity
-                Write-Host "  Created: $($dict.name) ($($dict.terms.Count) terms)"
+                Write-Host "  Created: $name ($($dict.terms.Count) terms)"
             } catch {
                 if ($_.Exception.Message -match 'already exists') {
                     # Race condition: created between pre-fetch and now
-                    $found = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $dict.name }
+                    $found = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name }
                     if ($found) {
                         $guid = $found.Identity
-                        Write-Host "  Recovered: $($dict.name) [$guid]"
+                        Write-Host "  Recovered: $name [$guid]"
                     } else {
-                        Write-Warning "  Failed: $($dict.name) - exists but could not retrieve"
+                        Write-Warning "  Failed: $name - exists but could not retrieve"
                     }
                 } else {
-                    Write-Warning "  Failed: $($dict.name) - $($_.Exception.Message)"
+                    Write-Warning "  Failed: $name - $($_.Exception.Message)"
                 }
             }
         }
@@ -2192,7 +2201,7 @@ function Sync-DlpKeywordDictionaries {
         if ($guid) {
             $guidMap[$dict.placeholder] = $guid
         } else {
-            Write-Warning "  No GUID for $($dict.name) - packages using $($dict.placeholder) will be skipped"
+            Write-Warning "  No GUID for $name - packages using $($dict.placeholder) will be skipped"
         }
         if (-not $WhatIf) { Start-Sleep 2 }
     }

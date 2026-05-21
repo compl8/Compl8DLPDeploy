@@ -327,7 +327,7 @@ function Get-DictionaryPlaceholderMap {
     }
 
     $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
-    $script:DictionaryGuidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -WhatIf:$WhatIfPreference
+    $script:DictionaryGuidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -WhatIf:$WhatIfPreference
 
     foreach ($placeholder in @($placeholders.Keys | Sort-Object)) {
         if (-not $script:DictionaryGuidMap.ContainsKey($placeholder)) {
