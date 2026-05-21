@@ -4027,6 +4027,11 @@ function Invoke-ClassifierUploadPlan {
         try {
             $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
 
+            # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
+            if (-not $WhatIfPreference) {
+                Assert-PackageDictionaryReferencesExist -PackageName $name -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
+            }
+
             if ($plan.BumpVersion) {
                 $bumpStr = Format-VersionString -Version $plan.BumpVersion
                 Write-Host "    Auto-bumping version to $bumpStr" -ForegroundColor Yellow
@@ -4827,6 +4832,11 @@ function Invoke-Upload {
         try {
             $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
 
+            # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
+            if (-not $WhatIfPreference) {
+                Assert-PackageDictionaryReferencesExist -PackageName $name -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
+            }
+
             # Auto-bump version if needed
             if ($plan.BumpVersion) {
                 $bumpStr = Format-VersionString -Version $plan.BumpVersion
@@ -5353,6 +5363,12 @@ function Invoke-ApplyRefitPlan {
         $deployedInfo = Get-DeployedPackageInfo -DeployedPackage $target
 
         $content = Resolve-RulePackageUploadContent -FilePath $draftPath -DictionaryGuidMap $dictionaryGuidMap
+
+        # Pre-upload guard: never apply a refit that references a non-existent dictionary.
+        if (-not $WhatIfPreference) {
+            Assert-PackageDictionaryReferencesExist -PackageName $assignment.localPackageKey -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
+        }
+
         $draftInfo = Get-LocalPackageInfo -FilePath $draftPath
         if ($draftInfo -and $draftInfo.Version -and $deployedInfo.Version) {
             $bumpVersion = Get-BumpedVersion -LocalVersion $draftInfo.Version -DeployedVersion $deployedInfo.Version

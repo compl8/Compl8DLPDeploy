@@ -2343,6 +2343,60 @@ function Test-DictionaryBudget {
     }
 }
 
+function Get-DlpDictionaryInventory {
+    <#
+    .SYNOPSIS
+        Snapshot of tenant keyword dictionaries: Name, Guid, Terms (or $null if unreadable),
+        CompressedBytes. Returns @() if the cmdlet is unavailable / not connected.
+    .NOTES
+        The property holding the term list varies across ExchangeOnlineManagement versions;
+        the probe list below is best-effort. If terms can't be read, the dictionary is
+        treated as opaque (Terms=$null) and is therefore never modified or deleted.
+        Confirm the property on your tenant with:
+          Get-DlpKeywordDictionary | Select-Object -First 1 | Get-Member -MemberType Property
+    #>
+    if (-not (Get-Command Get-DlpKeywordDictionary -ErrorAction SilentlyContinue)) { return @() }
+    try { $dicts = @(Get-DlpKeywordDictionary -ErrorAction Stop) } catch {
+        Write-Warning "Could not enumerate keyword dictionaries: $($_.Exception.Message)"; return @()
+    }
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($d in $dicts) {
+        $terms = $null
+        foreach ($p in @('KeywordDictionary', 'Keywords', 'Entries', 'Terms')) {
+            if ($d.PSObject.Properties[$p] -and $d.$p) { $terms = @($d.$p); break }
+        }
+        $out.Add([pscustomobject]@{
+            Name            = $d.Name
+            Guid            = if ($d.Identity) { $d.Identity.ToString().ToLowerInvariant() } else { $null }
+            Terms           = $terms
+            CompressedBytes = if ($terms) { Get-DictionaryCompressedSize -Terms $terms } else { 0 }
+        })
+    }
+    return $out.ToArray()
+}
+
+function Assert-PackageDictionaryReferencesExist {
+    <#
+    .SYNOPSIS
+        Throws if the resolved package content references a dictionary GUID not present in the
+        tenant. Prevents uploading a classifier that points at a non-existent dictionary
+        (e.g. after a dictionary sync failure) — the silent-failure case.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$PackageName,
+        [Parameter(Mandatory)][string]$ResolvedXmlText,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Inventory
+    )
+    $referenced = Get-DictionaryGuidReferences -PackageXmlText $ResolvedXmlText
+    if ($referenced.Count -eq 0) { return }
+    $present = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in @($Inventory)) { if ($d.Guid) { [void]$present.Add($d.Guid) } }
+    $missing = @($referenced | Where-Object { -not $present.Contains($_) })
+    if ($missing.Count -gt 0) {
+        throw "Package '$PackageName' references dictionary GUID(s) not present in the tenant: $($missing -join ', '). Dictionary sync may have failed. Upload aborted."
+    }
+}
+
 function Test-DictionaryRemovalAllowed {
     <#
     .SYNOPSIS
@@ -2523,5 +2577,7 @@ Export-ModuleMember -Function @(
     'Resolve-DictionarySyncDecision'
     'Test-DictionaryBudget'
     'Test-DictionaryRemovalAllowed'
+    'Get-DlpDictionaryInventory'
+    'Assert-PackageDictionaryReferencesExist'
 )
 
