@@ -558,3 +558,132 @@ Describe 'Test-DlpRulePackageRemovalReferenceGuard' {
         (Test-DlpRulePackageRemovalReferenceGuard -Packages @($bad)).Safe | Should -BeFalse
     }
 }
+
+Describe 'Get-NormalizedDictionaryTerms' {
+    It 'lowercases, trims, and de-duplicates' {
+        Get-NormalizedDictionaryTerms -Terms @(' Apple ', 'apple', 'BANANA', 'banana ') | Should -Be @('apple','banana')
+    }
+    It 'drops empty and whitespace-only terms' {
+        Get-NormalizedDictionaryTerms -Terms @('a','', '   ', $null) | Should -Be @('a')
+    }
+    It 'returns empty array for null input' {
+        (Get-NormalizedDictionaryTerms -Terms $null).Count | Should -Be 0
+    }
+}
+
+Describe 'Get-DictionaryTermCoverage' {
+    It 'returns 1.0 when all of our terms are present in existing' {
+        Get-DictionaryTermCoverage -OurTerms @('a','b') -ExistingTerms @('a','b','c') | Should -Be 1.0
+    }
+    It 'returns the fraction of our terms covered' {
+        Get-DictionaryTermCoverage -OurTerms @('a','b','c','d') -ExistingTerms @('a','b') | Should -Be 0.5
+    }
+    It 'is coverage of OUR terms, not symmetric' {
+        Get-DictionaryTermCoverage -OurTerms @('a') -ExistingTerms @('a','x','y','z') | Should -Be 1.0
+    }
+    It 'normalises before comparing' {
+        Get-DictionaryTermCoverage -OurTerms @('A',' b ') -ExistingTerms @('a','B') | Should -Be 1.0
+    }
+    It 'returns 1.0 when our term set is empty' {
+        Get-DictionaryTermCoverage -OurTerms @() -ExistingTerms @('a') | Should -Be 1.0
+    }
+    It 'returns 0.0 when nothing overlaps' {
+        Get-DictionaryTermCoverage -OurTerms @('a','b') -ExistingTerms @('x') | Should -Be 0.0
+    }
+}
+
+Describe 'Get-DictionaryCompressedSize' {
+    It 'returns a positive byte count' {
+        Get-DictionaryCompressedSize -Terms @('alpha','beta','gamma') | Should -BeGreaterThan 0
+    }
+    It 'is deterministic for the same normalised input' {
+        (Get-DictionaryCompressedSize -Terms @('a','b','c')) | Should -Be (Get-DictionaryCompressedSize -Terms @('C','b','a',' a '))
+    }
+    It 'grows with more distinct terms' {
+        (Get-DictionaryCompressedSize -Terms (1..500 | ForEach-Object { "term-$_" })) | Should -BeGreaterThan (Get-DictionaryCompressedSize -Terms @('a'))
+    }
+}
+
+Describe 'Get-DictionaryGuidReferences' {
+    It 'extracts GUID idRefs and ignores named idRefs and entity ids' {
+        $xml = @'
+<RulePackage>
+  <Rules>
+    <Entity id="aaaaaaaa-1111-2222-3333-444444444444">
+      <IdMatch idRef="Pattern_au_crn_au-centrelink-crn" />
+      <Match idRef="dddddddd-1111-2222-3333-444444444444" />
+      <Match idRef="Evidence_welfare_context" />
+    </Entity>
+  </Rules>
+</RulePackage>
+'@
+        $r = Get-DictionaryGuidReferences -PackageXmlText $xml
+        $r | Should -Contain 'dddddddd-1111-2222-3333-444444444444'
+        $r | Should -Not -Contain 'aaaaaaaa-1111-2222-3333-444444444444'
+        $r.Count | Should -Be 1
+    }
+    It 'returns empty when no GUID idRefs' {
+        (Get-DictionaryGuidReferences -PackageXmlText '<R><Match idRef="Keyword_foo"/></R>').Count | Should -Be 0
+    }
+    It 'de-duplicates repeated references' {
+        (Get-DictionaryGuidReferences -PackageXmlText '<R><Match idRef="dddddddd-1111-2222-3333-444444444444"/><Match idRef="dddddddd-1111-2222-3333-444444444444"/></R>').Count | Should -Be 1
+    }
+}
+
+Describe 'Resolve-DictionarySyncDecision' {
+    It 'CREATE when no existing dictionary matched' {
+        (Resolve-DictionarySyncDecision -OurTerms @('a','b') -Existing $null -TenantHeadroomBytes 100000).Action | Should -Be 'Create'
+    }
+    It 'REUSE when existing covers >= 90% of our terms' {
+        $existing = @{ Guid='g1'; Terms=(1..95 | ForEach-Object { "t$_" }) }
+        $our = (1..100 | ForEach-Object { "t$_" })
+        $d = Resolve-DictionarySyncDecision -OurTerms $our -Existing $existing -TenantHeadroomBytes 100000
+        $d.Action | Should -Be 'Reuse'
+        $d.Guid | Should -Be 'g1'
+    }
+    It 'MERGE when coverage < 90% and union fits headroom' {
+        $existing = @{ Guid='g1'; Terms=@('a','b') }
+        $d = Resolve-DictionarySyncDecision -OurTerms @('a','b','c','d','e') -Existing $existing -TenantHeadroomBytes 1000000
+        $d.Action | Should -Be 'Merge'
+        $d.MergedTerms | Should -Contain 'c'
+    }
+    It 'OVER-BUDGET keep when coverage < 90% and union does not fit' {
+        $existing = @{ Guid='g1'; Terms=@('a','b') }
+        (Resolve-DictionarySyncDecision -OurTerms @('a','b','c','d','e') -Existing $existing -TenantHeadroomBytes 1).Action | Should -Be 'OverBudgetKeep'
+    }
+    It 'OPAQUE keep when existing terms unknown' {
+        $existing = @{ Guid='g1'; Terms=$null }
+        (Resolve-DictionarySyncDecision -OurTerms @('a') -Existing $existing -TenantHeadroomBytes 100000).Action | Should -Be 'OpaqueKeep'
+    }
+}
+
+Describe 'Test-DictionaryBudget' {
+    It 'passes under the warn cap' {
+        $r = Test-DictionaryBudget -ProjectedBytes 400000
+        $r.WithinWarn | Should -BeTrue; $r.WithinHard | Should -BeTrue
+    }
+    It 'warns between warn and hard caps' {
+        $r = Test-DictionaryBudget -ProjectedBytes 600000
+        $r.WithinWarn | Should -BeFalse; $r.WithinHard | Should -BeTrue
+    }
+    It 'fails over the hard cap' {
+        (Test-DictionaryBudget -ProjectedBytes 1100000).WithinHard | Should -BeFalse
+    }
+    It 'honours custom caps' {
+        (Test-DictionaryBudget -ProjectedBytes 500 -WarnBytes 100 -HardBytes 1000).WithinWarn | Should -BeFalse
+    }
+}
+
+Describe 'Test-DictionaryRemovalAllowed' {
+    It 'allows removal when ours and unreferenced' {
+        (Test-DictionaryRemovalAllowed -IsOurs $true -ReferencedByGuids @() -DictGuid 'g1').Allowed | Should -BeTrue
+    }
+    It 'blocks removal when still referenced' {
+        $r = Test-DictionaryRemovalAllowed -IsOurs $true -ReferencedByGuids @('g1') -DictGuid 'g1'
+        $r.Allowed | Should -BeFalse; $r.Reason | Should -Match 'referenced'
+    }
+    It 'blocks removal when not ours' {
+        $r = Test-DictionaryRemovalAllowed -IsOurs $false -ReferencedByGuids @() -DictGuid 'g1'
+        $r.Allowed | Should -BeFalse; $r.Reason | Should -Match 'not created by this toolkit'
+    }
+}

@@ -2211,6 +2211,160 @@ function Sync-DlpKeywordDictionaries {
 }
 #endregion
 
+#region Dictionary Lifecycle
+function Get-NormalizedDictionaryTerms {
+    <#
+    .SYNOPSIS
+        Returns the canonical comparison form of a term list: trimmed, lower-cased
+        (invariant), de-duplicated, empty/whitespace dropped, sorted for determinism.
+    #>
+    param([string[]]$Terms)
+    if (-not $Terms) { return @() }
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($t in $Terms) {
+        if ($null -eq $t) { continue }
+        $n = $t.Trim().ToLowerInvariant()
+        if ($n) { [void]$seen.Add($n) }
+    }
+    return @($seen | Sort-Object)
+}
+
+function Get-DictionaryTermCoverage {
+    <#
+    .SYNOPSIS
+        Coverage of OUR terms by an existing dictionary: |ours ∩ existing| / |ours|.
+        Empty ours -> 1.0 (nothing required). Pure.
+    #>
+    param([string[]]$OurTerms, [string[]]$ExistingTerms)
+    $ours = Get-NormalizedDictionaryTerms -Terms $OurTerms
+    if ($ours.Count -eq 0) { return 1.0 }
+    $existing = [System.Collections.Generic.HashSet[string]]::new([string[]](Get-NormalizedDictionaryTerms -Terms $ExistingTerms))
+    $hit = 0
+    foreach ($t in $ours) { if ($existing.Contains($t)) { $hit++ } }
+    return [math]::Round($hit / $ours.Count, 4)
+}
+
+function Get-DictionaryCompressedSize {
+    <#
+    .SYNOPSIS
+        Estimates the post-compression byte size of a dictionary's terms, to approximate
+        Purview's tenant keyword-dictionary budget measurement. Normalises first, joins with
+        newline as UTF-16LE (Purview stores Unicode), Deflate-compresses, returns byte count.
+    #>
+    param([string[]]$Terms)
+    $norm = Get-NormalizedDictionaryTerms -Terms $Terms
+    $blob = [System.Text.Encoding]::Unicode.GetBytes(($norm -join "`n"))
+    $ms = [System.IO.MemoryStream]::new()
+    try {
+        $deflate = [System.IO.Compression.DeflateStream]::new($ms, [System.IO.Compression.CompressionLevel]::Optimal)
+        $deflate.Write($blob, 0, $blob.Length)
+        $deflate.Dispose()
+        return $ms.ToArray().Length
+    } finally {
+        $ms.Dispose()
+    }
+}
+
+function Get-DictionaryGuidReferences {
+    <#
+    .SYNOPSIS
+        Returns the distinct GUID-valued idRef attribute values in a rule-package XML string.
+        In SIT packages, a dictionary is referenced as <Match idRef="GUID"/>; named idRefs
+        (Pattern_*/Evidence_*/Keyword_*) and entity id="GUID" definitions are not dictionary
+        references, so only idRef attributes whose value is a GUID are returned.
+    #>
+    param([Parameter(Mandatory)][string]$PackageXmlText)
+    $guid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    $found = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($m in [regex]::Matches($PackageXmlText, "idRef\s*=\s*`"($guid)`"")) {
+        [void]$found.Add($m.Groups[1].Value.ToLowerInvariant())
+    }
+    return @($found | Sort-Object)
+}
+
+function Resolve-DictionarySyncDecision {
+    <#
+    .SYNOPSIS
+        Decides the action for one dictionary. Pure — no tenant calls. Existing is $null
+        (no match) or a hashtable/object with Guid and Terms (Terms = $null means the
+        existing dictionary's terms could not be read = opaque).
+    .OUTPUTS
+        [pscustomobject] Action (Create|Reuse|Merge|OverBudgetKeep|OpaqueKeep),
+        Guid (existing GUID when keeping/merging; $null for Create),
+        Coverage, MergedTerms (for Merge), Reason.
+    #>
+    param(
+        [string[]]$OurTerms,
+        [object]$Existing,
+        [Parameter(Mandatory)][long]$TenantHeadroomBytes,
+        [double]$CoverageThreshold = 0.9
+    )
+
+    if (-not $Existing) {
+        return [pscustomobject]@{ Action='Create'; Guid=$null; Coverage=$null; MergedTerms=$null; Reason='no existing dictionary matched' }
+    }
+    $existingGuid = $Existing.Guid
+    if ($null -eq $Existing.Terms) {
+        return [pscustomobject]@{ Action='OpaqueKeep'; Guid=$existingGuid; Coverage=$null; MergedTerms=$null; Reason='existing dictionary terms not readable; reusing without modification' }
+    }
+
+    $coverage = Get-DictionaryTermCoverage -OurTerms $OurTerms -ExistingTerms $Existing.Terms
+    if ($coverage -ge $CoverageThreshold) {
+        return [pscustomobject]@{ Action='Reuse'; Guid=$existingGuid; Coverage=$coverage; MergedTerms=$null; Reason="existing covers $([int]($coverage*100))% of required terms" }
+    }
+
+    $union = Get-NormalizedDictionaryTerms -Terms (@($Existing.Terms) + @($OurTerms))
+    $unionSize = Get-DictionaryCompressedSize -Terms $union
+    $existingSize = Get-DictionaryCompressedSize -Terms $Existing.Terms
+    $delta = $unionSize - $existingSize
+    if ($delta -le $TenantHeadroomBytes) {
+        return [pscustomobject]@{ Action='Merge'; Guid=$existingGuid; Coverage=$coverage; MergedTerms=$union; Reason="coverage $([int]($coverage*100))%; merging adds $delta bytes (fits headroom)" }
+    }
+    return [pscustomobject]@{ Action='OverBudgetKeep'; Guid=$existingGuid; Coverage=$coverage; MergedTerms=$null; Reason="coverage $([int]($coverage*100))%; merge needs $delta bytes > headroom $TenantHeadroomBytes; keeping existing, SIT may under-match" }
+}
+
+function Test-DictionaryBudget {
+    <#
+    .SYNOPSIS
+        Compares a projected total compressed dictionary size against the tenant caps.
+        Defaults: warn 480 KB (AD-schema-conservative), hard 1 MB (documented ceiling).
+    #>
+    param(
+        [Parameter(Mandatory)][long]$ProjectedBytes,
+        [long]$WarnBytes = 491520,
+        [long]$HardBytes = 1048576
+    )
+    [pscustomobject]@{
+        ProjectedBytes = $ProjectedBytes
+        WarnBytes      = $WarnBytes
+        HardBytes      = $HardBytes
+        WithinWarn     = ($ProjectedBytes -le $WarnBytes)
+        WithinHard     = ($ProjectedBytes -le $HardBytes)
+    }
+}
+
+function Test-DictionaryRemovalAllowed {
+    <#
+    .SYNOPSIS
+        Pure decision: a dictionary may be removed only if it is ours AND no remaining
+        package references its GUID.
+    #>
+    param(
+        [Parameter(Mandatory)][bool]$IsOurs,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ReferencedByGuids,
+        [Parameter(Mandatory)][string]$DictGuid
+    )
+    if (-not $IsOurs) {
+        return [pscustomobject]@{ Allowed=$false; Reason='not created by this toolkit; keeping' }
+    }
+    $referenced = @($ReferencedByGuids) -contains $DictGuid
+    if ($referenced) {
+        return [pscustomobject]@{ Allowed=$false; Reason='still referenced by a remaining package; keeping' }
+    }
+    return [pscustomobject]@{ Allowed=$true; Reason='ours and unreferenced' }
+}
+#endregion
+
 #region XML Validation
 function Test-SITRulePackageXml {
     <#
@@ -2362,5 +2516,12 @@ Export-ModuleMember -Function @(
     'Split-ClassifierChunks'
     'Get-ChunkLetter'
     'Sync-DlpKeywordDictionaries'
+    'Get-NormalizedDictionaryTerms'
+    'Get-DictionaryTermCoverage'
+    'Get-DictionaryCompressedSize'
+    'Get-DictionaryGuidReferences'
+    'Resolve-DictionarySyncDecision'
+    'Test-DictionaryBudget'
+    'Test-DictionaryRemovalAllowed'
 )
 
