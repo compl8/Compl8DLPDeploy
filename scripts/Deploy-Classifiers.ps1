@@ -327,7 +327,21 @@ function Get-DictionaryPlaceholderMap {
     }
 
     $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
-    $script:DictionaryGuidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -WhatIf:$WhatIfPreference
+    if (-not $script:DictionaryReportDir) {
+        $reportRoot = Join-Path (Join-Path $ProjectRoot "reports") "dictionary-decisions"
+        $script:DictionaryReportDir = Join-Path $reportRoot (Get-Date -Format "yyyyMMdd_HHmmss")
+        if (-not (Test-Path -LiteralPath $script:DictionaryReportDir)) {
+            New-Item -ItemType Directory -Path $script:DictionaryReportDir -Force | Out-Null
+        }
+    }
+    $script:DictionaryGuidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -ReportDir $script:DictionaryReportDir -WhatIf:$WhatIfPreference
+    $decisionLogPath = Join-Path $script:DictionaryReportDir "dictionary-decisions.json"
+    if ($script:DeploymentManifest -and (Test-Path -LiteralPath $decisionLogPath)) {
+        Add-DeploymentManifestEvent -Manifest $script:DeploymentManifest -Type "Artifact" -Data @{
+            role = "dictionary-decisions"
+            path = ($decisionLogPath -replace '\\', '/')
+        }
+    }
 
     foreach ($placeholder in @($placeholders.Keys | Sort-Object)) {
         if (-not $script:DictionaryGuidMap.ContainsKey($placeholder)) {
@@ -993,46 +1007,24 @@ function Get-DlpRuleReferenceIndex {
         ById          = @{}
         RulesScanned  = 0
         MatchingRules = 0
+        References    = @()
     }
     if ($candidateLookup.Count -eq 0) { return $result }
 
-    $rules = @()
-    try {
-        $rules = @(Get-DlpComplianceRule -ErrorAction Stop)
-    } catch {
-        Write-Warning "Could not retrieve DLP rules for impact analysis: $($_.Exception.Message)"
-        return $result
-    }
+    $referenceIndex = Get-DlpClassifierRuleReferences -CandidateIds @($candidateLookup.Keys)
+    $result.RulesScanned = $referenceIndex.RulesScanned
+    $result.MatchingRules = $referenceIndex.MatchingRuleCount
+    $result.References = @($referenceIndex.References)
 
-    $guidPattern = '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
-    foreach ($rule in $rules) {
-        $result.RulesScanned++
-        $ruleContent = ""
-        if ($rule.ContentContainsSensitiveInformation) {
-            try { $ruleContent += ($rule.ContentContainsSensitiveInformation | ConvertTo-Json -Depth 20 -Compress) } catch { }
-        }
-        if ($rule.AdvancedRule) {
-            $ruleContent += $rule.AdvancedRule
-        }
-        if (-not $ruleContent) { continue }
-
-        $matchedInRule = @()
-        foreach ($match in [regex]::Matches($ruleContent, $guidPattern)) {
-            $id = $match.Value.ToLowerInvariant()
-            if ($candidateLookup.ContainsKey($id) -and $matchedInRule -notcontains $id) {
-                $matchedInRule += $id
-            }
-        }
-        if ($matchedInRule.Count -eq 0) { continue }
-
-        $result.MatchingRules++
-        $policyName = if ($rule.ParentPolicyName) { $rule.ParentPolicyName } elseif ($rule.Policy) { ($rule.Policy -join ",") } else { "(unknown)" }
-        foreach ($id in $matchedInRule) {
+    foreach ($ref in @($referenceIndex.References)) {
+        $policyName = if (@($ref.PolicyNames).Count -gt 0) { @($ref.PolicyNames) -join "," } else { "(unknown)" }
+        foreach ($matchedId in @($ref.MatchedClassifierIds)) {
+            $id = $matchedId.ToString().ToLowerInvariant()
             if (-not $result.ById.ContainsKey($id)) {
                 $result.ById[$id] = @()
             }
             $result.ById[$id] += [PSCustomObject]@{
-                RuleName   = $rule.Name
+                RuleName   = $ref.RuleName
                 PolicyName = $policyName
             }
         }
@@ -1844,6 +1836,8 @@ function New-RebasedPackageDraft {
         [Parameter(Mandatory)][string]$LocalPackageKey,
         [Parameter(Mandatory)][object]$TargetPackagePlan,
         [string[]]$PreserveEntityIds = @(),
+        [string[]]$IncludeLocalEntityIds = @(),
+        [int]$SegmentIndex = 0,
         [Parameter(Mandatory)][string]$OutputDir
     )
 
@@ -1860,12 +1854,30 @@ function New-RebasedPackageDraft {
 
     $newVersion = Get-RulePackageVersionForRebase -LocalVersion $localInfo.Version -DeployedVersion $TargetPackagePlan.Info.Version
     Set-RulePackageMetadataForRebase -Xml $draftXml -RulePackId $targetRulePackId -Version $newVersion
+    $includeLookup = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in @($IncludeLocalEntityIds)) {
+        if (-not [string]::IsNullOrWhiteSpace($id)) { $includeLookup.Add($id.ToString()) | Out-Null }
+    }
+    if ($includeLookup.Count -gt 0) {
+        $draftRules = $draftXml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" } | Select-Object -First 1
+        if ($draftRules) {
+            $removeNodes = @($draftRules.ChildNodes | Where-Object {
+                $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and
+                $_.LocalName -eq "Entity" -and
+                -not $includeLookup.Contains($_.GetAttribute("id"))
+            })
+            foreach ($node in $removeNodes) {
+                $draftRules.RemoveChild($node) | Out-Null
+            }
+        }
+    }
     $preserveResult = Add-PreservedEntityToRebaseXml -DraftXml $draftXml -ExistingXml $existingXml -PreserveEntityIds $PreserveEntityIds
 
     $safeLocal = $LocalPackageKey -replace '[^a-zA-Z0-9\-]', '_'
     $safeTarget = if ($TargetPackagePlan.Name) { $TargetPackagePlan.Name } else { $TargetPackagePlan.RulePackId }
     $safeTarget = $safeTarget -replace '[^a-zA-Z0-9\-]', '_'
-    $draftPath = Join-Path $OutputDir ("rebase_{0}_into_{1}.xml" -f $safeLocal, $safeTarget)
+    $segmentSuffix = if ($SegmentIndex -gt 0) { "_part$SegmentIndex" } else { "" }
+    $draftPath = Join-Path $OutputDir ("rebase_{0}{1}_into_{2}.xml" -f $safeLocal, $segmentSuffix, $safeTarget)
     $bytes = ConvertTo-PurviewUtf16Bytes -Content $draftXml.OuterXml
     [System.IO.File]::WriteAllBytes($draftPath, $bytes)
 
@@ -1884,6 +1896,97 @@ function New-RebasedPackageDraft {
         Warnings          = @($validation.Warnings)
         PreservedEntityIds = @($preserveResult.PreservedEntityIds)
         PreservedDependencyIds = @($preserveResult.PreservedDependencyIds)
+    }
+}
+
+function New-EntityLevelRefitAssignments {
+    param(
+        [Parameter(Mandatory)][object]$Local,
+        [Parameter(Mandatory)][object[]]$Targets,
+        [Parameter(Mandatory)][hashtable]$AssignedTargets,
+        [Parameter(Mandatory)][string]$OutputDir
+    )
+
+    $remaining = @($Local.Info.Entities | Where-Object { $_.Id })
+    $assignments = @()
+    $assignedIds = @()
+    $segmentIndex = 0
+
+    foreach ($target in @($Targets | Sort-Object Priority, { @($_.ReferencedEntityIds).Count }, { $_.Package.EntityCount }, { $_.Package.Name })) {
+        if ($remaining.Count -eq 0) { break }
+        $targetId = if ($target.Package.RulePackId) { $target.Package.RulePackId } else { $target.Package.Identity }
+        if ([string]::IsNullOrWhiteSpace($targetId) -or $AssignedTargets.ContainsKey($targetId) -or $assignedIds -contains $targetId) { continue }
+
+        $preserveCount = @($target.ReferencedEntityIds | Sort-Object -Unique).Count
+        $capacity = 50 - $preserveCount
+        if ($capacity -le 0) { continue }
+
+        $candidateCount = [math]::Min($capacity, $remaining.Count)
+        $draft = $null
+        $draftError = $null
+        $chunk = @()
+        while ($candidateCount -gt 0 -and -not ($draft -and $draft.Valid)) {
+            $chunk = @($remaining | Select-Object -First $candidateCount)
+            $segmentIndex++
+            try {
+                $draft = New-RebasedPackageDraft `
+                    -LocalPackageKey $Local.Key `
+                    -TargetPackagePlan $target.Package `
+                    -PreserveEntityIds $target.ReferencedEntityIds `
+                    -IncludeLocalEntityIds @($chunk | ForEach-Object { $_.Id }) `
+                    -SegmentIndex $segmentIndex `
+                    -OutputDir $OutputDir
+                if (-not $draft.Valid) {
+                    $draftError = "Entity-level draft failed validation: $($draft.Errors -join '; ')"
+                    $candidateCount = [math]::Floor($candidateCount / 2)
+                }
+            } catch {
+                $draft = $null
+                $draftError = $_.Exception.Message
+                $candidateCount = [math]::Floor($candidateCount / 2)
+            }
+        }
+
+        if (-not ($draft -and $draft.Valid)) { continue }
+
+        $assignments += [PSCustomObject]@{
+            LocalPackageKey = $Local.Key
+            SegmentIndex = $segmentIndex
+            EntityLevelSplit = $true
+            LocalEntityCount = $chunk.Count
+            LocalSizeBytes = $Local.Info.FileSize
+            LocalEntities = @($chunk)
+            TargetName = $target.Package.Name
+            TargetRulePackId = $target.Package.RulePackId
+            TargetEntityCount = $target.Package.EntityCount
+            TargetEntities = @($target.Package.Info.Entities)
+            TargetReferencedEntityIds = @($target.ReferencedEntityIds)
+            TargetReferencedRuleCount = @($target.Package.ReferencedRules).Count
+            Recommendation = "EntityLevelRebase"
+            Draft = $draft
+            DraftError = $draftError
+            ReadyToUpload = $true
+        }
+        $assignedIds += $targetId
+        $usedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($entity in @($chunk)) { $usedIds.Add($entity.Id.ToString()) | Out-Null }
+        $remaining = @($remaining | Where-Object { -not $usedIds.Contains($_.Id.ToString()) })
+    }
+
+    if ($remaining.Count -gt 0 -or $assignments.Count -eq 0) {
+        return [PSCustomObject]@{
+            Success = $false
+            Reason = "Entity-level bin packing could not fit all $($Local.Info.EntityCount) classifier(s) into available validated target packages."
+            Assignments = @()
+            AssignedTargetIds = @()
+        }
+    }
+
+    return [PSCustomObject]@{
+        Success = $true
+        Reason = "Entity-level bin packing split $($Local.Info.EntityCount) classifier(s) across $($assignments.Count) target package(s)."
+        Assignments = @($assignments)
+        AssignedTargetIds = @($assignedIds)
     }
 }
 
@@ -1983,7 +2086,6 @@ function New-ClassifierAdoptionPlan {
 
         if ($match) {
             $targetId = if ($match.Package.RulePackId) { $match.Package.RulePackId } else { $match.Package.Identity }
-            $assignedTargets[$targetId] = $true
             $draft = $null
             $draftError = $null
             try {
@@ -1992,38 +2094,74 @@ function New-ClassifierAdoptionPlan {
                 $draftError = $_.Exception.Message
             }
 
-            $assignments += [PSCustomObject]@{
-                LocalPackageKey = $local.Key
-                LocalEntityCount = $local.Info.EntityCount
-                LocalSizeBytes = $local.Info.FileSize
-                LocalEntities = @($local.Info.Entities)
-                TargetName = $match.Package.Name
-                TargetRulePackId = $match.Package.RulePackId
-                TargetEntityCount = $match.Package.EntityCount
-                TargetEntities = @($match.Package.Info.Entities)
-                TargetReferencedEntityIds = @($match.ReferencedEntityIds)
-                TargetReferencedRuleCount = @($match.Package.ReferencedRules).Count
-                Recommendation = if (@($match.ReferencedEntityIds).Count -gt 0) { "RebasePreserveReferenced" } else { "RebaseReplaceContents" }
-                Draft = $draft
-                DraftError = $draftError
-                ReadyToUpload = ($draft -and $draft.Valid)
+            if ($draft -and $draft.Valid) {
+                $assignedTargets[$targetId] = $true
+                $assignments += [PSCustomObject]@{
+                    LocalPackageKey = $local.Key
+                    LocalEntityCount = $local.Info.EntityCount
+                    LocalSizeBytes = $local.Info.FileSize
+                    LocalEntities = @($local.Info.Entities)
+                    TargetName = $match.Package.Name
+                    TargetRulePackId = $match.Package.RulePackId
+                    TargetEntityCount = $match.Package.EntityCount
+                    TargetEntities = @($match.Package.Info.Entities)
+                    TargetReferencedEntityIds = @($match.ReferencedEntityIds)
+                    TargetReferencedRuleCount = @($match.Package.ReferencedRules).Count
+                    Recommendation = if (@($match.ReferencedEntityIds).Count -gt 0) { "RebasePreserveReferenced" } else { "RebaseReplaceContents" }
+                    Draft = $draft
+                    DraftError = $draftError
+                    ReadyToUpload = $true
+                }
+            } else {
+                $entityFit = New-EntityLevelRefitAssignments -Local $local -Targets $targets -AssignedTargets $assignedTargets -OutputDir $OutputDir
+                if ($entityFit.Success) {
+                    foreach ($assignedTargetId in @($entityFit.AssignedTargetIds)) {
+                        $assignedTargets[$assignedTargetId] = $true
+                    }
+                    $assignments += @($entityFit.Assignments)
+                } else {
+                    $assignments += [PSCustomObject]@{
+                        LocalPackageKey = $local.Key
+                        LocalEntityCount = $local.Info.EntityCount
+                        LocalSizeBytes = $local.Info.FileSize
+                        LocalEntities = @($local.Info.Entities)
+                        TargetName = $match.Package.Name
+                        TargetRulePackId = $match.Package.RulePackId
+                        TargetEntityCount = $match.Package.EntityCount
+                        TargetEntities = @($match.Package.Info.Entities)
+                        TargetReferencedEntityIds = @($match.ReferencedEntityIds)
+                        TargetReferencedRuleCount = @($match.Package.ReferencedRules).Count
+                        Recommendation = "EntityLevelFitFailed"
+                        Draft = $draft
+                        DraftError = if ($draftError) { "$draftError; $($entityFit.Reason)" } else { $entityFit.Reason }
+                        ReadyToUpload = $false
+                    }
+                }
             }
         } else {
-            $assignments += [PSCustomObject]@{
-                LocalPackageKey = $local.Key
-                LocalEntityCount = $local.Info.EntityCount
-                LocalSizeBytes = $local.Info.FileSize
-                LocalEntities = @($local.Info.Entities)
-                TargetName = $null
-                TargetRulePackId = $null
-                TargetEntityCount = 0
-                TargetEntities = @()
-                TargetReferencedEntityIds = @()
-                TargetReferencedRuleCount = 0
-                Recommendation = "NeedsPackageSlot"
-                Draft = $null
-                DraftError = "No existing package slot was available for adoption."
-                ReadyToUpload = $false
+            $entityFit = New-EntityLevelRefitAssignments -Local $local -Targets $targets -AssignedTargets $assignedTargets -OutputDir $OutputDir
+            if ($entityFit.Success) {
+                foreach ($assignedTargetId in @($entityFit.AssignedTargetIds)) {
+                    $assignedTargets[$assignedTargetId] = $true
+                }
+                $assignments += @($entityFit.Assignments)
+            } else {
+                $assignments += [PSCustomObject]@{
+                    LocalPackageKey = $local.Key
+                    LocalEntityCount = $local.Info.EntityCount
+                    LocalSizeBytes = $local.Info.FileSize
+                    LocalEntities = @($local.Info.Entities)
+                    TargetName = $null
+                    TargetRulePackId = $null
+                    TargetEntityCount = 0
+                    TargetEntities = @()
+                    TargetReferencedEntityIds = @()
+                    TargetReferencedRuleCount = 0
+                    Recommendation = "NeedsPackageSlot"
+                    Draft = $null
+                    DraftError = "No existing package slot was available for adoption. $($entityFit.Reason)"
+                    ReadyToUpload = $false
+                }
             }
         }
     }
@@ -2163,6 +2301,7 @@ function New-IterativeClassifierRefitPlan {
     $plan | Add-Member -NotePropertyName "FittedLocalPackageKeys" -NotePropertyValue @($activeKeys) -Force
     $plan | Add-Member -NotePropertyName "DroppedLocalPackages" -NotePropertyValue @($dropped) -Force
     $plan | Add-Member -NotePropertyName "FitIterations" -NotePropertyValue @($iterations) -Force
+    $plan | Add-Member -NotePropertyName "RuleReferences" -NotePropertyValue @($ruleRefs.References) -Force
     return $plan
 }
 
@@ -2368,6 +2507,8 @@ function Convert-ClassifierAdoptionPlanForManifest {
         assignments = @($Plan.Assignments | ForEach-Object {
             [ordered]@{
                 localPackageKey = $_.LocalPackageKey
+                segmentIndex = $_.SegmentIndex
+                entityLevelSplit = [bool]$_.EntityLevelSplit
                 recommendation = $_.Recommendation
                 readyToUpload = [bool]$_.ReadyToUpload
                 targetName = $_.TargetName
@@ -2648,8 +2789,26 @@ function New-ClassifierRefitUserSummary {
         "$($transition.movedOrRefreshedClassifierCount) source classifier(s) fit into the existing package structure and $($transition.deferredClassifierCount) classifier(s) are deferred for review."
     }
 
+    $createCount = if ($null -ne $transition.newPackageCreateCount) { [int]$transition.newPackageCreateCount } else { 0 }
+    $updateCount = if ($null -ne $transition.targetPackageUpdateCount) { [int]$transition.targetPackageUpdateCount } else { 0 }
+    $tenantBefore = if ($null -ne $transition.tenantCustomPackageCountBefore) {
+        [int]$transition.tenantCustomPackageCountBefore
+    } else {
+        $tenantAfter
+    }
+    $applyShape = if ($createCount -gt 0) {
+        "$updateCount existing tenant package update(s) and $createCount approved new package create(s)"
+    } else {
+        "$updateCount existing tenant package update(s)"
+    }
+    $slotSentence = if ($tenantAfter -eq $tenantBefore) {
+        "The tenant remains at $tenantAfter of $maxSlots custom package slots used."
+    } else {
+        "The tenant moves from $tenantBefore to $tenantAfter of $maxSlots custom package slots used."
+    }
+
     $paragraphs = @()
-    $paragraphs += "The proposed refit updates $($transition.requestedLocalPackageCount) local classifier bundle(s) into $($transition.targetPackageUpdateCount) existing tenant rule package(s). It does not create or delete any packages, so the tenant remains at $tenantAfter of $maxSlots custom package slots used. $classifierFitSentence"
+    $paragraphs += "The proposed refit applies $($transition.requestedLocalPackageCount) local classifier bundle(s) as $applyShape. It does not delete packages. $slotSentence $classifierFitSentence"
 
     $mergeRequiredCount = @($Payload.packageClassifications | Where-Object { $_.state -eq "MergeRequired" }).Count
     $emptySlotCount = @($Payload.packageClassifications | Where-Object { $_.state -eq "ReusableEmptySlot" }).Count
@@ -2731,6 +2890,8 @@ function Convert-ClassifierRefitPlanForJson {
         }
         [ordered]@{
             localPackageKey = $_.LocalPackageKey
+            segmentIndex = $_.SegmentIndex
+            entityLevelSplit = [bool]$_.EntityLevelSplit
             state = $state
             recommendation = $_.Recommendation
             readyToApply = [bool]$_.ReadyToUpload
@@ -2792,6 +2953,104 @@ function Convert-ClassifierRefitPlanForJson {
         }
     })
 
+    $referenceEvidence = @()
+    $entityLookup = @{}
+    foreach ($existing in @($Plan.CapacityPlan.ExistingPackages)) {
+        foreach ($entity in @($existing.Info.Entities)) {
+            if (-not $entity.Id) { continue }
+            $entityLookup[$entity.Id.ToString().ToLowerInvariant()] = [ordered]@{
+                classifierId = $entity.Id.ToString()
+                classifierName = $entity.Name
+                packageName = $existing.Name
+                rulePackId = $existing.RulePackId
+            }
+        }
+    }
+    $deferredById = @{}
+    foreach ($classifier in @($deferredClassifiers)) {
+        if ($classifier.classifierId) { $deferredById[$classifier.classifierId.ToString().ToLowerInvariant()] = $true }
+    }
+    $preservedById = @{}
+    foreach ($assignment in @($assignments)) {
+        foreach ($id in @($assignment.targetReferencedEntityIds)) {
+            if ($id) { $preservedById[$id.ToString().ToLowerInvariant()] = $true }
+        }
+    }
+    foreach ($ref in @($Plan.RuleReferences)) {
+        foreach ($id in @($ref.MatchedClassifierIds)) {
+            if (-not $id) { continue }
+            $idKey = $id.ToString().ToLowerInvariant()
+            $entity = if ($entityLookup.ContainsKey($idKey)) { $entityLookup[$idKey] } else { [ordered]@{ classifierId = $id; classifierName = $null; packageName = $null; rulePackId = $null } }
+            $referenceState = if ($deferredById.ContainsKey($idKey)) {
+                "deferred"
+            } elseif ($preservedById.ContainsKey($idKey)) {
+                "preserved"
+            } else {
+                "referenced"
+            }
+            foreach ($policyName in @($ref.PolicyNames)) {
+                $referenceEvidence += [ordered]@{
+                    classifierId = $entity.classifierId
+                    classifierName = $entity.classifierName
+                    packageName = $entity.packageName
+                    rulePackId = $entity.rulePackId
+                    dlpRule = $ref.RuleName
+                    policy = $policyName
+                    referenceState = $referenceState
+                }
+            }
+        }
+    }
+
+    $customerContentPreserved = [ordered]@{
+        packages = @($Plan.CapacityPlan.ExistingPackages | Where-Object {
+            $rp = $_.RulePackId
+            $classification = @($packageClassifications | Where-Object { $_.rulePackId -and $rp -and $_.rulePackId.ToString().Equals($rp.ToString(), [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+            $classification -and ($classification.state -in @("ProtectedCustomerPackage", "MergeRequired"))
+        } | ForEach-Object {
+            $existingPackage = $_
+            $existingRulePackId = $existingPackage.RulePackId
+            $classification = @($packageClassifications | Where-Object {
+                $_.rulePackId -and $existingRulePackId -and $_.rulePackId.ToString().Equals($existingRulePackId.ToString(), [System.StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1)
+            [ordered]@{
+                name = $existingPackage.Name
+                rulePackId = $existingPackage.RulePackId
+                state = if ($classification) { $classification.state } else { $null }
+                entityCount = $existingPackage.EntityCount
+                referencedRuleCount = @($existingPackage.ReferencedRules).Count
+                referencedRules = @($existingPackage.ReferencedRules | ForEach-Object { [ordered]@{ ruleName = $_.RuleName; policyName = $_.PolicyName } })
+            }
+        })
+        preservedEntityIds = @($preservedById.Keys | Sort-Object)
+        dlpRuleReferenceEvidence = @($referenceEvidence | Where-Object { $_.referenceState -eq "preserved" })
+    }
+
+    $readyAssignments = @($assignments | Where-Object { $_.readyToApply })
+    $newPackageCreateCount = @($readyAssignments | Where-Object { Test-RefitAssignmentCreatesNewPackage -Assignment $_ }).Count
+    $targetPackageUpdateCount = $readyAssignments.Count - $newPackageCreateCount
+    $tenantCustomPackageCountAfterApply = $Plan.CapacityPlan.CustomSlotsUsed + $newPackageCreateCount
+    $packageTransitionSummary = if ($newPackageCreateCount -gt 0) {
+        "$(@($SelectedKeys).Count) local package bundle(s) -> $targetPackageUpdateCount existing tenant package update(s) and $newPackageCreateCount approved new package create(s); tenant custom package count becomes $tenantCustomPackageCountAfterApply/10; $(@($Plan.DroppedLocalPackages).Count) package(s) deferred."
+    } else {
+        "$(@($SelectedKeys).Count) local package bundle(s) -> $targetPackageUpdateCount existing tenant package update(s); tenant custom package count remains $($Plan.CapacityPlan.CustomSlotsUsed)/10; $(@($Plan.DroppedLocalPackages).Count) package(s) deferred."
+    }
+
+    $compl8ContentApplied = [ordered]@{
+        readyAssignments = @($assignments | Where-Object { $_.readyToApply } | ForEach-Object {
+            [ordered]@{
+                localPackageKey = $_.localPackageKey
+                operation = if (Test-RefitAssignmentCreatesNewPackage -Assignment $_) { "CreateInFreeSlot" } else { "UpdateExisting" }
+                targetPackage = $_.targetName
+                targetRulePackId = $_.targetRulePackId
+                draftPath = if ($_.draft) { $_.draft.path } else { $null }
+                classifierCount = $_.localEntityCount
+            }
+        })
+        classifierMovements = @($classifierMovements)
+        deferredClassifiers = @($deferredClassifiers)
+    }
+
     $result = [ordered]@{
         schemaVersion = "dlpdeploy.classifier-refit-plan/v1"
         generatedUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -2806,13 +3065,15 @@ function Convert-ClassifierRefitPlanForJson {
             requestedLocalPackageCount = @($SelectedKeys).Count
             fittedLocalPackageCount = @($Plan.FittedLocalPackageKeys).Count
             droppedLocalPackageCount = @($Plan.DroppedLocalPackages).Count
-            targetPackageUpdateCount = @($assignments | Where-Object { $_.readyToApply }).Count
+            targetPackageUpdateCount = $targetPackageUpdateCount
+            newPackageCreateCount = $newPackageCreateCount
             tenantCustomPackageCountBefore = $Plan.CapacityPlan.CustomSlotsUsed
-            tenantCustomPackageCountAfterApply = $Plan.CapacityPlan.CustomSlotsUsed
+            tenantCustomPackageCountAfterApply = $tenantCustomPackageCountAfterApply
             sourceClassifierCount = @($classifierMovements).Count + @($deferredClassifiers).Count
             movedOrRefreshedClassifierCount = @($classifierMovements).Count
             deferredClassifierCount = @($deferredClassifiers).Count
-            summary = "$(@($SelectedKeys).Count) local package bundle(s) -> $(@($assignments | Where-Object { $_.readyToApply }).Count) existing tenant package update(s); tenant custom package count remains $($Plan.CapacityPlan.CustomSlotsUsed)/10; $(@($Plan.DroppedLocalPackages).Count) package(s) deferred."
+            summary = $packageTransitionSummary
+            entityLevelSplitAssignmentCount = @($assignments | Where-Object { $_.entityLevelSplit }).Count
         }
         limits = [ordered]@{
             maxTenantRulePackages = 10
@@ -2823,7 +3084,8 @@ function Convert-ClassifierRefitPlanForJson {
         safeguards = [ordered]@{
             refitFirst = $true
             deletePackages = $false
-            applyUpdatesExistingPackagesOnly = $true
+            applyUpdatesExistingPackagesOnly = ($newPackageCreateCount -eq 0)
+            allowPlanApprovedNewSlotCreation = $true
             preserveReferencedEntityIds = $true
             requireExplicitApprovalToApply = $true
         }
@@ -2846,13 +3108,18 @@ function Convert-ClassifierRefitPlanForJson {
             iterations = @($Plan.FitIterations)
         }
         packageClassifications = @($packageClassifications)
+        customerContentPreserved = $customerContentPreserved
+        compl8ContentApplied = $compl8ContentApplied
+        dlpRuleReferenceEvidence = @($referenceEvidence)
         assignments = @($assignments)
         classifierMovementGroups = @($classifierMovementGroups)
         classifierMovements = @($classifierMovements)
         deferredClassifiers = @($deferredClassifiers)
         plannedDrops = @($plannedDrops)
         apply = [ordered]@{
-            readyAssignmentCount = @($assignments | Where-Object { $_.readyToApply }).Count
+            readyAssignmentCount = $readyAssignments.Count
+            readyUpdateCount = $targetPackageUpdateCount
+            readyCreateCount = $newPackageCreateCount
             blockedAssignmentCount = @($assignments | Where-Object { -not $_.readyToApply }).Count
             command = ".\scripts\Deploy-Classifiers.ps1 -Action ApplyRefitPlan -RefitPlanPath <this-file> -Connect -ApproveRefitPlan"
         }
@@ -2906,20 +3173,26 @@ function Write-ClassifierRefitPlanArtifacts {
 
     $payload = Convert-ClassifierRefitPlanForJson -Plan $Plan -SelectedKeys $SelectedKeys
     $jsonPath = Join-Path $Plan.OutputDir "refit-plan.json"
+    $hashPath = Join-Path $Plan.OutputDir "refit-plan.sha256"
     $mdPath = Join-Path $Plan.OutputDir "refit-summary.md"
     $payload | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    $planSha256 = Get-FileSha256 -Path $jsonPath
+    "$planSha256  refit-plan.json" | Set-Content -LiteralPath $hashPath -Encoding ASCII
 
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# Classifier Refit Plan")
     $lines.Add("")
     $lines.Add("- Generated UTC: $($payload.generatedUtc)")
+    $lines.Add("- Plan SHA256: $planSha256")
     $lines.Add("- Tier: $($payload.tier)")
     $lines.Add("- Existing custom package slots: $($payload.capacity.customSlotsUsed)/10")
     $lines.Add("- Requested local packages: $(@($payload.iterativeFit.requestedLocalPackageKeys).Count)")
     $lines.Add("- Fitted local packages: $(@($payload.iterativeFit.fittedLocalPackageKeys).Count)")
     $lines.Add("- Dropped local packages: $(@($payload.iterativeFit.droppedLocalPackages).Count)")
-    $lines.Add("- Ready updates: $($payload.apply.readyAssignmentCount)")
+    $lines.Add("- Ready existing-slot updates: $($payload.apply.readyUpdateCount)")
+    $lines.Add("- Ready approved new package creates: $($payload.apply.readyCreateCount)")
     $lines.Add("- Blocked/drop-required: $($payload.apply.blockedAssignmentCount)")
+    $lines.Add("- Entity-level split assignments: $($payload.packageTransition.entityLevelSplitAssignmentCount)")
     $lines.Add("- Package transition: $($payload.packageTransition.summary)")
     $lines.Add("- Classifier transition: $($payload.packageTransition.movedOrRefreshedClassifierCount) moved/refreshed; $($payload.packageTransition.deferredClassifierCount) deferred")
     $lines.Add("")
@@ -2928,6 +3201,41 @@ function Write-ClassifierRefitPlanArtifacts {
     foreach ($paragraph in @($payload.userSummary.paragraphs)) {
         $lines.Add($paragraph)
         $lines.Add("")
+    }
+    $lines.Add("## Customer Content Preserved")
+    $lines.Add("")
+    if (@($payload.customerContentPreserved.packages).Count -eq 0) {
+        $lines.Add("No protected customer packages were identified in this refit plan.")
+    } else {
+        $lines.Add("| Package | RulePack ID | State | Entities | Referencing DLP Rules |")
+        $lines.Add("|---|---|---|---:|---:|")
+        foreach ($pkg in @($payload.customerContentPreserved.packages)) {
+            $lines.Add("| $(ConvertTo-MarkdownTableCell $pkg.name) | $(ConvertTo-MarkdownTableCell $pkg.rulePackId) | $(ConvertTo-MarkdownTableCell $pkg.state) | $($pkg.entityCount) | $($pkg.referencedRuleCount) |")
+        }
+    }
+    $lines.Add("")
+    $lines.Add("## Compl8 Content Applied")
+    $lines.Add("")
+    if (@($payload.compl8ContentApplied.readyAssignments).Count -eq 0) {
+        $lines.Add("No Compl8 package assignments are ready to apply.")
+    } else {
+        $lines.Add("| Operation | Local Package | Target Package | Target RulePack ID | Draft | Classifiers |")
+        $lines.Add("|---|---|---|---|---|---:|")
+        foreach ($assignment in @($payload.compl8ContentApplied.readyAssignments)) {
+            $lines.Add("| $(ConvertTo-MarkdownTableCell $assignment.operation) | $(ConvertTo-MarkdownTableCell $assignment.localPackageKey) | $(ConvertTo-MarkdownTableCell $assignment.targetPackage) | $(ConvertTo-MarkdownTableCell $assignment.targetRulePackId) | $(ConvertTo-MarkdownTableCell $assignment.draftPath) | $($assignment.classifierCount) |")
+        }
+    }
+    $lines.Add("")
+    $lines.Add("## DLP Rule Reference Evidence")
+    $lines.Add("")
+    if (@($payload.dlpRuleReferenceEvidence).Count -eq 0) {
+        $lines.Add("No DLP rule references to planned/preserved classifier IDs were detected.")
+    } else {
+        $lines.Add("| Classifier ID | Classifier | Package | DLP Rule | Policy | Reference State |")
+        $lines.Add("|---|---|---|---|---|---|")
+        foreach ($ref in @($payload.dlpRuleReferenceEvidence | Sort-Object classifierName, dlpRule, policy)) {
+            $lines.Add("| $(ConvertTo-MarkdownTableCell $ref.classifierId) | $(ConvertTo-MarkdownTableCell $ref.classifierName) | $(ConvertTo-MarkdownTableCell $ref.packageName) | $(ConvertTo-MarkdownTableCell $ref.dlpRule) | $(ConvertTo-MarkdownTableCell $ref.policy) | $(ConvertTo-MarkdownTableCell $ref.referenceState) |")
+        }
     }
     if (@($payload.userSummary.packageMovements).Count -gt 0) {
         $lines.Add("")
@@ -2955,9 +3263,9 @@ function Write-ClassifierRefitPlanArtifacts {
     $lines.Add("")
     $lines.Add("## Package Transition")
     $lines.Add("")
-    $lines.Add("| Requested Local Packages | Target Package Updates | Deferred Packages | Existing Tenant Slots |")
-    $lines.Add("|---:|---:|---:|---:|")
-    $lines.Add("| $($payload.packageTransition.requestedLocalPackageCount) | $($payload.packageTransition.targetPackageUpdateCount) | $($payload.packageTransition.droppedLocalPackageCount) | $($payload.capacity.customSlotsUsed)/10 |")
+    $lines.Add("| Requested Local Packages | Target Package Updates | New Package Creates | Deferred Packages | Tenant Slots After Apply |")
+    $lines.Add("|---:|---:|---:|---:|---:|")
+    $lines.Add("| $($payload.packageTransition.requestedLocalPackageCount) | $($payload.packageTransition.targetPackageUpdateCount) | $($payload.packageTransition.newPackageCreateCount) | $($payload.packageTransition.droppedLocalPackageCount) | $($payload.packageTransition.tenantCustomPackageCountAfterApply)/10 |")
     $lines.Add("")
     $lines.Add("## Package Classifications")
     foreach ($pkg in @($payload.packageClassifications)) {
@@ -3037,6 +3345,8 @@ function Write-ClassifierRefitPlanArtifacts {
 
     return [pscustomobject]@{
         JsonPath = $jsonPath
+        HashPath = $hashPath
+        PlanSha256 = $planSha256
         MarkdownPath = $mdPath
         Payload = $payload
     }
@@ -3232,6 +3542,8 @@ function Assert-ClassifierPackageRemovalAllowed {
         return $false
     }
 
+    Assert-CurrentRefitPlanForPackageRemoval -Packages $packagesToCheck -OperationName $OperationName | Out-Null
+
     $guard = Test-DlpRulePackageRemovalReferenceGuard -Packages $packagesToCheck -OperationName $OperationName
     if ($script:DeploymentManifest) {
         Add-DeploymentManifestEvent -Manifest $script:DeploymentManifest -Type "Guard" -Data @{
@@ -3258,6 +3570,79 @@ function Assert-ClassifierPackageRemovalAllowed {
     }
 
     return $true
+}
+
+function Assert-CurrentRefitPlanForPackageRemoval {
+    param(
+        [Parameter(Mandatory)][object[]]$Packages,
+        [Parameter(Mandatory)][string]$OperationName,
+        [int]$MaxPlanAgeHours = 24
+    )
+
+    if ($WhatIfPreference) { return $null }
+    if ([string]::IsNullOrWhiteSpace($RefitPlanPath) -or -not $ApproveRefitPlan) {
+        throw "$OperationName requires a current approved refit plan. Run -Action RefitPlan, then rerun with -RefitPlanPath <refit-plan.json> -ApproveRefitPlan."
+    }
+
+    $planContext = Import-ClassifierRefitPlan
+    $generatedUtc = $null
+    try {
+        $generatedUtc = [datetimeoffset]::Parse($planContext.Plan.generatedUtc).UtcDateTime
+    } catch {
+        throw "Refit plan '$($planContext.Path)' has an invalid generatedUtc value."
+    }
+    $ageHours = ((Get-Date).ToUniversalTime() - $generatedUtc).TotalHours
+    if ($ageHours -gt $MaxPlanAgeHours) {
+        throw "Refit plan '$($planContext.Path)' is $([math]::Round($ageHours, 1)) hours old. Regenerate it before deleting classifier packages."
+    }
+
+    $planPackagesByRulePack = @{}
+    $planPackagesByName = @{}
+    foreach ($pkg in @($planContext.Plan.packageClassifications)) {
+        if ($pkg.rulePackId) { $planPackagesByRulePack[$pkg.rulePackId.ToString().ToLowerInvariant()] = $pkg }
+        if ($pkg.name) { $planPackagesByName[$pkg.name.ToString().ToLowerInvariant()] = $pkg }
+    }
+
+    $allowedStates = @("RetireCandidate", "ReusableEmptySlot", "ReusableUnreferencedSlot")
+    $packageInfo = @(Get-DlpRulePackageEntityIds -Packages $Packages)
+    $checked = @()
+    foreach ($info in @($packageInfo)) {
+        $classification = $null
+        if ($info.RulePackId -and $planPackagesByRulePack.ContainsKey($info.RulePackId.ToString().ToLowerInvariant())) {
+            $classification = $planPackagesByRulePack[$info.RulePackId.ToString().ToLowerInvariant()]
+        } elseif ($info.Name -and $planPackagesByName.ContainsKey($info.Name.ToString().ToLowerInvariant())) {
+            $classification = $planPackagesByName[$info.Name.ToString().ToLowerInvariant()]
+        } elseif ($info.Identity -and $planPackagesByName.ContainsKey($info.Identity.ToString().ToLowerInvariant())) {
+            $classification = $planPackagesByName[$info.Identity.ToString().ToLowerInvariant()]
+        }
+
+        if (-not $classification) {
+            throw "$OperationName blocked: package '$($info.Identity)' was not found in the approved refit plan."
+        }
+        if ($classification.state -notin $allowedStates) {
+            throw "$OperationName blocked: package '$($info.Identity)' is classified as '$($classification.state)' in the approved refit plan, not an approved retire/free-slot candidate."
+        }
+
+        $checked += [ordered]@{
+            identity = $info.Identity
+            name = $info.Name
+            rulePackId = $info.RulePackId
+            state = $classification.state
+        }
+    }
+
+    if ($script:DeploymentManifest) {
+        Add-DeploymentManifestEvent -Manifest $script:DeploymentManifest -Type "Guard" -Data @{
+            operation = "$OperationName approved-plan"
+            planPath = ConvertTo-ProjectRelativePath -Path $planContext.Path
+            planSha256 = $planContext.PlanSha256
+            planAgeHours = [math]::Round($ageHours, 2)
+            maxPlanAgeHours = $MaxPlanAgeHours
+            packages = @($checked)
+        }
+    }
+
+    return $planContext
 }
 
 function Get-ClassifierManifestTargets {
@@ -3536,12 +3921,14 @@ function Assert-DirectUploadRefitGate {
     }
 
     Write-Host "  Approved refit plan: $(ConvertTo-ProjectRelativePath -Path $planContext.Path)" -ForegroundColor Green
+    Write-Host "  Plan SHA256:          $($planContext.PlanSha256)" -ForegroundColor Gray
     if ($script:DeploymentManifest) {
         Add-DeploymentManifestEvent -Manifest $script:DeploymentManifest -Type "Guard" -Data @{
             operation = "DirectUploadRefitGate"
             status = "ApprovedPlan"
             customPackageCount = $customPackages.Count
             refitPlanPath = ConvertTo-ProjectRelativePath -Path $planContext.Path
+            refitPlanSha256 = $planContext.PlanSha256
             selectedPackageCount = @($Selected).Count
         }
     }
@@ -3618,6 +4005,12 @@ function Get-ByteArraySha256 {
     } finally {
         $sha256.Dispose()
     }
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
 function New-CanaryRulePackagePayload {
@@ -3883,6 +4276,41 @@ function Wait-CanarySensitiveInformationTypeState {
     return $false
 }
 
+function Assert-RulePackageUploadDictionaryReferences {
+    param(
+        [Parameter(Mandatory)][string]$PackageName,
+        [Parameter(Mandatory)][string]$ResolvedXmlText
+    )
+
+    if ($WhatIfPreference) { return }
+
+    Assert-PackageDictionaryReferencesExist -PackageName $PackageName -ResolvedXmlText $ResolvedXmlText -Inventory @(Get-DlpDictionaryInventory)
+}
+
+function Invoke-RulePackageUploadCommand {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("Create", "Update")]
+        [string]$Action,
+
+        [Parameter(Mandatory)][string]$PackageName,
+        [Parameter(Mandatory)][byte[]]$FileBytes,
+        [string]$OperationName
+    )
+
+    if (-not $OperationName) {
+        $OperationName = "$Action $PackageName"
+    }
+
+    Invoke-WithRetry -OperationName $OperationName -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
+        if ($Action -eq "Update") {
+            Set-DlpSensitiveInformationTypeRulePackage -FileData $FileBytes -Confirm:$false -ErrorAction Stop
+        } else {
+            New-DlpSensitiveInformationTypeRulePackage -FileData $FileBytes -Confirm:$false -ErrorAction Stop
+        }
+    }
+}
+
 function Test-UploadedSensitiveInformationTypes {
     <#
     .SYNOPSIS
@@ -4028,9 +4456,7 @@ function Invoke-ClassifierUploadPlan {
             $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
 
             # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
-            if (-not $WhatIfPreference) {
-                Assert-PackageDictionaryReferencesExist -PackageName $name -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
-            }
+            Assert-RulePackageUploadDictionaryReferences -PackageName $name -ResolvedXmlText $content
 
             if ($plan.BumpVersion) {
                 $bumpStr = Format-VersionString -Version $plan.BumpVersion
@@ -4043,14 +4469,10 @@ function Invoke-ClassifierUploadPlan {
 
             if ($PSCmdlet.ShouldProcess($name, "$(if ($isUpdate) { 'Update' } else { 'Create' }) SIT Rule Package")) {
                 if ($isUpdate) {
-                    Invoke-WithRetry -OperationName "Update $name" -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
-                        Set-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop
-                    }
+                    Invoke-RulePackageUploadCommand -Action "Update" -PackageName $name -FileBytes $fileBytes
                     Write-Host "    Updated successfully" -ForegroundColor Green
                 } else {
-                    Invoke-WithRetry -OperationName "Create $name" -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
-                        New-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop
-                    }
+                    Invoke-RulePackageUploadCommand -Action "Create" -PackageName $name -FileBytes $fileBytes
                     Write-Host "    Created successfully" -ForegroundColor Green
                 }
                 $successCount++
@@ -4089,6 +4511,14 @@ function Invoke-ClassifierPackageRemoval {
     if (-not $DeployedLookup) {
         $DeployedLookup = Get-DeployedPackageLookup
     }
+
+    $packagesToRemove = @()
+    foreach ($name in @($Selected | Sort-Object)) {
+        if (-not $Packages.ContainsKey($name)) { continue }
+        $match = Find-DeployedMatch -RegistryPackage $Packages[$name] -DeployedLookup $DeployedLookup
+        if ($match) { $packagesToRemove += $match }
+    }
+    Assert-ClassifierPackageRemovalAllowed -Packages $packagesToRemove -OperationName "Deploy-Classifiers package removal final" | Out-Null
 
     $successCount = 0
     $failCount = 0
@@ -4833,9 +5263,7 @@ function Invoke-Upload {
             $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
 
             # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
-            if (-not $WhatIfPreference) {
-                Assert-PackageDictionaryReferencesExist -PackageName $name -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
-            }
+            Assert-RulePackageUploadDictionaryReferences -PackageName $name -ResolvedXmlText $content
 
             # Auto-bump version if needed
             if ($plan.BumpVersion) {
@@ -4849,14 +5277,10 @@ function Invoke-Upload {
 
             if ($PSCmdlet.ShouldProcess($name, "$(if ($isUpdate) { 'Update' } else { 'Create' }) SIT Rule Package")) {
                 if ($isUpdate) {
-                    Invoke-WithRetry -OperationName "Update $name" -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
-                        Set-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop
-                    }
+                    Invoke-RulePackageUploadCommand -Action "Update" -PackageName $name -FileBytes $fileBytes
                     Write-Host "    Updated successfully" -ForegroundColor Green
                 } else {
-                    Invoke-WithRetry -OperationName "Create $name" -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
-                        New-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop
-                    }
+                    Invoke-RulePackageUploadCommand -Action "Create" -PackageName $name -FileBytes $fileBytes
                     Write-Host "    Created successfully" -ForegroundColor Green
                 }
                 $successCount++
@@ -5145,6 +5569,7 @@ function Invoke-RefitPlan {
 
     Write-Host "`n--- Refit Artifacts ---" -ForegroundColor White
     Write-Host "  Refit plan:     $(ConvertTo-ProjectRelativePath -Path $refitArtifacts.JsonPath)" -ForegroundColor Gray
+    Write-Host "  Plan SHA256:    $($refitArtifacts.PlanSha256)" -ForegroundColor Gray
     Write-Host "  Refit summary:  $(ConvertTo-ProjectRelativePath -Path $refitArtifacts.MarkdownPath)" -ForegroundColor Gray
     Write-Host "  Packager input: $(ConvertTo-ProjectRelativePath -Path $packagerInput.Path)" -ForegroundColor Gray
     Write-ClassifierRefitUserSummary -Payload $refitArtifacts.Payload
@@ -5155,6 +5580,7 @@ function Invoke-RefitPlan {
             packagerInput = ConvertTo-ProjectRelativePath -Path $packagerInput.Path
         }
         $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $refitArtifacts.JsonPath -Role "refit-plan" -ProjectRoot $ProjectRoot
+        $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $refitArtifacts.HashPath -Role "refit-plan-hash" -ProjectRoot $ProjectRoot
         $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $refitArtifacts.MarkdownPath -Role "refit-summary" -ProjectRoot $ProjectRoot
         $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $packagerInput.Path -Role "packager-input" -ProjectRoot $ProjectRoot
         foreach ($snapshotArtifact in @($packagerInput.SnapshotArtifacts)) {
@@ -5169,6 +5595,7 @@ function Invoke-RefitPlan {
             operation = "RefitPlan"
             outputDir = ConvertTo-ProjectRelativePath -Path $outputDir
             refitPlan = ConvertTo-ProjectRelativePath -Path $refitArtifacts.JsonPath
+            refitPlanSha256 = $refitArtifacts.PlanSha256
             readyDrafts = @($plan.Assignments | Where-Object { $_.ReadyToUpload }).Count
             blockedDrafts = @($plan.Assignments | Where-Object { -not $_.ReadyToUpload }).Count
         }
@@ -5217,9 +5644,31 @@ function Import-ClassifierRefitPlan {
         throw "Unsupported refit plan schema: $($plan.schemaVersion)"
     }
 
+    $planSha256 = Get-FileSha256 -Path $resolvedPath
+    $planDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($resolvedPath))
+    $hashPath = Join-Path $planDir "refit-plan.sha256"
+    if (-not (Test-Path -LiteralPath $hashPath)) {
+        $alternateHashPath = "$resolvedPath.sha256"
+        if (Test-Path -LiteralPath $alternateHashPath) {
+            $hashPath = $alternateHashPath
+        } else {
+            throw "Refit plan hash file not found. Regenerate the plan so ApplyRefitPlan can verify the exact approved file."
+        }
+    }
+    $expectedHashLine = (Get-Content -LiteralPath $hashPath -Raw).Trim()
+    $expectedHash = (($expectedHashLine -split '\s+')[0]).ToLowerInvariant()
+    if ($expectedHash -notmatch '^[0-9a-f]{64}$') {
+        throw "Refit plan hash file is invalid: $hashPath"
+    }
+    if ($expectedHash -ne $planSha256) {
+        throw "Refit plan hash mismatch. Expected $expectedHash from '$hashPath' but current file is $planSha256."
+    }
+
     return [pscustomobject]@{
         Path = [System.IO.Path]::GetFullPath($resolvedPath)
-        Dir = Split-Path -Parent ([System.IO.Path]::GetFullPath($resolvedPath))
+        Dir = $planDir
+        HashPath = [System.IO.Path]::GetFullPath($hashPath)
+        PlanSha256 = $planSha256
         Plan = $plan
     }
 }
@@ -5246,6 +5695,17 @@ function Confirm-ApplyRefitPlan {
     Write-Host "Plan: $($PlanContext.Path)" -ForegroundColor Yellow
     $actual = Read-Host "Type APPLY REFIT PLAN to continue"
     return ($actual -eq "APPLY REFIT PLAN")
+}
+
+function Test-RefitAssignmentCreatesNewPackage {
+    param([Parameter(Mandatory)][object]$Assignment)
+
+    if ($Assignment.PSObject.Properties["operation"] -and $Assignment.operation -eq "CreateInFreeSlot") { return $true }
+    if ($Assignment.PSObject.Properties["approvedNewSlot"] -and [bool]$Assignment.approvedNewSlot) { return $true }
+    if ($Assignment.PSObject.Properties["createNewPackage"] -and [bool]$Assignment.createNewPackage) { return $true }
+    if ($Assignment.state -in @("CreateInFreeSlot", "NewFreeSlot")) { return $true }
+    if ($Assignment.recommendation -in @("CreateInFreeSlot", "NewFreeSlot")) { return $true }
+    return $false
 }
 
 function Test-RefitAppliedSensitiveInformationTypes {
@@ -5327,12 +5787,24 @@ function Invoke-ApplyRefitPlan {
     }
 
     Write-Host "  Plan:              $(ConvertTo-ProjectRelativePath -Path $planContext.Path)" -ForegroundColor Gray
+    Write-Host "  Plan SHA256:       $($planContext.PlanSha256)" -ForegroundColor Gray
     Write-Host "  Ready assignments: $($readyAssignments.Count)" -ForegroundColor Gray
     Write-Host "  Blocked entries:   $($blockedAssignments.Count)" -ForegroundColor $(if ($blockedAssignments.Count -gt 0) { "Yellow" } else { "Green" })
 
+    $createAssignments = @($readyAssignments | Where-Object { Test-RefitAssignmentCreatesNewPackage -Assignment $_ })
+    if ($createAssignments.Count -gt 0) {
+        $currentPackages = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction Stop | Where-Object { $_.Publisher -notin @("Microsoft", "Microsoft Corporation") })
+        $freeSlots = 10 - $currentPackages.Count
+        if ($createAssignments.Count -gt $freeSlots) {
+            throw "Refit plan wants to create $($createAssignments.Count) package(s), but only $freeSlots custom package slot(s) are currently free."
+        }
+        Write-Host "  Approved new slot creates: $($createAssignments.Count) (free slots now: $freeSlots)" -ForegroundColor Yellow
+    }
+
     foreach ($assignment in @($readyAssignments)) {
-        if ([string]::IsNullOrWhiteSpace($assignment.targetRulePackId)) {
-            throw "Assignment '$($assignment.localPackageKey)' has no targetRulePackId. ApplyRefitPlan only updates existing package slots."
+        $createsNewPackage = Test-RefitAssignmentCreatesNewPackage -Assignment $assignment
+        if ([string]::IsNullOrWhiteSpace($assignment.targetRulePackId) -and -not $createsNewPackage) {
+            throw "Assignment '$($assignment.localPackageKey)' has no targetRulePackId. ApplyRefitPlan requires an existing target unless the assignment is explicitly approved to create a new free-slot package."
         }
         if (-not $assignment.draft -or [string]::IsNullOrWhiteSpace($assignment.draft.path)) {
             throw "Assignment '$($assignment.localPackageKey)' has no draft path."
@@ -5342,9 +5814,11 @@ function Invoke-ApplyRefitPlan {
         if (-not $validation.Valid) {
             throw "Refit draft '$draftPath' is invalid: $($validation.Errors -join '; ')"
         }
-        $target = Find-DeployedPackageByRulePackId -RulePackId $assignment.targetRulePackId
-        if (-not $target) {
-            throw "Target package RulePackId '$($assignment.targetRulePackId)' for '$($assignment.localPackageKey)' was not found in tenant."
+        if (-not $createsNewPackage) {
+            $target = Find-DeployedPackageByRulePackId -RulePackId $assignment.targetRulePackId
+            if (-not $target) {
+                throw "Target package RulePackId '$($assignment.targetRulePackId)' for '$($assignment.localPackageKey)' was not found in tenant."
+            }
         }
     }
 
@@ -5358,19 +5832,18 @@ function Invoke-ApplyRefitPlan {
     $failCount = 0
     $appliedDrafts = @()
     foreach ($assignment in @($readyAssignments)) {
+        $createsNewPackage = Test-RefitAssignmentCreatesNewPackage -Assignment $assignment
         $draftPath = Resolve-RefitPlanArtifactPath -Path $assignment.draft.path -PlanDir $planContext.Dir
-        $target = Find-DeployedPackageByRulePackId -RulePackId $assignment.targetRulePackId
-        $deployedInfo = Get-DeployedPackageInfo -DeployedPackage $target
+        $target = if ($createsNewPackage) { $null } else { Find-DeployedPackageByRulePackId -RulePackId $assignment.targetRulePackId }
+        $deployedInfo = if ($target) { Get-DeployedPackageInfo -DeployedPackage $target } else { $null }
 
         $content = Resolve-RulePackageUploadContent -FilePath $draftPath -DictionaryGuidMap $dictionaryGuidMap
 
         # Pre-upload guard: never apply a refit that references a non-existent dictionary.
-        if (-not $WhatIfPreference) {
-            Assert-PackageDictionaryReferencesExist -PackageName $assignment.localPackageKey -ResolvedXmlText $content -Inventory @(Get-DlpDictionaryInventory)
-        }
+        Assert-RulePackageUploadDictionaryReferences -PackageName $assignment.localPackageKey -ResolvedXmlText $content
 
         $draftInfo = Get-LocalPackageInfo -FilePath $draftPath
-        if ($draftInfo -and $draftInfo.Version -and $deployedInfo.Version) {
+        if ($draftInfo -and $draftInfo.Version -and $deployedInfo -and $deployedInfo.Version) {
             $bumpVersion = Get-BumpedVersion -LocalVersion $draftInfo.Version -DeployedVersion $deployedInfo.Version
             if ($bumpVersion) {
                 Write-Host "  $($assignment.localPackageKey) refit version auto-bumped to $(Format-VersionString -Version $bumpVersion)" -ForegroundColor Yellow
@@ -5379,19 +5852,23 @@ function Invoke-ApplyRefitPlan {
         }
 
         $fileBytes = ConvertTo-PurviewUtf16Bytes -Content $content
-        Write-Host "`nUpdating target package $($assignment.targetRulePackId) from $($assignment.localPackageKey)" -ForegroundColor Cyan
+        $operationLabel = if ($createsNewPackage) { "Creating approved new free-slot package" } else { "Updating target package $($assignment.targetRulePackId)" }
+        Write-Host "`n$operationLabel from $($assignment.localPackageKey)" -ForegroundColor Cyan
         Write-Host "  Draft: $(ConvertTo-ProjectRelativePath -Path $draftPath)" -ForegroundColor Gray
         Write-Host "  Payload: $([math]::Round($fileBytes.Length / 1KB, 1))KB" -ForegroundColor Gray
 
         try {
-            if ($PSCmdlet.ShouldProcess($assignment.targetRulePackId, "Apply classifier refit draft")) {
-                Backup-DeployedPackage -PackageName ($assignment.localPackageKey -replace '[^a-zA-Z0-9\-]', '_') -DeployedInfo $deployedInfo | Out-Null
-                Invoke-WithRetry -OperationName "ApplyRefit $($assignment.localPackageKey)" -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -ScriptBlock {
-                    Set-DlpSensitiveInformationTypeRulePackage -FileData $fileBytes -Confirm:$false -ErrorAction Stop
+            $shouldProcessTarget = if ($createsNewPackage) { $assignment.localPackageKey } else { $assignment.targetRulePackId }
+            if ($PSCmdlet.ShouldProcess($shouldProcessTarget, "Apply classifier refit draft")) {
+                if ($createsNewPackage) {
+                    Invoke-RulePackageUploadCommand -Action "Create" -PackageName $assignment.localPackageKey -FileBytes $fileBytes -OperationName "ApplyRefitCreate $($assignment.localPackageKey)"
+                } else {
+                    Backup-DeployedPackage -PackageName ($assignment.localPackageKey -replace '[^a-zA-Z0-9\-]', '_') -DeployedInfo $deployedInfo | Out-Null
+                    Invoke-RulePackageUploadCommand -Action "Update" -PackageName $assignment.localPackageKey -FileBytes $fileBytes -OperationName "ApplyRefit $($assignment.localPackageKey)"
                 }
                 $successCount++
-                $appliedDrafts += [pscustomobject]@{ Path = $draftPath; LocalPackageKey = $assignment.localPackageKey; TargetRulePackId = $assignment.targetRulePackId }
-                Write-Host "  Updated." -ForegroundColor Green
+                $appliedDrafts += [pscustomobject]@{ Path = $draftPath; LocalPackageKey = $assignment.localPackageKey; TargetRulePackId = $assignment.targetRulePackId; CreatedNewPackage = $createsNewPackage }
+                Write-Host "  Applied." -ForegroundColor Green
             }
         } catch {
             $failCount++
@@ -5406,6 +5883,7 @@ function Invoke-ApplyRefitPlan {
             [ordered]@{
                 type = "RefitAssignment"
                 localPackageKey = $_.localPackageKey
+                operation = if (Test-RefitAssignmentCreatesNewPackage -Assignment $_) { "CreateInFreeSlot" } else { "UpdateExisting" }
                 targetRulePackId = $_.targetRulePackId
                 draftPath = $_.draft.path
             }
@@ -5413,9 +5891,12 @@ function Invoke-ApplyRefitPlan {
         Add-DeploymentManifestEvent -Manifest $script:DeploymentManifest -Type "Result" -Data @{
             operation = "ApplyRefitPlan"
             planPath = ConvertTo-ProjectRelativePath -Path $planContext.Path
+            planSha256 = $planContext.PlanSha256
+            planHashPath = ConvertTo-ProjectRelativePath -Path $planContext.HashPath
             succeeded = $successCount
             failed = $failCount
             blockedAssignments = $blockedAssignments.Count
+            createdPackages = @($appliedDrafts | Where-Object { $_.CreatedNewPackage }).Count
         }
     }
 
@@ -5508,6 +5989,9 @@ function Invoke-PrunePackages {
         Write-Host "Prune aborted. No packages deleted." -ForegroundColor Yellow
         return
     }
+
+    $packagesToRemove = @($selectedForDelete | ForEach-Object { $_.DeployedPackage } | Where-Object { $_ })
+    Assert-ClassifierPackageRemovalAllowed -Packages $packagesToRemove -OperationName "Deploy-Classifiers Prune final" | Out-Null
 
     $successCount = 0
     $failCount = 0
