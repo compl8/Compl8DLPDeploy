@@ -1074,7 +1074,14 @@ function Test-DlpRulePackageRemovalReferenceGuard {
 
     $packageEntityIndex = @(Get-DlpRulePackageEntityIds -Packages $Packages)
     $candidateIds = @($packageEntityIndex | ForEach-Object { $_.EntityIds } | Sort-Object -Unique)
-    $referenceIndex = Get-DlpClassifierRuleReferences -CandidateIds $candidateIds
+    # When no entity IDs could be extracted (e.g. every package failed to parse), there is
+    # nothing to scan for — skip the lookup so the mandatory parameter doesn't throw. The
+    # unparsed-package check below still fails the guard closed.
+    $referenceIndex = if ($candidateIds.Count -gt 0) {
+        Get-DlpClassifierRuleReferences -CandidateIds $candidateIds
+    } else {
+        [pscustomobject]@{ CandidateIdCount = 0; RulesScanned = 0; MatchingRuleCount = 0; References = @() }
+    }
     $referencedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($ref in @($referenceIndex.References)) {
         foreach ($id in @($ref.MatchedClassifierIds)) {

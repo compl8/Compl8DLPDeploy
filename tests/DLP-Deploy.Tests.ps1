@@ -466,3 +466,95 @@ Describe 'Test-DLPSessionMatch' {
         Test-DLPSessionMatch -Connection $script:conn -UPN 'admin@contoso.com' | Should -BeFalse
     }
 }
+
+Describe 'Convert-DlpSerializedRulePackageToText' {
+    It 'decodes a UTF-16LE BOM byte array' {
+        $bytes = [System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes('<x/>')
+        Convert-DlpSerializedRulePackageToText -Raw ([byte[]]$bytes) | Should -Be '<x/>'
+    }
+    It 'decodes a UTF-8 BOM byte array' {
+        $bytes = [System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes('<x/>')
+        Convert-DlpSerializedRulePackageToText -Raw ([byte[]]$bytes) | Should -Be '<x/>'
+    }
+    It 'returns string input unchanged' {
+        Convert-DlpSerializedRulePackageToText -Raw '<x/>' | Should -Be '<x/>'
+    }
+    It 'returns null for null input' {
+        Convert-DlpSerializedRulePackageToText -Raw $null | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-DlpRulePackageEntityIds' {
+    BeforeAll {
+        $script:goodXml = @'
+<RulePackage>
+  <RulePack id="aaaaaaaa-1111-2222-3333-444444444444">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Details>
+      <LocalizedDetails languageId="en-us"><Name>Test Pkg</Name></LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="dddddddd-1111-2222-3333-444444444444"/>
+    <Entity id="eeeeeeee-1111-2222-3333-444444444444"/>
+  </Rules>
+</RulePackage>
+'@
+    }
+
+    It 'extracts entity ids and marks the package parsed' {
+        $pkg = [pscustomobject]@{ Identity='our-pkg'; Publisher='X'; Name='pkg'; SerializedClassificationRuleCollection=$script:goodXml }
+        $r = Get-DlpRulePackageEntityIds -Packages @($pkg)
+        $r[0].Parsed | Should -BeTrue
+        $r[0].EntityIds.Count | Should -Be 2
+        $r[0].EntityIds | Should -Contain 'dddddddd-1111-2222-3333-444444444444'
+        $r[0].RulePackId | Should -Be 'aaaaaaaa-1111-2222-3333-444444444444'
+    }
+
+    It 'flags an unparseable package with Parsed=false and a ParseError' {
+        $pkg = [pscustomobject]@{ Identity='bad-pkg'; Publisher='X'; Name='bad'; SerializedClassificationRuleCollection='<RulePackage><Rules><Entity id=' }
+        $r = Get-DlpRulePackageEntityIds -Packages @($pkg)
+        $r[0].Parsed | Should -BeFalse
+        $r[0].ParseError | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-DlpRulePackageRemovalReferenceGuard' {
+    BeforeAll {
+        # Stub the tenant cmdlet so the guard runs offline; tests set $global:FakeRules.
+        function global:Get-DlpComplianceRule { [CmdletBinding()] param() $global:FakeRules }
+        $script:pkgXml = @'
+<RulePackage>
+  <RulePack id="aaaaaaaa-1111-2222-3333-444444444444">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Details><LocalizedDetails languageId="en-us"><Name>Pkg</Name></LocalizedDetails></Details>
+  </RulePack>
+  <Rules>
+    <Entity id="dddddddd-1111-2222-3333-444444444444"/>
+  </Rules>
+</RulePackage>
+'@
+        $script:pkg = [pscustomobject]@{ Identity='our-pkg'; Publisher='X'; Name='pkg'; SerializedClassificationRuleCollection=$script:pkgXml }
+    }
+    AfterAll { Remove-Item function:global:Get-DlpComplianceRule -ErrorAction SilentlyContinue; Remove-Variable -Scope Global -Name FakeRules -ErrorAction SilentlyContinue }
+
+    It 'blocks removal when a live DLP rule references a package entity id' {
+        $global:FakeRules = @([pscustomobject]@{ Name='ReferencingRule'; ParentPolicyName='P01'; AdvancedRule='{"id":"dddddddd-1111-2222-3333-444444444444"}' })
+        $r = Test-DlpRulePackageRemovalReferenceGuard -Packages @($script:pkg)
+        $r.Safe | Should -BeFalse
+        $r.ReferencingRuleCount | Should -Be 1
+    }
+
+    It 'permits removal when no live rule references the package' {
+        $global:FakeRules = @([pscustomobject]@{ Name='UnrelatedRule'; ParentPolicyName='P02'; AdvancedRule='{"id":"99999999-1111-2222-3333-444444444444"}' })
+        $r = Test-DlpRulePackageRemovalReferenceGuard -Packages @($script:pkg)
+        $r.Safe | Should -BeTrue
+        $r.ReferencingRuleCount | Should -Be 0
+    }
+
+    It 'is not safe when a package cannot be parsed (fails closed)' {
+        $global:FakeRules = @()
+        $bad = [pscustomobject]@{ Identity='bad'; Publisher='X'; Name='bad'; SerializedClassificationRuleCollection='<RulePackage><Rules><Entity id=' }
+        (Test-DlpRulePackageRemovalReferenceGuard -Packages @($bad)).Safe | Should -BeFalse
+    }
+}
