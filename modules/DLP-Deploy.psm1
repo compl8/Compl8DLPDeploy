@@ -2195,6 +2195,13 @@ function Sync-DlpKeywordDictionaries {
         $guid = $null
         switch ($decision.Action) {
             'Create' {
+                # Pre-create budget guard: fail loudly rather than let Purview silently reject.
+                $newSize = Get-DictionaryCompressedSize -Terms $dict.terms
+                $projected = Test-DictionaryBudget -ProjectedBytes ($tenantBytes + $newSize)
+                if (-not $projected.WithinHard) {
+                    Write-Warning "  BUDGET: creating '$name' (+$newSize bytes) would exceed the tenant hard cap ($($projected.HardBytes) bytes). Skipping; classifiers using $($dict.placeholder) will be flagged by the upload guard."
+                    break
+                }
                 try {
                     $result = Invoke-WithRetry -OperationName "New-Dictionary $name" -ScriptBlock {
                         New-DlpKeywordDictionary -Name $name -Description $dict.description -FileData (& $toBytes $dict.terms) -Confirm:$false -ErrorAction Stop
@@ -2253,6 +2260,17 @@ function Sync-DlpKeywordDictionaries {
             Write-Warning "  No GUID for $name - packages using $($dict.placeholder) will be skipped"
         }
         Start-Sleep 2
+    }
+
+    if (-not $WhatIf) {
+        $budget = Test-DictionaryBudget -ProjectedBytes $tenantBytes
+        $color = if ($budget.WithinWarn) { "Green" } elseif ($budget.WithinHard) { "Yellow" } else { "Red" }
+        Write-Host "  Tenant keyword-dictionary total: $tenantBytes bytes (warn $($budget.WarnBytes) / hard $($budget.HardBytes))" -ForegroundColor $color
+        if (-not $budget.WithinWarn -and $budget.WithinHard) {
+            Write-Warning "  Dictionary total exceeds the conservative 480 KB AD-schema limit; uploads may fail on some tenants."
+        } elseif (-not $budget.WithinHard) {
+            Write-Warning "  Dictionary total exceeds the 1 MB hard cap; further dictionary uploads will fail."
+        }
     }
 
     if ($ReportDir -and (Test-Path $ReportDir) -and $decisions.Count -gt 0) {
