@@ -10,27 +10,31 @@
 # checks whether custom SITs have propagated and warns if too recent.
 #
 # Usage:
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com                     # All phases
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -TargetEnvironment tenant-profile
 #   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels        # Labels only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries  # Dictionaries only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers   # Packages only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules      # Rules only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup       # Teardown only
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels  # Teardown, keep labels
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -SkipLabels         # Nuke & redeploy, keep labels
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Dictionaries
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Classifiers -TargetEnvironment tenant-profile
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase DLPRules -TargetEnvironment tenant-profile
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -TargetEnvironment tenant-profile
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -SkipLabels  # Teardown, keep labels
+#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -SkipLabels  # Nuke & redeploy, keep labels
 #==============================================================================
 
 param(
-    [Parameter(Mandatory)][string]$UPN,
+    [string]$UPN,
     [ValidateSet("All", "Labels", "Dictionaries", "Classifiers", "DLPRules", "Cleanup")]
     [string]$Phase = "All",
     [string]$PublishTo,
     [string]$Tenant,
+    [string]$TargetEnvironment,
+    [string]$Prefix,
     [switch]$Delegated,
     [string]$Scope = "universal,en-government,au",
     [string]$DeployDir = "xml/deploy",
     [switch]$SkipLabels,
     [switch]$Force,
+    [switch]$AllowBreakingClassifierReferences,
+    [switch]$Greenfield,
     [switch]$WhatIf
 )
 
@@ -44,6 +48,7 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 $Defaults    = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
+$Config      = Set-DeploymentConfigPrefix -Config $Config -Prefix $Prefix
 if (-not (Assert-ConfigCustomised -Config $Config)) { return }
 
 # PublishTo is required for Labels and All phases
@@ -54,8 +59,15 @@ if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $PublishTo) {
 $cleanupPrefix = $Config.namingPrefix
 
 # ── Connect ──────────────────────────────────────────────────────────────────
-Write-Host "`n=== Connecting to $UPN ===" -ForegroundColor Cyan
-$connectArgs = @{ UPN = $UPN }
+if (-not $UPN -and -not $Tenant) {
+    Write-Error "Specify -Tenant, -UPN, or both so the SCC connection target is explicit."
+    return
+}
+
+$connectTarget = if ($Tenant) { $Tenant } else { $UPN }
+Write-Host "`n=== Connecting to $connectTarget ===" -ForegroundColor Cyan
+$connectArgs = @{}
+if ($UPN) { $connectArgs["UPN"] = $UPN }
 if ($Tenant) { $connectArgs["Tenant"] = $Tenant }
 if ($Delegated) { $connectArgs["Delegated"] = $true }
 $connected = Connect-DLPSession @connectArgs
@@ -65,141 +77,63 @@ if (-not $connected) {
 }
 Write-Host "  Connected.`n" -ForegroundColor Green
 
+# ── Tenant fingerprint guard ───────────────────────────────────────────────────
+# Refuse to operate against a tenant that does not match the pinned fingerprint.
+$fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+Write-Host "=== Tenant Fingerprint ===" -ForegroundColor Cyan
+foreach ($m in @($fingerprint.messages)) {
+    Write-Host "  $m" -ForegroundColor $(if ($fingerprint.passed) { "Green" } else { "Red" })
+}
+foreach ($mm in @($fingerprint.mismatches)) {
+    Write-Host "  MISMATCH $($mm.field): expected '$($mm.expected)', actual '$($mm.actual)'" -ForegroundColor Red
+}
+if (-not $fingerprint.passed) { throw "Tenant fingerprint check failed. Aborting." }
+Write-Host ""
+
 # ── Cleanup ──────────────────────────────────────────────────────────────────
+# Resolve exactly which live tenant objects each pattern matches, present the full
+# list, then (after typed confirmation) delete ONLY those previewed objects.
 if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
-    Write-Host "=== Cleanup: Removing existing deployment ===" -ForegroundColor Cyan
+    Write-Host "=== Cleanup: planning removal ===" -ForegroundColor Cyan
     if ($SkipLabels) { Write-Host "  (Labels and label policy will be preserved)" -ForegroundColor Gray }
 
-    # Auto-labeling policies (cascade-deletes their rules)
-    Write-Host "  Removing auto-labeling policies..." -ForegroundColor Yellow
-    try {
-        Write-Host "    Querying tenant for auto-labeling policies..." -ForegroundColor Gray
-        $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "AL*-$($cleanupPrefix)-$($Config.namingSuffix)" })
-        Write-Host "    Found $($alPolicies.Count) policy(ies)" -ForegroundColor Gray
-        if ($alPolicies.Count -gt 0) {
-            $null = Remove-PurviewObjects -Objects $alPolicies -RemoveCommand "Remove-AutoSensitivityLabelPolicy" `
-                -OperationName "AL policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-        } else {
-            Write-Host "    No matching auto-labeling policies found." -ForegroundColor Gray
-        }
-    } catch { Write-Warning "Auto-labeling: $_" }
-
-    # DLP policies (cascade-deletes their rules)
-    Write-Host "  Removing DLP policies..." -ForegroundColor Yellow
-    try {
-        Write-Host "    Querying tenant for DLP policies..." -ForegroundColor Gray
-        $policies = @(Get-DlpCompliancePolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -like "P0*-*" })
-        Write-Host "    Found $($policies.Count) policy(ies)" -ForegroundColor Gray
-        if ($policies.Count -gt 0) {
-            $null = Remove-PurviewObjects -Objects $policies -RemoveCommand "Remove-DlpCompliancePolicy" `
-                -OperationName "DLP policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-        }
-    } catch { Write-Warning "Policies: $_" }
-
-    # SIT packages — only remove packages matching our publisher
-    Write-Host "  Removing SIT packages..." -ForegroundColor Yellow
-    try {
-        $existing = Get-DlpSensitiveInformationTypeRulePackage -ErrorAction Stop
-        $ours = @()
-        $others = @()
-        foreach ($pkg in $existing) {
-            if (-not $pkg.Identity) { continue }
-            if ($pkg.Publisher -eq "Microsoft Corporation" -or $pkg.Publisher -eq "Microsoft") { continue }
-            if ($Config.publisher -and $pkg.Publisher -eq $Config.publisher) {
-                $ours += $pkg
-            } else {
-                $others += $pkg
-            }
-        }
-
-        if ($others.Count -gt 0) {
-            Write-Host "    Skipping $($others.Count) package(s) from other publishers:" -ForegroundColor DarkGray
-            foreach ($o in $others) {
-                Write-Host "      $($o.Publisher): $($o.Identity)" -ForegroundColor DarkGray
-            }
-        }
-
-        if ($ours.Count -eq 0) {
-            Write-Host "    No packages matching publisher '$($Config.publisher)' found." -ForegroundColor Gray
-        } else {
-            Write-Host "    Removing $($ours.Count) package(s) from '$($Config.publisher)':" -ForegroundColor Yellow
-            foreach ($pkg in $ours) {
-                Write-Host "      $($pkg.Identity)" -ForegroundColor Yellow
-            }
-
-            if (-not $WhatIf) {
-                $confirm = Read-Host "    Proceed with removal? (yes/no)"
-                if ($confirm -ne "yes") {
-                    Write-Host "    Package removal skipped." -ForegroundColor Yellow
-                } else {
-                    $removed = 0
-                    foreach ($pkg in $ours) {
-                        $status = Remove-PurviewObject -Identity $pkg.Identity `
-                            -GetCommand "Get-DlpSensitiveInformationTypeRulePackage" `
-                            -RemoveCommand "Remove-DlpSensitiveInformationTypeRulePackage" `
-                            -OperationName "SIT package" -MaxRetries 2 -BaseDelaySec 30
-                        if ($status -eq "deleted") { $removed++ }
-                        Start-Sleep 5
-                    }
-                    Write-Host "    Removed $removed package(s)" -ForegroundColor Green
-                }
-            }
-        }
-    } catch { Write-Warning "Packages: $_" }
-
-    # Keyword dictionaries
-    Write-Host "  Removing keyword dictionaries..." -ForegroundColor Yellow
-    try {
-        $dicts = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$($Config.namingPrefix)*" }
-        $dictDeleted = 0
-        foreach ($d in $dicts) {
-            $status = Remove-PurviewObject -Identity $d.Identity `
-                -GetCommand "Get-DlpKeywordDictionary" -RemoveCommand "Remove-DlpKeywordDictionary" `
-                -OperationName "dictionary" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-            if ($status -eq "deleted") { $dictDeleted++ }
-            if (-not $WhatIf) { Start-Sleep 2 }
-        }
-        if ($dicts) { Write-Host "    Processed $($dicts.Count) dictionary(ies) ($dictDeleted deleted)" -ForegroundColor Green }
-    } catch { Write-Warning "Dictionaries: $_" }
-
+    $objects = @{
+        AutoLabelPolicy   = @(Get-AutoSensitivityLabelPolicy -ErrorAction SilentlyContinue)
+        DlpPolicy         = @(Get-DlpCompliancePolicy -ErrorAction SilentlyContinue)
+        SitPackage        = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction SilentlyContinue)
+        KeywordDictionary = @(Get-DlpKeywordDictionary -ErrorAction SilentlyContinue)
+    }
     if (-not $SkipLabels) {
-        # Label policy
-        Write-Host "  Removing label policy..." -ForegroundColor Yellow
-        try {
-            $labelPolicies = Get-LabelPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -eq $Config.labelPolicyName }
-            foreach ($lp in $labelPolicies) {
-                $status = Remove-PurviewObject -Identity $lp.Name `
-                    -GetCommand "Get-LabelPolicy" -RemoveCommand "Remove-LabelPolicy" `
-                    -OperationName "label policy" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-                if (-not $WhatIf) { Start-Sleep 3 }
-            }
-        } catch { Write-Warning "Label policy: $_" }
-
-        # Labels (sublabels first, then parents)
-        Write-Host "  Removing labels..." -ForegroundColor Yellow
-        try {
-            $labels = Get-Label -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like "*$($cleanupPrefix)*" -or $_.Name -match "^(OFFICIAL|SENSITIVE|PROTECTED)"
-            }
-            if ($labels) {
-                $sublabels = $labels | Where-Object { $_.ParentId } | Sort-Object { $_.Priority } -Descending
-                $topLabels = $labels | Where-Object { -not $_.ParentId } | Sort-Object { $_.Priority } -Descending
-                foreach ($l in @($sublabels) + @($topLabels)) {
-                    $status = Remove-PurviewObject -Identity $l.Name `
-                        -GetCommand "Get-Label" -RemoveCommand "Remove-Label" `
-                        -OperationName "label" -MaxRetries 2 -BaseDelaySec 30 -WhatIf:$WhatIf
-                    if (-not $WhatIf) { Start-Sleep 2 }
-                }
-            }
-        } catch { Write-Warning "Labels: $_" }
-    } else {
-        Write-Host "  Skipping label and label policy removal (-SkipLabels)" -ForegroundColor DarkGray
+        $objects.LabelPolicy = @(Get-LabelPolicy -ErrorAction SilentlyContinue)
+        $objects.Label       = @(Get-Label -ErrorAction SilentlyContinue)
     }
 
-    Write-Host "  Waiting 2 minutes for Purview cleanup propagation..." -ForegroundColor Gray
-    Write-Host "  Note: Labels may take hours/days to fully purge. SIT packages and rules take minutes." -ForegroundColor Gray
-    if (-not $WhatIf) { Start-Sleep 120 }
+    $targets     = @(Resolve-CleanupTargets -Config $Config -Objects $objects -IncludeLabels:(-not $SkipLabels))
+    $planSummary = Show-CleanupPlan -Targets $targets -Tenant $connectTarget
+
+    if ($targets.Count -eq 0) {
+        Write-Host "`n  Nothing to clean up." -ForegroundColor Green
+    } elseif ($WhatIf) {
+        Write-Host "`n  WhatIf: previewed $($targets.Count) object(s). No deletions performed." -ForegroundColor Yellow
+    } else {
+        $phrase = Get-CleanupConfirmationPhrase -Prefix $Config.namingPrefix -Tenant $connectTarget
+        if ($Force) {
+            Write-Host "`n  -Force supplied: skipping typed confirmation." -ForegroundColor Yellow
+        } else {
+            Write-Host ""
+            $answer = Read-Host "Type '$phrase' to delete the $($targets.Count) object(s) listed above"
+            if ($answer -ne $phrase) {
+                Write-Host "  Cleanup aborted. Nothing was deleted." -ForegroundColor Yellow
+                return
+            }
+        }
+        $removal = Invoke-CleanupPlan -Targets $targets -AllowBreakingClassifierReferences:$AllowBreakingClassifierReferences
+        Write-Host "`n  Removal results:" -ForegroundColor Green
+        foreach ($k in $removal.Keys) { Write-Host "    ${k}: $($removal[$k]) deleted" -ForegroundColor Gray }
+        Write-Host "  Waiting 2 minutes for Purview cleanup propagation..." -ForegroundColor Gray
+        Write-Host "  Note: Labels may take hours/days to fully purge. SIT packages and rules take minutes." -ForegroundColor Gray
+        Start-Sleep 120
+    }
     Write-Host ""
 
     if ($Phase -eq "Cleanup") {
@@ -211,11 +145,10 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
 # ── Phase 1: Labels ──────────────────────────────────────────────────────────
 if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
     Write-Host "=== Phase 1: Deploying Labels ===" -ForegroundColor Cyan
-    if ($WhatIf) {
-        & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") -PublishTo $PublishTo -WhatIf
-    } else {
-        & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") -PublishTo $PublishTo
-    }
+    $labelArgs = @{ PublishTo = $PublishTo }
+    if ($Prefix) { $labelArgs["Prefix"] = $Prefix }
+    if ($WhatIf) { $labelArgs["WhatIf"] = $true }
+    & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") @labelArgs
     Write-Host ""
 }
 
@@ -245,10 +178,16 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
         Write-Warning "No XML files found in $deployPath"
     } else {
         Write-Host "  Found $($xmlFiles.Count) package(s). Delegating to Deploy-Classifiers safety workflow." -ForegroundColor Gray
-        $classifierArgs = @("-Action", "Upload", "-Scope", $Scope)
-        if ($WhatIf) { $classifierArgs += "-WhatIf" }
-        if ($Tenant) { $classifierArgs += @("-Tenant", $Tenant) }
-        if ($Delegated) { $classifierArgs += "-Delegated" }
+        $classifierArgs = @{
+            Action = "Upload"
+            Scope  = $Scope
+        }
+        if ($WhatIf) { $classifierArgs["WhatIf"] = $true }
+        if ($Tenant) { $classifierArgs["Tenant"] = $Tenant }
+        if ($TargetEnvironment) { $classifierArgs["TargetEnvironment"] = $TargetEnvironment }
+        if ($Prefix) { $classifierArgs["Prefix"] = $Prefix }
+        if ($Delegated) { $classifierArgs["Delegated"] = $true }
+        if ($Greenfield) { $classifierArgs["Greenfield"] = $true }
         & (Join-Path $PSScriptRoot "Deploy-Classifiers.ps1") @classifierArgs
 
         if ($Phase -eq "Classifiers" -or $Phase -eq "All") {
@@ -256,7 +195,9 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
             Write-Host "  NOTE: Custom SITs take 4-24 hours to propagate in Purview's DLP engine." -ForegroundColor Yellow
             Write-Host "  DLP rules referencing these SITs will fail until propagation completes." -ForegroundColor Yellow
             Write-Host "  Run Phase 3 (DLPRules) separately after propagation:" -ForegroundColor Yellow
-            Write-Host "    .\scripts\full-deploy.ps1 -UPN $UPN -Phase DLPRules" -ForegroundColor Gray
+            $ruleCommandTarget = if ($Tenant) { "-Tenant $Tenant" } else { "-UPN $UPN" }
+            $ruleCommandProfile = if ($TargetEnvironment) { " -TargetEnvironment $TargetEnvironment" } else { "" }
+            Write-Host "    .\scripts\full-deploy.ps1 $ruleCommandTarget -Phase DLPRules$ruleCommandProfile" -ForegroundColor Gray
             Write-Host ""
 
             # Record upload timestamp for propagation check
@@ -315,11 +256,13 @@ if ($Phase -eq "All" -or $Phase -eq "DLPRules") {
         }
     }
 
-    if ($WhatIf) {
-        & (Join-Path $PSScriptRoot "Deploy-DLPRules.ps1") -SkipValidation -WhatIf
-    } else {
-        & (Join-Path $PSScriptRoot "Deploy-DLPRules.ps1") -SkipValidation
-    }
+    $ruleArgs = @{ SkipValidation = $true }
+    if ($WhatIf) { $ruleArgs["WhatIf"] = $true }
+    if ($Tenant) { $ruleArgs["Tenant"] = $Tenant }
+    if ($TargetEnvironment) { $ruleArgs["TargetEnvironment"] = $TargetEnvironment }
+    if ($Prefix) { $ruleArgs["Prefix"] = $Prefix }
+    if ($Delegated) { $ruleArgs["Delegated"] = $true }
+    & (Join-Path $PSScriptRoot "Deploy-DLPRules.ps1") @ruleArgs
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────
