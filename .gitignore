@@ -1,5 +1,8 @@
 *.log
+*.zip
 logs/
+dist/
+reports/
 archive/
 .DS_Store
 Thumbs.db
@@ -22,5 +25,7 @@ xml/
 data/tp_patterns.json
 data/.smbdelete*
 scripts/Get-TrainableClassifiers.ps1
+scripts/Test-CrossTenantConnect.ps1
+scripts/build-australian-names.py
 scriptfixes.md
 SITcompaction.md

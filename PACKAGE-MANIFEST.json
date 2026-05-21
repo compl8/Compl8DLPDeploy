@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "packageName": "Compl8DLPDeploy",
+  "version": "2026.05.21-refit-rollout",
+  "description": "Compl8 Microsoft Purview DLP deployment toolkit with refit-first classifier safety workflow and customer tenant rollout support.",
+  "createdDate": "2026-05-21",
+  "defaultOutputName": "Compl8DLPDeploy-2026-05-21-refit-rollout.zip",
+  "entrypoints": [
+    "scripts/full-deploy.ps1",
+    "scripts/greenfield-deploy.ps1",
+    "scripts/Deploy-Classifiers.ps1",
+    "scripts/Deploy-DLPRules.ps1",
+    "scripts/Deploy-Labels.ps1",
+    "scripts/Invoke-CIChecks.ps1",
+    "scripts/New-ReleasePackage.ps1"
+  ],
+  "include": [
+    "PACKAGE-MANIFEST.json",
+    "README.md",
+    "README-QGOV.md",
+    "CHANGELOG.md",
+    "CLASSIFIER-REFIT-POLICY.md",
+    "Start-DLPDeploy.ps1",
+    "modules/*.psm1",
+    "modules/*.psd1",
+    "scripts/*.ps1",
+    "scripts/*.py",
+    "tests/*.ps1",
+    "config/settings.json",
+    "config/labels.json",
+    "config/policies.json",
+    "config/classifiers.json",
+    "config/rule-overrides.json",
+    "config/tier-assignments.json",
+    "config/tenant-fingerprints.example.json",
+    "xml/deploy/deploy-registry.json",
+    "xml/deploy/*.xml"
+  ],
+  "exclude": [
+    ".git/**",
+    ".codex/**",
+    ".playwright-mcp/**",
+    ".DS_Store",
+    "Thumbs.db",
+    "*.log",
+    "*.zip",
+    "*.bak",
+    "*.xlsx",
+    "__pycache__/**",
+    "archive/**",
+    "backups/**",
+    "changepacks/**",
+    "docs/plans/**",
+    "docs/specs/**",
+    "docs/superpowers/**",
+    "logs/**",
+    "plans/**",
+    "reports/**",
+    "research/**",
+    "config/tenant-fingerprints.json",
+    "config/tenant-sits.json",
+    "config/last-classifier-upload.json",
+    "data/tp_patterns.json",
+    "scripts/Test-CrossTenantConnect.ps1",
+    "scripts/build-australian-names.py",
+    "scriptfixes.md",
+    "SITcompaction.md"
+  ],
+  "localOnly": [
+    {
+      "path": "config/tenant-fingerprints.json",
+      "reason": "Contains environment/customer tenant identities. Keep local; create from tenant-fingerprints.example.json per deployment."
+    },
+    {
+      "path": "reports/**",
+      "reason": "Generated evidence and tenant snapshots. Package only as a separate evidence bundle when explicitly required."
+    },
+    {
+      "path": "backups/**",
+      "reason": "Tenant package backups. Do not ship in a generic toolkit package."
+    },
+    {
+      "path": "scripts/Test-CrossTenantConnect.ps1",
+      "reason": "Local connection experiment with tenant-specific defaults. Keep out of customer release packages."
+    },
+    {
+      "path": "scripts/build-australian-names.py",
+      "reason": "Local dictionary-research helper with absolute workstation paths. Keep out of customer release packages."
+    },
+    {
+      "path": "logs/**",
+      "reason": "Local run logs and transcripts."
+    }
+  ],
+  "validation": [
+    {
+      "name": "Local CI",
+      "command": "pwsh -NoProfile -File .\\scripts\\Invoke-CIChecks.ps1"
+    },
+    {
+      "name": "Package dry run",
+      "command": "pwsh -NoProfile -File .\\scripts\\New-ReleasePackage.ps1 -WhatIf"
+    }
+  ],
+  "customerRollout": {
+    "singleSessionClassifierWhatIf": "pwsh -File scripts/full-deploy.ps1 -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix> -Phase Classifiers -Greenfield -WhatIf",
+    "refitPlan": "pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix>",
+    "refitApplyWhatIf": "pwsh -File scripts/Deploy-Classifiers.ps1 -Action ApplyRefitPlan -RefitPlanPath <refit-plan.json> -Connect -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix> -WhatIf -ApproveRefitPlan"
+  },
+  "notes": [
+    "The deploy XML folder is intentionally included even though it is ignored by Git.",
+    "Do not include config/tenant-fingerprints.json in a generic release package.",
+    "Generated reports and tenant backups should be handled as separate evidence artifacts, not as source release content."
+  ]
+}

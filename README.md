@@ -69,6 +69,34 @@ Both options produce the same `classifiers.json` format consumed by the deployme
     DLP policies and rules
 ```
 
+## Current Safety Model
+
+This release adds a stricter classifier deployment model:
+
+- Customer rollouts should use `full-deploy.ps1` or `greenfield-deploy.ps1` so one SCC/IPPS connection is reused through the chain.
+- Use `-Tenant <domain-or-guid>` plus `-TargetEnvironment <profile-key>` to pin the connected tenant to an expected fingerprint.
+- Use `-Prefix <code>` to override `namingPrefix` and `sitPrefix` for the run without editing `config/settings.json`.
+- Existing tenants with custom non-Microsoft classifier packages are blocked from direct upload unless a reviewed `RefitPlan` is supplied or an explicit greenfield/override switch is used.
+- Refit planning preserves existing RulePack IDs and DLP-referenced SIT entity IDs wherever possible.
+- Package delete/reset paths include DLP reference guards.
+- Generated Purview object names are checked for deployment-safe ASCII characters before submission.
+
+For a clean customer tenant with no custom classifier packages, use the greenfield classifier path. For a tenant that already has custom packages, generate and review a refit plan first.
+
+### Hardening Notes
+
+The current classifier hardening adds these evidence and safety controls:
+
+- **Dependency graph:** deployment references are modelled as keyword dictionary -> sensitive information type -> DLP rule -> DLP policy -> label. Removal and reset paths use this graph to identify downstream classifier references before deleting package content.
+- **Provenance stamping:** toolkit-created Purview objects can carry a `Compl8DLPDeploy` provenance marker with prefix, component, deployment ID, and target environment. Cleanup uses matching provenance before falling back to stricter prefix-based scope checks.
+- **Refit plan hash sidecar:** `-Action RefitPlan` writes `refit-plan.json`, `refit-summary.md`, and `refit-plan.sha256`. `ApplyRefitPlan` verifies the SHA-256 sidecar before applying updates so the reviewed plan is the exact plan being executed.
+- **Current-plan deletion gate:** classifier package deletion now requires `-RefitPlanPath` plus `-ApproveRefitPlan`, a plan generated within the current age window, an allowed retire/reusable package classification, and a final tenant reference scan.
+- **Approved new-slot creation:** `ApplyRefitPlan` can create explicitly plan-approved new classifier packages only when the tenant still has free custom package slots; package deletion remains outside apply.
+- **Separated evidence:** refit summaries distinguish customer content preserved from Compl8 content applied, including preserved package/entity IDs and DLP rule reference evidence.
+- **Entity-level split fallback:** when package-level fit cannot place all generated bundles safely, the refit planner can split at entity level, preserve referenced tenant entities and dependencies, and defer/drop classifiers that still cannot fit within package limits.
+- **Dictionary decision logs:** keyword dictionary sync writes `dictionary-decisions.json` under `reports/dictionary-decisions/` when run with a report directory, recording create, reuse, merge, keep, or approved replace decisions.
+- **Remaining tenant validation gates:** live customer execution still requires tenant fingerprint match, package/XML validation, dictionary placeholder resolution, capacity/refit assessment, plan review/approval, post-upload SIT visibility checks, and tenant propagation time before DLP rule deployment.
+
 ## Quick Start
 
 ### Option A: From Spreadsheet
@@ -110,27 +138,29 @@ pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.co
 
 ### Phased Deployment
 
-For more control, deploy in phases. `-PublishTo` is only required for `Labels` and `All` phases — Dictionaries, Classifiers, DLPRules, and Cleanup don't need it:
+For more control, deploy in phases. `-PublishTo` is only required for `Labels` and `All` phases. Dictionaries, Classifiers, DLPRules, and Cleanup do not need it.
+
+For customer rollouts, prefer `-Tenant`, `-TargetEnvironment`, and `-Prefix`. `-TargetEnvironment` is just a tenant fingerprint/profile key; it is not inherently prod or nonprod.
 
 ```powershell
 # Phase 1: Labels only (PublishTo required)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
 
 # Phase 1.5: Keyword dictionaries (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Dictionaries
 
 # Phase 2: SIT classifier packages (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Classifiers -Greenfield
 
 # Phase 3: DLP rules — wait 4-24h after Phase 2 for SIT propagation (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase DLPRules
 
 # Cleanup everything (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels  # keep labels
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup -SkipLabels  # keep labels
 
 # Dry run (all phases, PublishTo required)
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -WhatIf -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Classifier Safety Workflow
@@ -141,16 +171,58 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -WhatIf -PublishTo "DL-
 pwsh -File scripts/Deploy-Classifiers.ps1 -Connect -UPN admin@tenant.com
 ```
 
-Before classifier changes it validates every selected package XML, evaluates the connected tenant, checks optional tenant fingerprints, runs impact/capacity assessment, shows the embedded dry-run plan, and asks for confirmation. Available actions include `Interactive`, `Validate`, `Upload`, `Impact`, `CapacityPlan`, `AdoptPlan`, `Prune`, `Canary`, `Remove`, `Rollback`, `List`, and `Estimate`.
+Before classifier changes it validates every selected package XML, evaluates the connected tenant, checks optional tenant fingerprints, runs impact/capacity assessment, shows the embedded dry-run plan, and asks for confirmation. Available actions include `Interactive`, `Validate`, `Upload`, `Impact`, `CapacityPlan`, `AdoptPlan`, `RefitPlan`, `ApplyRefitPlan`, `Prune`, `Canary`, `Remove`, `Rollback`, `List`, and `Estimate`.
+
+Classifier package changes must follow the refit-first policy in `CLASSIFIER-REFIT-POLICY.md`: update existing packages wherever possible, preserve customer-owned entities and referenced entity IDs, and treat package deletion as a last resort.
+
+Direct `Upload` now requires an approved `-RefitPlanPath` when the tenant already has custom non-Microsoft rule packages. Use `-Action RefitPlan` first, then apply with `-Action ApplyRefitPlan`, or supply the explicit greenfield/override switches only when that is genuinely the intended operating mode.
 
 Useful pre-test commands:
 
 ```powershell
 pwsh -File scripts/Invoke-CIChecks.ps1 -SkipPester
 pwsh -File scripts/Deploy-Classifiers.ps1 -Action Canary -Connect -UPN admin@tenant.com
+pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -UPN admin@tenant.com
 ```
 
-Copy `config/tenant-fingerprints.example.json` to `config/tenant-fingerprints.json` and populate the tenant name/GUID fields to pin nonprod/prod environments. Use `mode: "block"` for production once confirmed.
+For customer rollouts, prefer a single connected chain so the SCC/IPPS login is only requested once and the same tenant fingerprint is carried through each phase:
+
+```powershell
+pwsh -File scripts/full-deploy.ps1 -Tenant ecq.qld.gov.au -TargetEnvironment ecq-qld-gov-au -Prefix ECQ -Phase Classifiers -Greenfield -WhatIf
+```
+
+If the tenant already has custom classifier packages, do not use `-Greenfield` unless the tenant is confirmed clean for this deployment. Generate a refit plan instead:
+
+```powershell
+pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST
+pwsh -File scripts/Deploy-Classifiers.ps1 -Action ApplyRefitPlan -RefitPlanPath ".\reports\refit-plans\<run>\refit-plan.json" -Connect -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -WhatIf -ApproveRefitPlan
+```
+
+Generated Purview object identities are blocked unless they are ASCII deployment-safe (`A-Z`, `a-z`, `0-9`, `_`, `.`, `-`). This is intentionally stricter than service-side submission because some non-standard characters can be accepted on create but later become difficult to query or remove.
+
+Copy `config/tenant-fingerprints.example.json` to `config/tenant-fingerprints.json` and populate a profile per customer or environment. Use `mode: "block"` once the expected tenant GUID/name is confirmed. The real `tenant-fingerprints.json` is local-only and is excluded from release packages.
+
+## Packaging
+
+Release packaging is driven by `PACKAGE-MANIFEST.json`. The manifest includes source, config, tests, and deploy XML, and excludes local evidence or tenant-specific files such as `reports/`, `logs/`, `backups/`, and `config/tenant-fingerprints.json`.
+
+Validate and create a zip:
+
+```powershell
+pwsh -NoProfile -File .\scripts\New-ReleasePackage.ps1
+```
+
+Preview the package without writing a zip:
+
+```powershell
+pwsh -NoProfile -File .\scripts\New-ReleasePackage.ps1 -WhatIf -SkipValidation
+```
+
+The default output is `dist/Compl8DLPDeploy-2026-05-21-refit-rollout.zip`. Generated tenant evidence should be bundled separately only when needed for a customer handover.
+
+## Rollout Evidence
+
+Operational reports are generated under `reports/` and are intentionally not included in the generic release package. For the current nonprod validation and ECQ dry-run work, see `reports/production-readiness/20260521_classifier-refit-rollout.md`.
 
 ## The Input Spreadsheet
 
@@ -191,6 +263,8 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 | `Deploy-Classifiers.ps1` | Guided classifier bundle manager with validation, impact, capacity, prune, canary, upload, remove, and rollback actions |
 | `Test-DeploymentReadiness.ps1` | Parse and consistency checks for labels, classifier config, policy/rule generation, and deploy XML packages |
 | `Invoke-CIChecks.ps1` | Local parser/readiness/XML validation entrypoint |
+| `New-ReleasePackage.ps1` | Build a release zip from `PACKAGE-MANIFEST.json` |
+| `Reset-DeploymentScope.ps1` | Scoped reset planner/executor with tenant fingerprint and classifier reference guards |
 
 ### Data Pipeline — Spreadsheet
 
