@@ -2120,12 +2120,21 @@ function Sync-DlpKeywordDictionaries {
         looked up as "<NamePrefix>-<manifest name>" so they are scoped to this deployment
         and discoverable by the prefix-based cleanup. Packages bind dictionaries by GUID,
         so the name change does not affect SIT references.
+    .PARAMETER ApproveDictionaryReplace
+        Allow replacing an existing divergent dictionary's content with ours in the
+        over-budget case. Without this, the existing (customer) dictionary is kept and the
+        classifier references it as-is. Replacement backs up the existing terms first.
+    .PARAMETER ReportDir
+        Optional directory to write the per-dictionary decision log (dictionary-decisions.json)
+        and any replacement backups.
     .PARAMETER WhatIf
         If true, returns dummy GUIDs without making API calls.
     #>
     param(
         [Parameter(Mandatory)][string]$ManifestUrl,
         [string]$NamePrefix,
+        [switch]$ApproveDictionaryReplace,
+        [string]$ReportDir,
         [switch]$WhatIf
     )
 
@@ -2134,29 +2143,24 @@ function Sync-DlpKeywordDictionaries {
     Write-Host "  $($manifest.dictionaries.Count) dictionaries in manifest"
 
     $guidMap = @{}
+    $decisions = [System.Collections.Generic.List[object]]::new()
 
-    # Pre-fetch existing dictionaries (avoids N+1 API calls)
-    $existingDicts = @{}
-    if (-not $WhatIf) {
-        Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | ForEach-Object {
-            $existingDicts[$_.Name] = $_.Identity
-        }
+    # Convert a term list to Purview-safe bytes (UTF-16LE+BOM via temp file; direct
+    # GetBytes() produces BOM-less bytes truncated to 1 char by the REST-based module).
+    $toBytes = {
+        param($terms)
+        $tf = [System.IO.Path]::GetTempFileName()
+        try { $terms | Set-Content -Path $tf -Encoding Unicode; [System.IO.File]::ReadAllBytes($tf) }
+        finally { Remove-Item $tf -ErrorAction SilentlyContinue }
     }
+
+    # Inventory (with terms) drives content-aware reuse/merge; empty under WhatIf/offline.
+    $inventory = if ($WhatIf) { @() } else { @(Get-DlpDictionaryInventory) }
+    $tenantBytes = [long](($inventory | Measure-Object -Property CompressedBytes -Sum).Sum)
 
     foreach ($dict in $manifest.dictionaries) {
         # Scope the dictionary name to this deployment so prefix-based cleanup can find it.
         $name = if ($NamePrefix) { "$NamePrefix-$($dict.name)" } else { $dict.name }
-
-        # Write terms to temp file and read back as bytes (includes UTF-16LE BOM).
-        # Direct [System.Text.Encoding]::Unicode.GetBytes() produces BOM-less bytes
-        # that are truncated to 1 char by the REST-based ExchangeOnlineManagement module.
-        $tempFile = [System.IO.Path]::GetTempFileName()
-        try {
-            $dict.terms | Set-Content -Path $tempFile -Encoding Unicode
-            $bytes = [System.IO.File]::ReadAllBytes($tempFile)
-        } finally {
-            Remove-Item $tempFile -ErrorAction SilentlyContinue
-        }
 
         if ($WhatIf) {
             Write-Host "  [WHATIF] $name ($($dict.terms.Count) terms)"
@@ -2164,48 +2168,77 @@ function Sync-DlpKeywordDictionaries {
             continue
         }
 
+        $existing = $inventory | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        $existingForDecision = if ($existing) { @{ Guid = $existing.Guid; Terms = $existing.Terms } } else { $null }
+        $headroom = [long]([long]1048576 - $tenantBytes)
+        $decision = Resolve-DictionarySyncDecision -OurTerms $dict.terms -Existing $existingForDecision -TenantHeadroomBytes $headroom
+
         $guid = $null
-        if ($existingDicts.ContainsKey($name)) {
-            # Update existing dictionary with correct content
-            $guid = $existingDicts[$name]
-            try {
-                Set-DlpKeywordDictionary -Identity $name -FileData $bytes -Confirm:$false -ErrorAction Stop
-                Write-Host "  Updated: $name ($($dict.terms.Count) terms) [$guid]"
-            } catch {
-                Write-Warning "  Failed to update ${name}: $($_.Exception.Message)"
-                Write-Host "  Exists: $name [$guid]"
-            }
-        } else {
-            try {
-                $result = Invoke-WithRetry -OperationName "New-Dictionary $name" -ScriptBlock {
-                    New-DlpKeywordDictionary -Name $name -Description $dict.description -FileData $bytes -Confirm:$false -ErrorAction Stop
-                } -MaxRetries 2 -BaseDelaySec 30
-                $guid = $result.Identity
-                Write-Host "  Created: $name ($($dict.terms.Count) terms)"
-            } catch {
-                if ($_.Exception.Message -match 'already exists') {
-                    # Race condition: created between pre-fetch and now
-                    $found = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name }
-                    if ($found) {
-                        $guid = $found.Identity
-                        Write-Host "  Recovered: $name [$guid]"
-                    } else {
-                        Write-Warning "  Failed: $name - exists but could not retrieve"
-                    }
-                } else {
-                    Write-Warning "  Failed: $name - $($_.Exception.Message)"
+        switch ($decision.Action) {
+            'Create' {
+                try {
+                    $result = Invoke-WithRetry -OperationName "New-Dictionary $name" -ScriptBlock {
+                        New-DlpKeywordDictionary -Name $name -Description $dict.description -FileData (& $toBytes $dict.terms) -Confirm:$false -ErrorAction Stop
+                    } -MaxRetries 2 -BaseDelaySec 30
+                    $guid = $result.Identity
+                    $tenantBytes += Get-DictionaryCompressedSize -Terms $dict.terms
+                    Write-Host "  CREATED: $name ($($dict.terms.Count) terms)" -ForegroundColor Green
+                } catch {
+                    if ($_.Exception.Message -match 'already exists') {
+                        $found = Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name }
+                        if ($found) { $guid = $found.Identity; Write-Host "  RECOVERED: $name [$guid]" -ForegroundColor DarkYellow }
+                        else { Write-Warning "  Failed: $name - exists but could not retrieve" }
+                    } else { Write-Warning "  Failed: $name - $($_.Exception.Message)" }
                 }
+            }
+            'Reuse' {
+                $guid = $decision.Guid
+                Write-Host "  REUSED: $name ($($decision.Reason)) [$guid]" -ForegroundColor Green
+            }
+            'Merge' {
+                $guid = $decision.Guid
+                try {
+                    Set-DlpKeywordDictionary -Identity $name -FileData (& $toBytes $decision.MergedTerms) -Confirm:$false -ErrorAction Stop
+                    $added = @($decision.MergedTerms).Count - @($existing.Terms).Count
+                    $tenantBytes += (Get-DictionaryCompressedSize -Terms $decision.MergedTerms) - $existing.CompressedBytes
+                    Write-Host "  MERGED: $name (+$added terms, additive) [$guid]" -ForegroundColor Yellow
+                } catch {
+                    Write-Warning "  Merge failed for ${name}: $($_.Exception.Message); reusing existing as-is."
+                }
+            }
+            'OverBudgetKeep' {
+                $guid = $decision.Guid
+                Write-Warning "  OVER-BUDGET DIVERGENT: $name - $($decision.Reason)"
+                if ($ApproveDictionaryReplace) {
+                    if ($ReportDir -and (Test-Path $ReportDir)) {
+                        @($existing.Terms) | Set-Content -Path (Join-Path $ReportDir "dict-backup-$name.txt") -Encoding Unicode
+                    }
+                    try {
+                        Set-DlpKeywordDictionary -Identity $name -FileData (& $toBytes $dict.terms) -Confirm:$false -ErrorAction Stop
+                        Write-Host "  REPLACED (approved, existing backed up): $name [$guid]" -ForegroundColor Red
+                    } catch { Write-Warning "  Replace failed for ${name}: $($_.Exception.Message); kept existing." }
+                } else {
+                    Write-Host "  KEPT existing (replace not approved): $name [$guid]" -ForegroundColor DarkYellow
+                }
+            }
+            'OpaqueKeep' {
+                $guid = $decision.Guid
+                Write-Host "  OPAQUE: $name (cannot compare terms; reusing existing unmodified) [$guid]" -ForegroundColor DarkYellow
             }
         }
 
+        $decisions.Add([pscustomobject]@{ Name = $name; Action = $decision.Action; Coverage = $decision.Coverage; Guid = $guid; Reason = $decision.Reason })
         if ($guid) {
             $guidMap[$dict.placeholder] = $guid
         } else {
             Write-Warning "  No GUID for $name - packages using $($dict.placeholder) will be skipped"
         }
-        if (-not $WhatIf) { Start-Sleep 2 }
+        Start-Sleep 2
     }
 
+    if ($ReportDir -and (Test-Path $ReportDir) -and $decisions.Count -gt 0) {
+        $decisions | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $ReportDir "dictionary-decisions.json") -Encoding UTF8
+    }
     Write-Host "  $($guidMap.Count) / $($manifest.dictionaries.Count) dictionary GUIDs resolved"
     return $guidMap
 }
