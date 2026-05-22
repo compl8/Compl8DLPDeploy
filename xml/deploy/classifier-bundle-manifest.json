@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "dlpdeploy.classifier-bundle-manifest/v1",
+  "generatedUtc": "2026-05-22T00:53:59.3533754Z",
+  "registryPath": "xml/deploy/deploy-registry.json",
+  "tier": "medium",
+  "packages": [
+    {
+      "key": "QGISCF-medium-01",
+      "path": "xml/deploy/QGISCF-medium-01.xml",
+      "rulePackId": "ea1595af-ea49-4ef8-adfd-a91e7eb7eb0c",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-01",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 102115,
+      "sha256": "786186f9ca805d1a3b3c481fd576b893944737e5a861d896a257d69a29851f46"
+    },
+    {
+      "key": "QGISCF-medium-02",
+      "path": "xml/deploy/QGISCF-medium-02.xml",
+      "rulePackId": "d69f29f5-461a-4fcb-9a86-032622e56907",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-02",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 105262,
+      "sha256": "6520c5b77b07914aec81574fc6469a6fd3da13d082e9cbd480c559663952a1b2"
+    },
+    {
+      "key": "QGISCF-medium-03",
+      "path": "xml/deploy/QGISCF-medium-03.xml",
+      "rulePackId": "32700abd-a1ed-4e4b-b658-f30fc712cd1e",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-03",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 96698,
+      "sha256": "a682e585940f6076e9fa09de149495e134e620b98a7e0f66a5699430fd05a00d"
+    },
+    {
+      "key": "QGISCF-medium-04",
+      "path": "xml/deploy/QGISCF-medium-04.xml",
+      "rulePackId": "fd880555-1f2f-44de-8173-2d4349d035ea",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-04",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 85525,
+      "sha256": "cc8d2fc0ff6ca9427744760cca1c4c0dc3c8f02ad58e0a94734264fadb2915a6"
+    },
+    {
+      "key": "QGISCF-medium-05",
+      "path": "xml/deploy/QGISCF-medium-05.xml",
+      "rulePackId": "595b556c-7b01-4217-9d44-a3b2edff674b",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-05",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 84021,
+      "sha256": "6a030bb6d159c4f00cdf456b6dd2d508491422ccec4632a304a7ad8be58a852a"
+    },
+    {
+      "key": "QGISCF-medium-06",
+      "path": "xml/deploy/QGISCF-medium-06.xml",
+      "rulePackId": "45e6a0d0-d6d3-400f-89ce-cfe1922df778",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-06",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 35,
+      "sizeBytes": 126884,
+      "sha256": "9ea5975b751a2cd81aae3b7e7ded0944801be7ea3edb7eca3b6cfc45dedb7136"
+    },
+    {
+      "key": "QGISCF-medium-07a",
+      "path": "xml/deploy/QGISCF-medium-07a.xml",
+      "rulePackId": "3b40d6a1-f1b8-4510-822a-42d12ae4e1f1",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-07a",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 17,
+      "sizeBytes": 78988,
+      "sha256": "7c4d4dfdffd8c9b7240f66648e2974bb65907a371ba11d789e1137a5c6a2a469"
+    },
+    {
+      "key": "QGISCF-medium-07b",
+      "path": "xml/deploy/QGISCF-medium-07b.xml",
+      "rulePackId": "4eb6c1b3-de42-4523-9dfc-8be23e5a0c43",
+      "version": "1.0.0.0",
+      "name": "QGISCF-medium-07b",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 18,
+      "sizeBytes": 97233,
+      "sha256": "50ad5c9d4e227df7d906267b692746ca2981414aaa97eea967964b8963d94501"
+    },
+    {
+      "key": "QGISCF-medium-08",
+      "path": "xml/deploy/QGISCF-medium-08.xml",
+      "rulePackId": "afb2542c-6d06-4770-b39b-5b9dfbf844bc",
+      "version": "1.1.0.0",
+      "name": "QGISCF-medium-08",
+      "publisherName": "Queensland Government CSU",
+      "entityCount": 6,
+      "sizeBytes": 30677,
+      "sha256": "8bbe4f776b9698e0e3f814a201b61d5a337ca82507632ebcc5ec6302f45b6de6"
+    }
+  ]
+}

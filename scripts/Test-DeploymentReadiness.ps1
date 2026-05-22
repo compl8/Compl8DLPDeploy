@@ -654,17 +654,17 @@ function Test-TrainableClassifierInventory {
 function Test-ClassifierBundleManifest {
     $manifestScript = Join-Path $PSScriptRoot "Update-ClassifierBundleManifest.ps1"
     if (-not (Test-Path -LiteralPath $manifestScript)) {
-        Add-ReadyWarning "Classifier bundle manifest script not found; skipping version-increment manifest check."
+        Add-ReadyError "Classifier bundle manifest script not found; cannot verify XML version/hash updates."
         return
     }
 
     try {
         $result = @(& $manifestScript -CheckOnly -NoExit)
         if ($result.Count -eq 0 -or $result[-1] -ne $true) {
-            Add-ReadyWarning "Classifier bundle manifest is missing, stale, or has XML changes without version increments"
+            Add-ReadyError "Classifier bundle manifest is missing, stale, or has XML changes without version increments"
         }
     } catch {
-        Add-ReadyWarning "Classifier bundle manifest check failed: $($_.Exception.Message)"
+        Add-ReadyError "Classifier bundle manifest check failed: $($_.Exception.Message)"
     }
 }
 

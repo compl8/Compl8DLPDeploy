@@ -12,6 +12,7 @@
     "scripts/Deploy-DLPRules.ps1",
     "scripts/Deploy-Labels.ps1",
     "scripts/Invoke-CIChecks.ps1",
+    "scripts/Update-ClassifierBundleManifest.ps1",
     "scripts/New-ReleasePackage.ps1"
   ],
   "include": [
@@ -34,6 +35,7 @@
     "config/tier-assignments.json",
     "config/tenant-fingerprints.example.json",
     "xml/deploy/deploy-registry.json",
+    "xml/deploy/classifier-bundle-manifest.json",
     "xml/deploy/*.xml"
   ],
   "exclude": [

@@ -8,7 +8,11 @@
 #==============================================================================
 
 param(
-    [string]$UPN
+    [string]$UPN,
+    [string]$Tenant,
+    [string]$TargetEnvironment,
+    [string]$Prefix,
+    [switch]$Delegated
 )
 
 $ProjectRoot = $PSScriptRoot
@@ -22,6 +26,7 @@ Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 $_Defaults     = Get-ModuleDefaults
 $_SettingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $_Config       = Merge-GlobalConfig -Defaults $_Defaults -GlobalJson $_SettingsJson
+$_Config       = Set-DeploymentConfigPrefix -Config $_Config -Prefix $Prefix
 $_Prefix       = $_Config.namingPrefix
 
 #region Box Drawing
@@ -110,6 +115,7 @@ function Show-Menu {
     Write-BoxLine -Text (Fmt-Row " [9]  Remove Labels" " [C]  Connect / Reconnect") -InnerWidth $w -Color Cyan
     Write-BoxLine -Text (Fmt-Row " [10] Remove SIT Packages" "") -InnerWidth $w -Color Cyan
     Write-BoxSeparator -InnerWidth $w -Color Cyan
+    Write-BoxLine -Text " [R]  Customer rollout wizard (readiness -> refit -> WhatIf)" -InnerWidth $w -Color Green
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
     Write-BoxBottom -InnerWidth $w -Color Cyan
     Write-Host ""
@@ -128,6 +134,19 @@ function Read-YesNo {
     $answer = (Read-Host).Trim().ToLower()
     if ($answer -eq "") { return $Default }
     return ($answer -eq "y" -or $answer -eq "yes")
+}
+
+function Read-OptionalValue {
+    param(
+        [string]$Prompt,
+        [string]$Current
+    )
+
+    $suffix = if ($Current) { " [$Current]" } else { "" }
+    Write-Host "  $Prompt$suffix`: " -NoNewline
+    $value = (Read-Host).Trim()
+    if ($value) { return $value }
+    return $Current
 }
 
 function Pause-AfterRun {
@@ -150,7 +169,7 @@ function Require-Connection {
     if (-not $Connected.Value) {
         Write-Host ""
         Write-Host "  Not connected. Connecting first..." -ForegroundColor Yellow
-        $result = Connect-DLPSession -UPN $script:UPN
+        $result = Connect-DLPSession -UPN $script:UPN -Tenant $script:Tenant -Delegated:$script:Delegated
         if ($result) {
             $Connected.Value = $true
         } else {
@@ -159,6 +178,86 @@ function Require-Connection {
         }
     }
     return $true
+}
+
+function Set-RolloutContext {
+    Write-Host ""
+    Write-Host "  --- Tenant / Rollout Context ---" -ForegroundColor Cyan
+    $script:Tenant = Read-OptionalValue -Prompt "Tenant domain or GUID" -Current $script:Tenant
+    $script:TargetEnvironment = Read-OptionalValue -Prompt "Target environment profile key" -Current $script:TargetEnvironment
+    $script:Prefix = Read-OptionalValue -Prompt "Deployment prefix override" -Current $script:Prefix
+    $script:UPN = Read-OptionalValue -Prompt "Admin UPN" -Current $script:UPN
+    $script:Delegated = Read-YesNo -Prompt "Use delegated admin connection?" -Default ([bool]$script:Delegated)
+
+    $script:_Config = Merge-GlobalConfig -Defaults $script:_Defaults -GlobalJson $script:_SettingsJson
+    $script:_Config = Set-DeploymentConfigPrefix -Config $script:_Config -Prefix $script:Prefix
+    $script:_Prefix = $script:_Config.namingPrefix
+
+    Write-Host ""
+    Write-Host "  Tenant:      $(if ($script:Tenant) { $script:Tenant } else { '(default connection)' })" -ForegroundColor Gray
+    Write-Host "  Environment: $(if ($script:TargetEnvironment) { $script:TargetEnvironment } else { '(default fingerprint profile)' })" -ForegroundColor Gray
+    Write-Host "  Prefix:      $script:_Prefix" -ForegroundColor Gray
+}
+
+function Get-CommonDeploymentArgs {
+    $commonArgs = @()
+    if ($script:Tenant) { $commonArgs += @("-Tenant", $script:Tenant) }
+    if ($script:TargetEnvironment) { $commonArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
+    if ($script:Prefix) { $commonArgs += @("-Prefix", $script:Prefix) }
+    if ($script:Delegated) { $commonArgs += "-Delegated" }
+    return $commonArgs
+}
+
+function Get-LatestRefitPlanPath {
+    $root = Join-Path (Join-Path $ProjectRoot "reports") "refit-plans"
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        return $null
+    }
+
+    $plans = @(Get-ChildItem -LiteralPath $root -Filter "refit-plan.json" -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+    if ($plans.Count -eq 0) { return $null }
+    return $plans[0].FullName
+}
+
+function Read-RefitPlanPath {
+    $latest = Get-LatestRefitPlanPath
+    $prompt = if ($latest) {
+        "Refit plan path (Enter = latest: $([System.IO.Path]::GetFileName((Split-Path -Parent $latest))))"
+    } else {
+        "Refit plan path"
+    }
+    Write-Host "  $prompt`: " -NoNewline
+    $path = (Read-Host).Trim()
+    if (-not $path) { $path = $latest }
+    if (-not $path) { return $null }
+    if (-not [System.IO.Path]::IsPathRooted($path)) {
+        $path = Join-Path $ProjectRoot $path
+    }
+    return [System.IO.Path]::GetFullPath($path)
+}
+
+function Show-RefitPlanEvidence {
+    param([string]$PlanPath)
+
+    if (-not $PlanPath -or -not (Test-Path -LiteralPath $PlanPath -PathType Leaf)) {
+        Write-Host "  Refit plan not found." -ForegroundColor Red
+        return
+    }
+
+    $planDir = Split-Path -Parent $PlanPath
+    $hashPath = Join-Path $planDir "refit-plan.sha256"
+    $summaryPath = Join-Path $planDir "refit-summary.md"
+    Write-Host ""
+    Write-Host "  Refit plan:    $PlanPath" -ForegroundColor Gray
+    if (Test-Path -LiteralPath $hashPath -PathType Leaf) {
+        Write-Host "  Plan SHA256:   $((Get-Content -Raw -LiteralPath $hashPath).Trim())" -ForegroundColor Gray
+    } else {
+        Write-Host "  Plan SHA256:   missing" -ForegroundColor Red
+    }
+    if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
+        Write-Host "  Summary:       $summaryPath" -ForegroundColor Gray
+    }
 }
 
 function Format-CommandArgument {
@@ -170,6 +269,34 @@ function Format-CommandArgument {
     }
 
     return $text
+}
+
+function Convert-ArgumentListToSplat {
+    param([object[]]$ArgumentList = @())
+
+    $named = @{}
+    $positional = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $ArgumentList.Count; $i++) {
+        $item = $ArgumentList[$i]
+        $text = [string]$item
+        if ($text -match '^-[A-Za-z][A-Za-z0-9]*$') {
+            $key = $text.TrimStart('-')
+            $hasValue = ($i + 1 -lt $ArgumentList.Count) -and ([string]$ArgumentList[$i + 1] -notmatch '^-[A-Za-z][A-Za-z0-9]*$')
+            if ($hasValue) {
+                $named[$key] = $ArgumentList[$i + 1]
+                $i++
+            } else {
+                $named[$key] = $true
+            }
+        } else {
+            $positional.Add($item) | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Named = $named
+        Positional = @($positional.ToArray())
+    }
 }
 
 function Invoke-ToolkitScript {
@@ -190,7 +317,14 @@ function Invoke-ToolkitScript {
     Write-Host ""
     Write-Host "  > $cmd" -ForegroundColor DarkGray
     Write-Host ""
-    & $scriptPath @ArgumentList
+    $binding = Convert-ArgumentListToSplat -ArgumentList $ArgumentList
+    $named = $binding.Named
+    $positional = @($binding.Positional)
+    if ($positional.Count -gt 0) {
+        & $scriptPath @positional @named
+    } else {
+        & $scriptPath @named
+    }
 }
 #endregion
 
@@ -258,7 +392,7 @@ function Invoke-Connect {
         Write-Host "  Already connected." -ForegroundColor Green
         if (-not (Read-YesNo "Reconnect?")) { return }
     }
-    $result = Connect-DLPSession -UPN $script:UPN
+    $result = Connect-DLPSession -UPN $script:UPN -Tenant $script:Tenant -Delegated:$script:Delegated
     $Connected.Value = [bool]$result
     if ($result) {
         Write-Host "  Connected successfully." -ForegroundColor Green
@@ -275,7 +409,7 @@ function Invoke-DeployLabels {
     $publish  = Read-YesNo "Publish labels after creation?"
     $noMark   = Read-YesNo "Skip visual markings?"
 
-    $params = @()
+    $params = @(Get-CommonDeploymentArgs)
     if ($dryRun)  { $params += "-WhatIf" }
     if ($noMark)  { $params += "-NoMarking" }
     if ($publish) {
@@ -295,19 +429,70 @@ function Invoke-DeployClassifiers {
 
     Write-Host ""
     Write-Host "  --- Deploy Classifiers ---" -ForegroundColor Cyan
+    Write-Host "    1. Guided tenant impact manager" -ForegroundColor White
+    Write-Host "    2. Generate refit plan" -ForegroundColor Green
+    Write-Host "    3. Apply refit plan (WhatIf)" -ForegroundColor Green
+    Write-Host "    4. Direct upload to confirmed greenfield tenant" -ForegroundColor Yellow
+    Write-Host "    5. Validate local XML only" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Select: " -NoNewline
+    $operation = (Read-Host).Trim()
 
     Write-Host "  Tier [narrow/wide/full] (Enter = all tiers): " -NoNewline
     $tier = (Read-Host).Trim().ToLower()
+    $commonArgs = @(Get-CommonDeploymentArgs)
 
-    $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
-    $skip   = Read-YesNo "Skip pre-flight checks?"
-
-    $params = @("-Action", "Upload")
-    if ($tier -in @("narrow", "wide", "full")) { $params += @("-Tier", $tier) }
-    if ($dryRun)  { $params += "-WhatIf" }
-    if ($skip)    { $params += "-SkipPreFlight" }
-
-    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+    switch ($operation) {
+        "1" {
+            $params = @("-Action", "Interactive") + $commonArgs
+            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+            return
+        }
+        "2" {
+            $params = @("-Action", "RefitPlan") + $commonArgs
+            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+            Show-RefitPlanEvidence -PlanPath (Get-LatestRefitPlanPath)
+            return
+        }
+        "3" {
+            $planPath = Read-RefitPlanPath
+            if (-not $planPath -or -not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+                Write-Host "  No valid refit plan selected." -ForegroundColor Red
+                return
+            }
+            Show-RefitPlanEvidence -PlanPath $planPath
+            $params = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-WhatIf", "-ApproveRefitPlan") + $commonArgs
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+            return
+        }
+        "4" {
+            $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
+            $greenfield = Read-YesNo "Confirm tenant is greenfield for direct classifier upload?" -Default $false
+            if (-not $greenfield) {
+                Write-Host "  Direct upload aborted. Use RefitPlan for tenants with existing custom packages." -ForegroundColor Yellow
+                return
+            }
+            $skip = Read-YesNo "Skip pre-flight checks?"
+            $params = @("-Action", "Upload", "-Greenfield") + $commonArgs
+            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            if ($dryRun)  { $params += "-WhatIf" }
+            if ($skip)    { $params += "-SkipPreFlight" }
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+            return
+        }
+        "5" {
+            $params = @("-Action", "Validate")
+            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
+            return
+        }
+        default {
+            Write-Host "  Invalid selection." -ForegroundColor Red
+            return
+        }
+    }
 }
 
 function Invoke-DeployDLPRules {
@@ -320,7 +505,7 @@ function Invoke-DeployDLPRules {
     $skipVal   = Read-YesNo "Skip SIT validation?"
     $skipVerif = Read-YesNo "Skip post-deploy verification?"
 
-    $params = @()
+    $params = @(Get-CommonDeploymentArgs)
     if ($dryRun)    { $params += "-WhatIf" }
     if ($skipVal)   { $params += "-SkipValidation" }
     if ($skipVerif) { $params += "-SkipVerification" }
@@ -528,7 +713,8 @@ function Invoke-EstimateCapacity {
     param([ref]$Connected)
     if (-not (Require-Connection $Connected)) { return }
 
-    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList @("-Action", "Estimate")
+    $params = @("-Action", "Estimate") + @(Get-CommonDeploymentArgs)
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
 }
 
 function Invoke-CleanupDLPRules {
@@ -1286,6 +1472,54 @@ function Invoke-RemovePackages {
     Write-Host "  Done." -ForegroundColor Green
 }
 
+function Invoke-CustomerRolloutWizard {
+    param([ref]$Connected)
+
+    Write-Host ""
+    Write-Host "  --- Customer Rollout Wizard ---" -ForegroundColor Cyan
+    Write-Host "  This flow runs readiness, creates a refit plan, and applies the plan in WhatIf mode." -ForegroundColor Gray
+
+    Set-RolloutContext
+    if (-not (Require-Connection $Connected)) { return }
+
+    $commonArgs = @(Get-CommonDeploymentArgs)
+
+    if (Read-YesNo "Run readiness gate now?" -Default $true) {
+        $readinessArgs = @("-Scope", "All", "-RequireTenant", "-NoExit") + $commonArgs
+        $readinessResult = @(Invoke-ToolkitScript -ScriptName "Test-DeploymentReadiness.ps1" -ArgumentList $readinessArgs)
+        $readinessPassed = ($readinessResult.Count -gt 0 -and $readinessResult[-1] -eq $true)
+        if (-not $readinessPassed) {
+            Write-Host ""
+            Write-Host "  Readiness did not pass." -ForegroundColor Red
+            if (-not (Read-YesNo "Continue to refit planning anyway?" -Default $false)) {
+                return
+            }
+        }
+    }
+
+    if (Read-YesNo "Generate a fresh classifier refit plan?" -Default $true) {
+        $refitArgs = @("-Action", "RefitPlan") + $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $refitArgs
+    }
+
+    $planPath = Read-RefitPlanPath
+    if (-not $planPath -or -not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+        Write-Host "  No valid refit plan selected." -ForegroundColor Red
+        return
+    }
+    Show-RefitPlanEvidence -PlanPath $planPath
+
+    if (Read-YesNo "Run ApplyRefitPlan in WhatIf mode with this plan?" -Default $true) {
+        $applyArgs = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-WhatIf", "-ApproveRefitPlan") + $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+    }
+
+    if (Read-YesNo "Run DLP rule deployment dry run now?" -Default $false) {
+        $dlpArgs = @("-WhatIf") + $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $dlpArgs
+    }
+}
+
 function Invoke-ValidateXML {
     Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList @("-Action", "Validate")
 }
@@ -1300,7 +1534,7 @@ while ($true) {
     try { Clear-Host } catch { }
     Show-Menu -Connected $isConnected
 
-    $choice = Read-Choice "  Enter selection [1-11, C, Q]"
+    $choice = Read-Choice "  Enter selection [1-11, R, C, Q]"
 
     switch ($choice.ToUpper()) {
         "C"  { Invoke-Connect ([ref]$isConnected); Pause-AfterRun }
@@ -1315,6 +1549,7 @@ while ($true) {
         "9"  { Invoke-CleanupLabels ([ref]$isConnected); Pause-AfterRun }
         "10" { Invoke-RemovePackages ([ref]$isConnected); Pause-AfterRun }
         "11" { Invoke-ValidateXML; Pause-AfterRun }
+        "R"  { Invoke-CustomerRolloutWizard ([ref]$isConnected); Pause-AfterRun }
         "Q"  { Write-Host "  Bye." -ForegroundColor Gray; exit 0 }
         default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 1 }
     }

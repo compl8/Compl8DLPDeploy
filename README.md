@@ -80,6 +80,7 @@ This release adds a stricter classifier deployment model:
 - Refit planning preserves existing RulePack IDs and DLP-referenced SIT entity IDs wherever possible.
 - Package delete/reset paths include DLP reference guards.
 - Generated Purview object names are checked for deployment-safe ASCII characters before submission.
+- Classifier bundle XML files are pinned in `xml/deploy/classifier-bundle-manifest.json` with RulePack version, entity count, size, and SHA-256; readiness fails if XML changes are not recorded with a RulePack version increment.
 
 For a clean customer tenant with no custom classifier packages, use the greenfield classifier path. For a tenant that already has custom packages, generate and review a refit plan first.
 
@@ -141,6 +142,14 @@ pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.co
 For more control, deploy in phases. `-PublishTo` is only required for `Labels` and `All` phases. Dictionaries, Classifiers, DLPRules, and Cleanup do not need it.
 
 For customer rollouts, prefer `-Tenant`, `-TargetEnvironment`, and `-Prefix`. `-TargetEnvironment` is just a tenant fingerprint/profile key; it is not inherently prod or nonprod.
+
+Operators can also use the launcher instead of constructing long commands:
+
+```powershell
+pwsh -File .\Start-DLPDeploy.ps1
+```
+
+Choose `R` for the customer rollout wizard. It prompts once for tenant, target environment, prefix, and admin identity, then walks through readiness, `RefitPlan`, refit plan/hash review, and `ApplyRefitPlan -WhatIf`. The classifier menu also exposes refit planning and ApplyRefitPlan WhatIf directly.
 
 ```powershell
 # Phase 1: Labels only (PublishTo required)
@@ -206,6 +215,14 @@ Copy `config/tenant-fingerprints.example.json` to `config/tenant-fingerprints.js
 
 Release packaging is driven by `PACKAGE-MANIFEST.json`. The manifest includes source, config, tests, and deploy XML, and excludes local evidence or tenant-specific files such as `reports/`, `logs/`, `backups/`, and `config/tenant-fingerprints.json`.
 
+Classifier bundle update checks are driven by `xml/deploy/classifier-bundle-manifest.json`. After intentionally changing classifier XML, bump the XML RulePack version and refresh the manifest:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Update-ClassifierBundleManifest.ps1
+```
+
+CI/readiness runs the same script in `-CheckOnly` mode and fails if a package hash changed without a version increment or if the manifest is stale.
+
 Validate and create a zip:
 
 ```powershell
@@ -263,6 +280,7 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 | `Deploy-Classifiers.ps1` | Guided classifier bundle manager with validation, impact, capacity, prune, canary, upload, remove, and rollback actions |
 | `Test-DeploymentReadiness.ps1` | Parse and consistency checks for labels, classifier config, policy/rule generation, and deploy XML packages |
 | `Invoke-CIChecks.ps1` | Local parser/readiness/XML validation entrypoint |
+| `Update-ClassifierBundleManifest.ps1` | Record and enforce classifier XML RulePack versions and SHA-256 hashes |
 | `New-ReleasePackage.ps1` | Build a release zip from `PACKAGE-MANIFEST.json` |
 | `Reset-DeploymentScope.ps1` | Scoped reset planner/executor with tenant fingerprint and classifier reference guards |
 
