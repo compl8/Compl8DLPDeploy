@@ -223,6 +223,20 @@ pwsh -NoProfile -File .\scripts\Update-ClassifierBundleManifest.ps1
 
 CI/readiness runs the same script in `-CheckOnly` mode and fails if a package hash changed without a version increment or if the manifest is stale.
 
+TestPattern upstream drift is checked separately. Normal CI validates checked-in fixtures for `/api/export/purview`, `/api/export/dictionary-manifest`, and `/api/export/purview-bundle?dictionaries=true` so contract changes are caught without depending on the network:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Test-TestPatternDrift.ps1
+```
+
+Run a live smoke check when preparing to regenerate bundles from testpattern.dev:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Test-TestPatternDrift.ps1 -Live
+```
+
+The live mode validates the current API shapes, dictionary manifest placeholders, a small Purview bundle export with `dictionaries=true`, and reports local TestPattern display names that no longer appear in the live catalogue by exact name.
+
 Validate and create a zip:
 
 ```powershell
@@ -281,6 +295,7 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 | `Test-DeploymentReadiness.ps1` | Parse and consistency checks for labels, classifier config, policy/rule generation, and deploy XML packages |
 | `Invoke-CIChecks.ps1` | Local parser/readiness/XML validation entrypoint |
 | `Update-ClassifierBundleManifest.ps1` | Record and enforce classifier XML RulePack versions and SHA-256 hashes |
+| `Test-TestPatternDrift.ps1` | Offline fixture and optional live smoke checks for testpattern.dev API/bundle drift |
 | `New-ReleasePackage.ps1` | Build a release zip from `PACKAGE-MANIFEST.json` |
 | `Reset-DeploymentScope.ps1` | Scoped reset planner/executor with tenant fingerprint and classifier reference guards |
 

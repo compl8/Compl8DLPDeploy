@@ -1,0 +1,22 @@
+{
+  "dictionaries": [
+    {
+      "placeholder": "{{DICT_NOISE_EXCLUSION}}",
+      "name": "Noise Exclusion",
+      "description": "Terms used to reduce false positives in TestPattern exports.",
+      "terms": [
+        "example",
+        "sample"
+      ]
+    },
+    {
+      "placeholder": "{{DICT_AU_FORENAMES}}",
+      "name": "Australian Forenames",
+      "description": "Fixture for name corroboration dictionaries.",
+      "terms": [
+        "Olivia",
+        "Noah"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "patterns": [
+    {
+      "slug": "au-tfn",
+      "name": "Australian Taxation Identifier",
+      "jurisdiction": "au"
+    },
+    {
+      "slug": "legal-full-name",
+      "name": "Legal Full Name",
+      "jurisdiction": "au"
+    }
+  ]
+}

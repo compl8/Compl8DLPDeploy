@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="11111111-1111-1111-1111-111111111111">
+    <Version major="1" minor="0" build="0" revision="0" />
+    <Details>
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>TestPattern</PublisherName>
+        <Name>Compl8DriftFixture</Name>
+        <Description>Fixture bundle for TestPattern drift checks.</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="22222222-2222-2222-2222-222222222222">
+      <Pattern confidenceLevel="85">
+        <IdMatch idRef="Pattern_au_tfn" />
+        <Match idRef="{{DICT_NOISE_EXCLUSION}}" />
+      </Pattern>
+    </Entity>
+    <Regex id="Pattern_au_tfn">(?i)\b(?:tax\s+file\s+number|tfn)\b</Regex>
+    <LocalizedStrings>
+      <Resource idRef="22222222-2222-2222-2222-222222222222">
+        <Name default="true" langcode="en-us">TestPattern - Australian Taxation Identifier</Name>
+        <Description default="true" langcode="en-us">Fixture sensitive information type.</Description>
+      </Resource>
+    </LocalizedStrings>
+  </Rules>
+</RulePackage>

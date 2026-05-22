@@ -50,6 +50,13 @@ Invoke-Check -Name "Deployment readiness" -ScriptBlock {
     }
 }
 
+Invoke-Check -Name "TestPattern drift fixtures" -ScriptBlock {
+    $ok = @(& (Join-Path $ProjectRoot "scripts\Test-TestPatternDrift.ps1") -NoExit)
+    if ($ok.Count -eq 0 -or $ok[-1] -ne $true) {
+        throw "TestPattern drift fixture validation failed"
+    }
+}
+
 Invoke-Check -Name "Classifier XML validation" -ScriptBlock {
     & (Join-Path $ProjectRoot "scripts\Deploy-Classifiers.ps1") -Action Validate
 }

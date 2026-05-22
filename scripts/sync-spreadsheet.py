@@ -42,7 +42,7 @@ def load_spreadsheet_slugs(xls_path):
 
 def fetch_testpattern_catalogue(jurisdiction=None):
     """Fetch the full pattern catalogue from testpattern.dev."""
-    url = "https://testpattern.dev/api/patterns"
+    url = "https://testpattern.dev/api/export/purview"
     if jurisdiction:
         url += f"?jurisdiction={jurisdiction}"
     req = urllib.request.Request(url, headers={"User-Agent": "Compl8DLPDeploy/1.0"})
