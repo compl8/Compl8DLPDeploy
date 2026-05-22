@@ -115,6 +115,7 @@ function Show-Menu {
     Write-BoxLine -Text (Fmt-Row " [9]  Remove Labels" " [C]  Connect / Reconnect") -InnerWidth $w -Color Cyan
     Write-BoxLine -Text (Fmt-Row " [10] Remove SIT Packages" "") -InnerWidth $w -Color Cyan
     Write-BoxSeparator -InnerWidth $w -Color Cyan
+    Write-BoxLine -Text " [12] TestPattern drift check / update" -InnerWidth $w -Color Yellow
     Write-BoxLine -Text " [R]  Customer rollout wizard (readiness -> refit -> WhatIf)" -InnerWidth $w -Color Green
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
     Write-BoxBottom -InnerWidth $w -Color Cyan
@@ -326,6 +327,167 @@ function Invoke-ToolkitScript {
         & $scriptPath @named
     }
 }
+
+function Invoke-ExternalTool {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [object[]]$ArgumentList = @()
+    )
+
+    $displayArgs = @($ArgumentList | ForEach-Object { Format-CommandArgument $_ })
+    $cmd = $FilePath
+    if ($displayArgs.Count -gt 0) {
+        $cmd = "$cmd $($displayArgs -join ' ')"
+    }
+
+    Write-Host ""
+    Write-Host "  > $cmd" -ForegroundColor DarkGray
+    Write-Host ""
+
+    try {
+        Push-Location $ProjectRoot
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+    } catch {
+        Write-Host "  Command failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        Pop-Location
+    }
+
+    if ($null -ne $exitCode -and $exitCode -ne 0) {
+        Write-Host "  Command exited with code $exitCode." -ForegroundColor Red
+        return $false
+    }
+
+    return $true
+}
+
+function Resolve-TestPatternDriftChoice {
+    param([string]$Choice)
+
+    switch (($Choice.Trim()).ToUpperInvariant()) {
+        { $_ -in @("A", "U", "1", "UPDATE") } { return "Update" }
+        { $_ -in @("B", "2", "CONTINUE") } { return "Continue" }
+        { $_ -in @("C", "E", "Q", "3", "EXIT", "ABORT") } { return "Exit" }
+        default { return $null }
+    }
+}
+
+function Get-TestPatternUpdateTierDefault {
+    if ($script:_Config.deploymentTier -in @("small", "medium", "large")) {
+        return $script:_Config.deploymentTier
+    }
+    return "medium"
+}
+
+function Read-TestPatternUpdateTier {
+    $defaultTier = Get-TestPatternUpdateTierDefault
+    $tier = Read-OptionalValue -Prompt "TestPattern update tier [small/medium/large]" -Current $defaultTier
+    $tier = $tier.ToLowerInvariant()
+    if ($tier -notin @("small", "medium", "large")) {
+        Write-Host "  Invalid tier '$tier'. Use small, medium, or large." -ForegroundColor Red
+        return $null
+    }
+    return $tier
+}
+
+function Invoke-TestPatternUpdateWorkflow {
+    Write-Host ""
+    Write-Host "  --- Update From TestPattern ---" -ForegroundColor Cyan
+    Write-Host "  This refreshes local classifier config and deploy XML from the live TestPattern API." -ForegroundColor Gray
+    Write-Host "  Review the git diff before deploying changed content to a tenant." -ForegroundColor Yellow
+
+    $tier = Read-TestPatternUpdateTier
+    if (-not $tier) { return $false }
+
+    $xlsPath = Read-OptionalValue -Prompt "Spreadsheet path override (Enter = settings/default)" -Current ""
+    $xlsArgs = @()
+    if ($xlsPath) { $xlsArgs = @("--xls", $xlsPath) }
+
+    $ok = $true
+    if (Read-YesNo "Show spreadsheet/live catalogue drift report first?" -Default $true) {
+        $jurisdiction = Read-OptionalValue -Prompt "Jurisdiction filter for catalogue report (Enter = none)" -Current ""
+        $syncArgs = @((Join-Path $ScriptsDir "sync-spreadsheet.py")) + $xlsArgs
+        if ($jurisdiction) { $syncArgs += @("--jurisdiction", $jurisdiction) }
+        $ok = (Invoke-ExternalTool -FilePath "python" -ArgumentList $syncArgs) -and $ok
+    }
+
+    if (Read-YesNo "Regenerate classifiers.json from spreadsheet?" -Default $true) {
+        $buildConfigArgs = @((Join-Path $ScriptsDir "Build-FromXLS.py"), "--tier", $tier) + $xlsArgs
+        $ok = (Invoke-ExternalTool -FilePath "python" -ArgumentList $buildConfigArgs) -and $ok
+    }
+
+    if (Read-YesNo "Regenerate deploy XML packages from TestPattern?" -Default $true) {
+        $buildPackageArgs = @((Join-Path $ScriptsDir "build-deploy-packages.py"), "--tier", $tier) + $xlsArgs
+        $ok = (Invoke-ExternalTool -FilePath "python" -ArgumentList $buildPackageArgs) -and $ok
+
+        if ($ok -and (Read-YesNo "Refresh classifier bundle manifest for this intentional update?" -Default $true)) {
+            $manifestResult = @(Invoke-ToolkitScript -ScriptName "Update-ClassifierBundleManifest.ps1" -ArgumentList @("-Tier", $tier, "-Force", "-NoExit"))
+            $ok = ($manifestResult.Count -gt 0 -and $manifestResult[-1] -eq $true) -and $ok
+        }
+    }
+
+    if ($ok) {
+        Write-Host ""
+        Write-Host "  TestPattern update workflow completed. Review changed files before tenant deployment." -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "  TestPattern update workflow did not complete cleanly." -ForegroundColor Red
+    }
+    return $ok
+}
+
+function Invoke-TestPatternDriftDecision {
+    while ($true) {
+        $driftResult = @(Invoke-ToolkitScript -ScriptName "Test-TestPatternDrift.ps1" -ArgumentList @("-Live", "-FailOnWarnings", "-NoExit"))
+        $driftPassed = ($driftResult.Count -gt 0 -and $driftResult[-1] -eq $true)
+        if ($driftPassed) {
+            Write-Host ""
+            Write-Host "  TestPattern live drift check passed." -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host ""
+        Write-Host "  !! TESTPATTERN DRIFT DETECTED !!" -ForegroundColor Red
+        Write-Host "  The live TestPattern catalogue or bundle output differs from the local expectations." -ForegroundColor Yellow
+        Write-Host "  Choose how to proceed:" -ForegroundColor White
+        Write-Host "    A. Update from TestPattern" -ForegroundColor Green
+        Write-Host "    B. Continue with current local content" -ForegroundColor Yellow
+        Write-Host "    C. Exit this workflow" -ForegroundColor Red
+
+        while ($true) {
+            $choice = Resolve-TestPatternDriftChoice -Choice (Read-Choice "  Select [A/B/C]")
+            switch ($choice) {
+                "Update" {
+                    if (Invoke-TestPatternUpdateWorkflow) {
+                        if (Read-YesNo "Re-run live TestPattern drift check now?" -Default $true) {
+                            break
+                        }
+                        return $true
+                    }
+                    Write-Host "  Update failed or was cancelled." -ForegroundColor Red
+                    if (-not (Read-YesNo "Return to the drift decision menu?" -Default $true)) {
+                        return $false
+                    }
+                    break
+                }
+                "Continue" {
+                    Write-Host "  Continuing with current local content." -ForegroundColor Yellow
+                    return $true
+                }
+                "Exit" {
+                    Write-Host "  Exiting this workflow." -ForegroundColor Yellow
+                    return $false
+                }
+                default {
+                    Write-Host "  Invalid selection." -ForegroundColor Red
+                }
+            }
+            if ($choice -eq "Update") { break }
+        }
+    }
+}
 #endregion
 
 #region Package XML Helpers
@@ -441,6 +603,9 @@ function Invoke-DeployClassifiers {
     Write-Host "  Tier [narrow/wide/full] (Enter = all tiers): " -NoNewline
     $tier = (Read-Host).Trim().ToLower()
     $commonArgs = @(Get-CommonDeploymentArgs)
+    if ($operation -in @("1", "2", "3", "4") -and (Read-YesNo "Check live TestPattern drift before using classifier content?" -Default $true)) {
+        if (-not (Invoke-TestPatternDriftDecision)) { return }
+    }
 
     switch ($operation) {
         "1" {
@@ -1480,6 +1645,9 @@ function Invoke-CustomerRolloutWizard {
     Write-Host "  This flow runs readiness, creates a refit plan, and applies the plan in WhatIf mode." -ForegroundColor Gray
 
     Set-RolloutContext
+    if (Read-YesNo "Check live TestPattern drift before rollout?" -Default $true) {
+        if (-not (Invoke-TestPatternDriftDecision)) { return }
+    }
     if (-not (Require-Connection $Connected)) { return }
 
     $commonArgs = @(Get-CommonDeploymentArgs)
@@ -1524,6 +1692,10 @@ function Invoke-ValidateXML {
     Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList @("-Action", "Validate")
 }
 
+function Invoke-TestPatternDriftMenu {
+    [void](Invoke-TestPatternDriftDecision)
+}
+
 #endregion
 
 #region Main Loop
@@ -1534,7 +1706,7 @@ while ($true) {
     try { Clear-Host } catch { }
     Show-Menu -Connected $isConnected
 
-    $choice = Read-Choice "  Enter selection [1-11, R, C, Q]"
+    $choice = Read-Choice "  Enter selection [1-12, R, C, Q]"
 
     switch ($choice.ToUpper()) {
         "C"  { Invoke-Connect ([ref]$isConnected); Pause-AfterRun }
@@ -1549,6 +1721,7 @@ while ($true) {
         "9"  { Invoke-CleanupLabels ([ref]$isConnected); Pause-AfterRun }
         "10" { Invoke-RemovePackages ([ref]$isConnected); Pause-AfterRun }
         "11" { Invoke-ValidateXML; Pause-AfterRun }
+        "12" { Invoke-TestPatternDriftMenu; Pause-AfterRun }
         "R"  { Invoke-CustomerRolloutWizard ([ref]$isConnected); Pause-AfterRun }
         "Q"  { Write-Host "  Bye." -ForegroundColor Gray; exit 0 }
         default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 1 }

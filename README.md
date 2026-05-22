@@ -149,7 +149,7 @@ Operators can also use the launcher instead of constructing long commands:
 pwsh -File .\Start-DLPDeploy.ps1
 ```
 
-Choose `R` for the customer rollout wizard. It prompts once for tenant, target environment, prefix, and admin identity, then walks through readiness, `RefitPlan`, refit plan/hash review, and `ApplyRefitPlan -WhatIf`. The classifier menu also exposes refit planning and ApplyRefitPlan WhatIf directly.
+Choose `R` for the customer rollout wizard. It prompts once for tenant, target environment, prefix, and admin identity, highlights live TestPattern drift before classifier planning, then walks through readiness, `RefitPlan`, refit plan/hash review, and `ApplyRefitPlan -WhatIf`. The classifier menu also exposes refit planning and ApplyRefitPlan WhatIf directly. Choose `12` to run the TestPattern drift check/update decision point on its own.
 
 ```powershell
 # Phase 1: Labels only (PublishTo required)
@@ -236,6 +236,8 @@ pwsh -NoProfile -File .\scripts\Test-TestPatternDrift.ps1 -Live
 ```
 
 The live mode validates the current API shapes, dictionary manifest placeholders, a small Purview bundle export with `dictionaries=true`, and reports local TestPattern display names that no longer appear in the live catalogue by exact name.
+
+The interactive launcher runs the same live check before rollout/classifier workflows. If drift is found, it highlights the issue and asks whether to update local content from TestPattern, continue with the checked-in content, or exit the workflow.
 
 Validate and create a zip:
 

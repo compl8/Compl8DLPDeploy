@@ -17,6 +17,7 @@ param(
     [string[]]$LiveSlug = @(),
     [int]$MaxPackageSizeBytes = (148 * 1024),
     [switch]$FailOnLocalNameDrift,
+    [switch]$FailOnWarnings,
     [switch]$NoExit
 )
 
@@ -419,7 +420,7 @@ if ($script:Warnings.Count -eq 0) {
     foreach ($warn in $script:Warnings) { Write-Host "    - $warn" -ForegroundColor Yellow }
 }
 
-$passed = ($script:Errors.Count -eq 0)
+$passed = ($script:Errors.Count -eq 0 -and (-not $FailOnWarnings -or $script:Warnings.Count -eq 0))
 if ($passed) {
     Write-Host "`nRESULT: PASS" -ForegroundColor Green
 } else {

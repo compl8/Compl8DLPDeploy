@@ -71,4 +71,16 @@ Describe 'Test-TestPatternDrift.ps1' {
             BundleFixturePath = Join-Path $script:TempRoot 'purview-bundle.xml'
         } | Should -BeFalse
     }
+
+    It 'can promote drift warnings to failures for interactive checks' {
+        '{"dictionaries":[{"placeholder":"{{DICT_NOISE_EXCLUSION}}","name":"Noise","terms":[]}]}' |
+            Set-Content -LiteralPath (Join-Path $script:TempRoot 'dictionary-manifest.json') -Encoding UTF8
+
+        Invoke-TestPatternDriftScript -Parameters @{
+            PatternsFixturePath = Join-Path $script:TempRoot 'patterns.json'
+            DictionaryManifestFixturePath = Join-Path $script:TempRoot 'dictionary-manifest.json'
+            BundleFixturePath = Join-Path $script:TempRoot 'purview-bundle.xml'
+            FailOnWarnings = $true
+        } | Should -BeFalse
+    }
 }

@@ -30,6 +30,7 @@ BeforeAll {
     }
 
     Import-LauncherFunction -Name 'Convert-ArgumentListToSplat'
+    Import-LauncherFunction -Name 'Resolve-TestPatternDriftChoice'
 }
 
 Describe 'Start-DLPDeploy launcher dispatch' {
@@ -55,5 +56,12 @@ Describe 'Start-DLPDeploy launcher dispatch' {
 
         $binding.Positional | Should -Be @('positional-value')
         $binding.Named.SwitchOnly | Should -BeTrue
+    }
+
+    It 'normalizes TestPattern drift menu choices' {
+        Resolve-TestPatternDriftChoice -Choice 'A' | Should -Be 'Update'
+        Resolve-TestPatternDriftChoice -Choice 'b' | Should -Be 'Continue'
+        Resolve-TestPatternDriftChoice -Choice 'exit' | Should -Be 'Exit'
+        Resolve-TestPatternDriftChoice -Choice 'invalid' | Should -BeNullOrEmpty
     }
 }
