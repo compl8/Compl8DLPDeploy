@@ -878,6 +878,29 @@ Describe 'Get-DictionaryGuidReferences' {
     It 'de-duplicates repeated references' {
         (Get-DictionaryGuidReferences -PackageXmlText '<R><Match idRef="dddddddd-1111-2222-3333-444444444444"/><Match idRef="dddddddd-1111-2222-3333-444444444444"/></R>').Count | Should -Be 1
     }
+    It 'ignores Resource idRef entries inside LocalizedStrings (regression: entity-id false-positive)' {
+        $xml = @'
+<RulePackage>
+  <Rules>
+    <Entity id="727e72ca-73d1-479f-a1cf-b2670fd41ac9">
+      <Pattern>
+        <IdMatch idRef="Pattern_au_crn" />
+        <Match idRef="dddddddd-1111-2222-3333-444444444444" />
+      </Pattern>
+    </Entity>
+    <LocalizedStrings>
+      <Resource idRef="727e72ca-73d1-479f-a1cf-b2670fd41ac9">
+        <Name default="true" langcode="en-us">Demo SIT</Name>
+      </Resource>
+    </LocalizedStrings>
+  </Rules>
+</RulePackage>
+'@
+        $r = Get-DictionaryGuidReferences -PackageXmlText $xml
+        $r | Should -Contain 'dddddddd-1111-2222-3333-444444444444'
+        $r | Should -Not -Contain '727e72ca-73d1-479f-a1cf-b2670fd41ac9'
+        $r.Count | Should -Be 1
+    }
 }
 
 Describe 'Resolve-DictionarySyncDecision' {
