@@ -238,7 +238,81 @@ function Read-DeploymentPackageManifest {
         Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-function Add-DeploymentPlanAdjustment { throw 'Not implemented in module skeleton' }
+function Add-DeploymentPlanAdjustment {
+    param(
+        [Parameter(Mandatory)][string]$SessionPath,
+        [Parameter(Mandatory)][ValidateSet('refit','operator-review')][string]$Source,
+        [Parameter(Mandatory)][ValidateSet('label','labelPolicy','classifierPackage','dictionary','dlpPolicy','dlpRule')][string]$ArtifactType,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Action,
+        [hashtable]$Before,
+        [hashtable]$After,
+        [Parameter(Mandatory)][string]$Reason
+    )
+
+    Update-PendingPackage -SessionPath $SessionPath -Mutator {
+        param($workingDir)
+        $adjFile = Join-Path $workingDir 'plan-adjustments.json'
+        $tgtFile = Join-Path $workingDir 'deployment-target.json'
+        $adj = Get-Content -Raw -LiteralPath $adjFile | ConvertFrom-Json -AsHashtable
+        $tgt = Get-Content -Raw -LiteralPath $tgtFile | ConvertFrom-Json -AsHashtable
+
+        $idKey = "$Source`:$ArtifactType`:$Key`:$Action"
+        $existing = $null
+        foreach ($entry in $adj.entries) {
+            if ("$($entry.source)`:$($entry.artifactType)`:$($entry.key)`:$($entry.action)" -eq $idKey) { $existing = $entry; break }
+        }
+
+        # Stale-Before guard (only when Before is provided)
+        if ($Before -and $ArtifactType -eq 'classifierPackage' -and $Action -eq 'reuse-rulepackid') {
+            $pkg = $tgt.classifierPackages | Where-Object name -eq $Key | Select-Object -First 1
+            if ($pkg) {
+                $current = $pkg.rulePackId
+                $expected = $Before.rulePackId
+                if (($null -ne $current) -and ($current -ne $expected)) {
+                    throw "stale Before: target classifierPackage '$Key' rulePackId is '$current', adjustment expected '$expected'"
+                }
+            }
+        }
+
+        $entry = [ordered]@{
+            ts           = (Get-Date).ToString('o')
+            source       = $Source
+            artifactType = $ArtifactType
+            key          = $Key
+            action       = $Action
+            before       = $Before
+            after        = $After
+            reason       = $Reason
+        }
+        if ($existing) {
+            $existing.ts     = $entry.ts
+            $existing.before = $entry.before
+            $existing.after  = $entry.after
+            $existing.reason = $entry.reason
+        } else {
+            $adj.entries += $entry
+        }
+
+        switch ("$ArtifactType`:$Action") {
+            'classifierPackage:reuse-rulepackid' {
+                $pkg = $tgt.classifierPackages | Where-Object name -eq $Key | Select-Object -First 1
+                if ($pkg) { $pkg.rulePackId = $After.rulePackId }
+            }
+            { $_.EndsWith(':skip') } {
+                $collectionName = switch ($ArtifactType) {
+                    'label' { 'labels' } 'labelPolicy' { 'labelPolicy' } 'classifierPackage' { 'classifierPackages' }
+                    'dictionary' { 'dictionaries' } 'dlpPolicy' { 'dlpPolicies' } 'dlpRule' { 'dlpRules' }
+                }
+                if ($collectionName -eq 'labelPolicy') { $tgt.labelPolicy = @{ name=''; publishTo=@(); labels=@(); settings=@{} } }
+                else { $tgt[$collectionName] = @($tgt[$collectionName] | Where-Object { $_.name -ne $Key }) }
+            }
+        }
+
+        $adj | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $adjFile -Encoding UTF8
+        $tgt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tgtFile -Encoding UTF8
+    }
+}
 function Add-DeploymentPhaseResult { throw 'Not implemented in module skeleton' }
 function Move-DeploymentPackageToArchive { throw 'Not implemented in module skeleton' }
 

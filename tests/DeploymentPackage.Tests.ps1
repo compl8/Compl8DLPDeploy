@@ -205,3 +205,73 @@ Describe 'New-DeploymentTargetSnapshot' {
         }
     }
 }
+
+Describe 'Add-DeploymentPlanAdjustment' {
+    BeforeAll {
+        $script:AdjRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-adj-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:AdjRoot -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:AdjRoot) { Remove-Item $script:AdjRoot -Recurse -Force }
+    }
+
+    It 'appends a refit classifier-package adjustment and mutates the target' {
+        $sessionDir = New-TestSession -Root $script:AdjRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{
+                schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}};
+                classifierPackages=@(@{name='QGISCF-medium-03'; rulePackId=$null; entities=@(); dictionaryRefs=@()});
+                dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Add-DeploymentPlanAdjustment -SessionPath $sessionDir `
+            -Source 'refit' -ArtifactType 'classifierPackage' -Key 'QGISCF-medium-03' -Action 'reuse-rulepackid' `
+            -Before @{ rulePackId = $null } -After @{ rulePackId = 'abc-123' } -Reason 'preserved'
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Adjustments.entries.Count | Should -Be 1
+        $r.Adjustments.entries[0].action | Should -Be 'reuse-rulepackid'
+        ($r.Target.classifierPackages | Where-Object name -eq 'QGISCF-medium-03').rulePackId | Should -Be 'abc-123'
+    }
+
+    It 'is idempotent on identity key (re-emit updates ts/after, no duplicate)' {
+        $sessionDir = New-TestSession -Root $script:AdjRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(@{name='P1';rulePackId=$null;entities=@();dictionaryRefs=@()}); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Add-DeploymentPlanAdjustment -SessionPath $sessionDir -Source 'refit' -ArtifactType 'classifierPackage' -Key 'P1' -Action 'reuse-rulepackid' -Before @{ rulePackId=$null } -After @{ rulePackId='v1' } -Reason 'first'
+        Add-DeploymentPlanAdjustment -SessionPath $sessionDir -Source 'refit' -ArtifactType 'classifierPackage' -Key 'P1' -Action 'reuse-rulepackid' -Before @{ rulePackId='v1' } -After @{ rulePackId='v2' } -Reason 'second'
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Adjustments.entries.Count | Should -Be 1
+        $r.Adjustments.entries[0].after.rulePackId | Should -Be 'v2'
+        $r.Adjustments.entries[0].reason | Should -Be 'second'
+        ($r.Target.classifierPackages | Where-Object name -eq 'P1').rulePackId | Should -Be 'v2'
+    }
+
+    It 'rejects an adjustment whose Before does not match the current target value' {
+        $sessionDir = New-TestSession -Root $script:AdjRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(@{name='P1';rulePackId='live-id';entities=@();dictionaryRefs=@()}); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        { Add-DeploymentPlanAdjustment -SessionPath $sessionDir -Source 'refit' -ArtifactType 'classifierPackage' -Key 'P1' -Action 'reuse-rulepackid' -Before @{ rulePackId=$null } -After @{ rulePackId='other' } -Reason 'stale plan' } |
+            Should -Throw '*stale*'
+    }
+
+    It 'removes the target artifact when an operator-review skip is recorded' {
+        $sessionDir = New-TestSession -Root $script:AdjRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{
+                schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}};
+                classifierPackages=@(); dictionaries=@(); dlpPolicies=@();
+                dlpRules=@(@{name='P04-R11-END-PROT_IT-EXT-ADT'; policy='P'; classifiers=@(); scopeParam=''; scopeValue=''}) } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Add-DeploymentPlanAdjustment -SessionPath $sessionDir -Source 'operator-review' -ArtifactType 'dlpRule' -Key 'P04-R11-END-PROT_IT-EXT-ADT' -Action 'skip' -Reason 'deferred'
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Target.dlpRules.Count | Should -Be 0
+    }
+}
