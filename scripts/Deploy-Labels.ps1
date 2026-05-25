@@ -27,14 +27,24 @@ param(
     [switch]$Delegated,
     [string]$TargetEnvironment,
     [string]$Prefix,
-    [switch]$RegisterFingerprint
+    [switch]$RegisterFingerprint,
+    [string]$DeploymentSessionPath
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$ConfigPath  = Join-Path $ProjectRoot "config"
 
-# Import shared module
+# Import shared modules
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
+
+$script:DeploymentSession = $null
+if ($DeploymentSessionPath) {
+    if (-not (Test-Path -LiteralPath $DeploymentSessionPath)) { throw "DeploymentSessionPath not found: $DeploymentSessionPath" }
+    Import-Module (Join-Path $ProjectRoot "modules" "DeploymentPackage.psm1") -Force
+    $script:DeploymentSession = Read-DeploymentPackageManifest -SessionPath $DeploymentSessionPath
+}
+
+$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Join-Path $ProjectRoot "config" }
+$script:DLStartedAt = (Get-Date).ToString('o')
 
 $ErrorActionPreference = "Stop"
 
@@ -464,6 +474,18 @@ if ($failLabels -eq $sortedLabels.Count) {
 }
 
 Write-Host "`nDeployment complete at $(Get-Date)" -ForegroundColor Green
+
+if ($script:DeploymentSession) {
+    $phaseStatus = if ($failLabels -eq 0) { 'success' } elseif ($failLabels -lt $sortedLabels.Count) { 'partial' } else { 'failed' }
+    try {
+        Add-DeploymentPhaseResult -SessionPath $script:DeploymentSession.SessionPath `
+            -Phase 'labels' -Action 'Deploy' -Status $phaseStatus `
+            -StartedAt $script:DLStartedAt -CompletedAt (Get-Date).ToString('o') `
+            -Artifacts @() -Errors @()
+    } catch {
+        Write-Warning "Failed to emit labels phase-result: $($_.Exception.Message)"
+    }
+}
 
 try { Stop-Transcript } catch { }
 #endregion
