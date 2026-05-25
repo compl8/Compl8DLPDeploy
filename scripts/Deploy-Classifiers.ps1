@@ -69,13 +69,25 @@ param(
     [switch]$AllowPartialRefitApply,
     [switch]$Greenfield,
     [switch]$AllowDirectUploadWithoutRefitPlan,
-    [switch]$RegisterFingerprint
+    [switch]$RegisterFingerprint,
+    [string]$DeploymentSessionPath
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$ConfigPath  = Join-Path $ProjectRoot "config"
-$XmlDir      = Join-Path $ProjectRoot "xml"
+
+# When -DeploymentSessionPath is supplied, configs + XML are loaded from the session's
+# working/ subtree, not from the live repo. Phase-result emission is gated on the same flag.
+$script:DeploymentSession = $null
+if ($DeploymentSessionPath) {
+    if (-not (Test-Path -LiteralPath $DeploymentSessionPath)) { throw "DeploymentSessionPath not found: $DeploymentSessionPath" }
+    Import-Module (Join-Path $ProjectRoot 'modules/DeploymentPackage.psm1') -Force
+    $script:DeploymentSession = Read-DeploymentPackageManifest -SessionPath $DeploymentSessionPath
+}
+
+$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Join-Path $ProjectRoot "config" }
+$XmlDir     = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/xml' }    else { Join-Path $ProjectRoot "xml" }
+$script:DeploymentSessionStartedAt = (Get-Date).ToString('o')
 $BackupDir   = Join-Path (Join-Path $ProjectRoot "backups") "classifiers"
 
 # Import shared module
@@ -6733,6 +6745,17 @@ try {
     if ($script:DeploymentManifest) {
         Complete-DeploymentManifest -Manifest $script:DeploymentManifest -Status $script:DeploymentFinalStatus | Out-Null
         Save-DeploymentManifest -Manifest $script:DeploymentManifest -ProjectRoot $ProjectRoot -TranscriptPath $script:TranscriptPath | Out-Null
+    }
+    if ($script:DeploymentSession) {
+        $phaseStatus = if ($script:DeploymentFinalStatus -eq 'Failed') { 'failed' } elseif ($script:DeploymentFinalStatus -eq 'Partial') { 'partial' } else { 'success' }
+        try {
+            Add-DeploymentPhaseResult -SessionPath $script:DeploymentSession.SessionPath `
+                -Phase 'classifiers' -Action $Action -Status $phaseStatus `
+                -StartedAt $script:DeploymentSessionStartedAt -CompletedAt (Get-Date).ToString('o') `
+                -Artifacts @() -Errors @() -ReportPath ([string]$script:DeploymentReportDir)
+        } catch {
+            Write-Warning "Failed to emit classifiers phase-result into deployment session: $($_.Exception.Message)"
+        }
     }
 }
 #endregion
