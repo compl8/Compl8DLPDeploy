@@ -14,7 +14,10 @@
     "scripts/Invoke-CIChecks.ps1",
     "scripts/Update-ClassifierBundleManifest.ps1",
     "scripts/Test-TestPatternDrift.ps1",
-    "scripts/New-ReleasePackage.ps1"
+    "scripts/New-ReleasePackage.ps1",
+    "scripts/Initialize-DeploymentSession.ps1",
+    "scripts/Edit-DeploymentTarget.ps1",
+    "scripts/Finalize-DeploymentSession.ps1"
   ],
   "include": [
     "PACKAGE-MANIFEST.json",
@@ -38,7 +41,8 @@
     "config/tenant-fingerprints.example.json",
     "xml/deploy/deploy-registry.json",
     "xml/deploy/classifier-bundle-manifest.json",
-    "xml/deploy/*.xml"
+    "xml/deploy/*.xml",
+    "schemas/*.json"
   ],
   "exclude": [
     ".git/**",
