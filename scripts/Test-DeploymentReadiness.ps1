@@ -196,7 +196,10 @@ function Test-SettingsConfig {
 }
 
 function Test-LabelsConfig {
-    param([array]$LabelsJson)
+    param(
+        [array]$LabelsJson,
+        [hashtable]$Config
+    )
 
     $result = @{ LeafCodes = @{}; LabelNames = @{}; DlpCodes = @{} }
     if (-not $LabelsJson -or $LabelsJson.Count -eq 0) {
@@ -204,7 +207,8 @@ function Test-LabelsConfig {
         return $result
     }
 
-    $names = @{}
+    $sourceNames = @{}
+    $generatedNames = @{}
     $codes = @{}
     $priorities = @{}
     $groupNames = @{}
@@ -217,10 +221,24 @@ function Test-LabelsConfig {
         Test-RequiredProperty -Object $label -Property "isGroup" -Context $context | Out-Null
 
         if ($label.name) {
-            if ($names.ContainsKey($label.name)) { Add-ReadyWarning "Duplicate label name '$($label.name)'; verify this is intentional before label deployment." }
-            $names[$label.name] = $true
+            $generatedName = if ($Config) {
+                Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $label.name -Tokens @{
+                    labelCode   = $label.code
+                    displayName = $label.displayName
+                }
+            } else {
+                $label.name
+            }
+            if ($sourceNames.ContainsKey($label.name) -and -not $Config) {
+                Add-ReadyWarning "Duplicate label name '$($label.name)'; verify this is intentional before label deployment."
+            }
+            $sourceNames[$label.name] = $true
+            if ($generatedNames.ContainsKey($generatedName)) {
+                Add-ReadyError "Generated duplicate label name '$generatedName'"
+            }
+            $generatedNames[$generatedName] = $true
             $result.LabelNames[$label.name] = $label
-            Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $label.name -ObjectType "label name")
+            Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $generatedName -ObjectType "label name")
         }
         if ($null -ne $label.priority) {
             $p = $label.priority.ToString()
@@ -512,7 +530,7 @@ function Test-GeneratedDlpPayloads {
         $policyNames = @{}
         foreach ($policy in $policies) {
             if (-not $policy.Enabled) { continue }
-            $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $config.namingPrefix -Suffix $config.namingSuffix
+            $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Config $config
             if (-not $policyNames.ContainsKey($policyName)) {
                 Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $policyName -ObjectType "generated DLP policy")
                 $policyNames[$policyName] = $true
@@ -522,7 +540,7 @@ function Test-GeneratedDlpPayloads {
             foreach ($label in $labels) {
                 $ruleNum++
                 if (-not $classifiers.ContainsKey($label.code)) { continue }
-                $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $config.namingSuffix
+                $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Config $config
                 Add-PurviewNameSafetyError -Result (Test-PurviewObjectNameSafety -Name $ruleName -ObjectType "generated DLP rule")
                 if ($ruleNames.ContainsKey($ruleName)) {
                     Add-ReadyError "Generated duplicate DLP rule name '$ruleName'"
@@ -703,7 +721,7 @@ if ($Prefix -and $settingsJson) {
 }
 
 Test-SettingsConfig -SettingsJson $settingsJson
-$labelResult = Test-LabelsConfig -LabelsJson @($labelsJson)
+$labelResult = Test-LabelsConfig -LabelsJson @($labelsJson) -Config $effectiveSettings
 $policyResult = Test-PoliciesConfig -PoliciesJson @($policiesJson)
 $classifierResult = Test-ClassifiersConfig -ClassifiersJson $classifiersJson -DlpCodes $labelResult.DlpCodes
 Test-RuleOverridesConfig -OverridesJson $overridesJson -DlpCodes $labelResult.DlpCodes -PolicyCodes $policyResult.PolicyCodes

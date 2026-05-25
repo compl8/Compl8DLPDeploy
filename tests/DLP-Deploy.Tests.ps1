@@ -43,6 +43,107 @@ Describe 'Get-RuleName' {
         $result = Get-RuleName -PolicyNumber 10 -RuleNumber 14 -PolicyCode 'SPO' -LabelCode 'PROT' -Suffix 'V2'
         $result | Should -Be 'P10-R14-SPO-PROT-V2'
     }
+
+    It 'Inserts chunk letter when -ChunkLetter is supplied' {
+        $result = Get-RuleName -PolicyNumber 1 -RuleNumber 2 -PolicyCode 'ECH' -LabelCode 'OFFI' -Suffix 'EXT-ADT' -ChunkLetter 'b'
+        $result | Should -Be 'P01-R02b-ECH-OFFI-EXT-ADT'
+    }
+}
+
+Describe 'Get-DeploymentObjectName' {
+    BeforeAll {
+        $script:baseConfig = Get-ModuleDefaults
+        $script:baseConfig.namingPrefix = 'QGISCF'
+        $script:baseConfig.namingSuffix = 'EXT-ADT'
+    }
+
+    It 'Expands the default dlpPolicy template' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpPolicy' -Tokens @{
+            policyNumber = '01'; policyCode = 'ECH'; suffix = 'EXT-ADT'
+        }
+        $result | Should -Be 'QGISCF-P01-ECH-EXT-ADT'
+    }
+
+    It 'Expands the default dlpRule template including chunk letter' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpRule' -Tokens @{
+            policyNumber = '02'; ruleNumber = '05'; chunkLetter = 'b'; policyCode = 'ODB'; labelCode = 'SENS'; suffix = 'EXT-ADT'
+        }
+        $result | Should -Be 'QGISCF-P02-R05b-ODB-SENS-EXT-ADT'
+    }
+
+    It 'Honors a custom template from nameTemplates' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'ACME'
+        $cfg.namingSuffix = 'PROD'
+        $cfg.nameTemplates.dlpPolicy = '{prefix}_{policyCode}_P{policyNumber}'
+        $result = Get-DeploymentObjectName -Config $cfg -ObjectType 'dlpPolicy' -Tokens @{
+            policyNumber = '03'; policyCode = 'TMS'; suffix = 'PROD'
+        }
+        $result | Should -Be 'ACME_TMS_P03'
+    }
+
+    It 'Strips the configured naming prefix from -Name when present' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'label' -Name 'QGISCF-Confidential'
+        $result | Should -Be 'QGISCF-Confidential'
+    }
+
+    It 'Strips an explicit SourcePrefix from -Name before re-applying the template' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'classifierEntity' -Name 'TestPattern-AU-DriverLicence' -SourcePrefix 'TestPattern'
+        $result | Should -Be 'QGISCF-AU-DriverLicence'
+    }
+
+    It 'Produces a single-dash separator when chunkLetter is empty in the default dlpRule template' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpRule' -Tokens @{
+            policyNumber = '01'; ruleNumber = '01'; chunkLetter = ''; policyCode = 'ECH'; labelCode = 'OFFI'; suffix = 'EXT-ADT'
+        }
+        $result | Should -Be 'QGISCF-P01-R01-ECH-OFFI-EXT-ADT'
+    }
+
+    It 'Collapses double-dashes left behind by an empty token mid-template' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'DLP'
+        $cfg.nameTemplates.label = '{prefix}-{name}-{missing}-final'
+        $result = Get-DeploymentObjectName -Config $cfg -ObjectType 'label' -Name 'Public'
+        $result | Should -Be 'DLP-Public-final'
+    }
+
+    It 'Substitutes empty string for missing tokens' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'DLP'
+        $cfg.nameTemplates.label = '{prefix}-{name}-{missing}'
+        $result = Get-DeploymentObjectName -Config $cfg -ObjectType 'label' -Name 'Public'
+        $result | Should -Be 'DLP-Public'
+    }
+
+    It 'Falls back to {prefix}-{name} for unknown object types' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'someUnknownThing' -Name 'Widget'
+        $result | Should -Be 'QGISCF-Widget'
+    }
+}
+
+Describe 'Get-PolicyName/Get-RuleName with -Config' {
+    It 'Get-PolicyName uses Config nameTemplates when supplied' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'ACME'
+        $cfg.namingSuffix = 'PROD'
+        $cfg.nameTemplates.dlpPolicy = '{prefix}_P{policyNumber}_{policyCode}'
+        $result = Get-PolicyName -PolicyNumber 4 -PolicyCode 'TMS' -Config $cfg
+        $result | Should -Be 'ACME_P04_TMS'
+    }
+
+    It 'Get-RuleName uses Config nameTemplates and chunk letter together' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'ACME'
+        $cfg.namingSuffix = 'PROD'
+        $cfg.nameTemplates.dlpRule = '{prefix}-{policyCode}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{labelCode}'
+        $result = Get-RuleName -PolicyNumber 1 -RuleNumber 3 -PolicyCode 'ECH' -LabelCode 'OFFI' -ChunkLetter 'a' -Config $cfg
+        $result | Should -Be 'ACME-ECH-P01-R03a-OFFI'
+    }
+
+    It 'Get-PolicyName preserves legacy default output when neither -Config nor templates change' {
+        $result = Get-PolicyName -PolicyNumber 7 -PolicyCode 'SPO' -Prefix 'QGISCF' -Suffix 'EXT-ADT'
+        $result | Should -Be 'P07-SPO-QGISCF-EXT-ADT'
+    }
 }
 
 Describe 'Test-PurviewObjectNameSafety' {

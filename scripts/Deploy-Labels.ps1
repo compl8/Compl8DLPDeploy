@@ -82,24 +82,59 @@ if (-not $labelsJson) {
 
 $LabelDefinitions = $labelsJson
 $script:LabelNameMap = @{}
+
+function Get-DeploymentLabelMapKey {
+    param(
+        [string]$Name,
+        [string]$Code
+    )
+
+    return "$Name||$Code"
+}
+
 foreach ($label in $LabelDefinitions) {
-    $script:LabelNameMap[$label.name] = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $label.name -Tokens @{
+    $generatedLabelName = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $label.name -Tokens @{
         labelCode   = $label.code
         displayName = $label.displayName
+    }
+    $script:LabelNameMap[(Get-DeploymentLabelMapKey -Name $label.name -Code $label.code)] = $generatedLabelName
+    if (-not $label.code -and -not $script:LabelNameMap.ContainsKey($label.name)) {
+        $script:LabelNameMap[$label.name] = $generatedLabelName
     }
 }
 $script:LabelPolicyName = Get-DeploymentObjectName -Config $Config -ObjectType "labelPolicy" -Name $Config.labelPolicyName
 
 function Resolve-DeploymentLabelName {
-    param([Parameter(Mandatory)][string]$SourceName)
-    if ($script:LabelNameMap.ContainsKey($SourceName)) { return $script:LabelNameMap[$SourceName] }
-    return Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $SourceName
+    param(
+        [object]$Label,
+        [string]$SourceName,
+        [string]$LabelCode
+    )
+
+    $displayName = $null
+    if ($Label) {
+        $SourceName = $Label.name
+        $LabelCode = $Label.code
+        $displayName = $Label.displayName
+    }
+
+    $key = Get-DeploymentLabelMapKey -Name $SourceName -Code $LabelCode
+    if ($script:LabelNameMap.ContainsKey($key)) { return $script:LabelNameMap[$key] }
+    if (-not $LabelCode -and $script:LabelNameMap.ContainsKey($SourceName)) { return $script:LabelNameMap[$SourceName] }
+    return Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $SourceName -Tokens @{
+        labelCode   = $LabelCode
+        displayName = $displayName
+    }
 }
 #endregion
 
 if (-not $Cleanup) {
     try {
-        $plannedLabelNames = @($LabelDefinitions | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name })
+        $plannedLabelNames = @($LabelDefinitions | ForEach-Object { Resolve-DeploymentLabelName -Label $_ })
+        $duplicateNames = @($plannedLabelNames | Group-Object | Where-Object { $_.Count -gt 1 })
+        if ($duplicateNames.Count -gt 0) {
+            throw "Generated label names are not unique: $(@($duplicateNames | ForEach-Object { $_.Name }) -join ', ')"
+        }
         $null = Assert-PurviewObjectNameSafety -Names $plannedLabelNames -ObjectType "label name"
         if (-not $SkipPublish -and $PublishTo) {
             $null = Assert-PurviewObjectNameSafety -Names @($script:LabelPolicyName) -ObjectType "label policy"
@@ -155,7 +190,7 @@ if ($Cleanup) {
     foreach ($label in $sortedLabels) {
         if ($labelIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $cleanupDelay }
         $labelIndex++
-        $labelName = Resolve-DeploymentLabelName -SourceName $label.name
+        $labelName = Resolve-DeploymentLabelName -Label $label
         Remove-PurviewObject -Identity $labelName `
             -GetCommand "Get-Label" -RemoveCommand "Remove-Label" `
             -OperationName "label" `
@@ -176,12 +211,12 @@ $publishableCount = ($LabelDefinitions | Where-Object { -not $_.isGroup }).Count
 
 Write-Host "`n=== Deployment Plan ===" -ForegroundColor Cyan
 Write-Host "  Labels to deploy:       $($LabelDefinitions.Count) total" -ForegroundColor White
-Write-Host "    Top-level labels:      $($topLevelLeaves.Count)  ($( ($topLevelLeaves | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name }) -join ', '))" -ForegroundColor Gray
-Write-Host "    Label groups:          $($groupLabels.Count)  ($( ($groupLabels | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name }) -join ', '))" -ForegroundColor Gray
+Write-Host "    Top-level labels:      $($topLevelLeaves.Count)  ($( ($topLevelLeaves | ForEach-Object { Resolve-DeploymentLabelName -Label $_ }) -join ', '))" -ForegroundColor Gray
+Write-Host "    Label groups:          $($groupLabels.Count)  ($( ($groupLabels | ForEach-Object { Resolve-DeploymentLabelName -Label $_ }) -join ', '))" -ForegroundColor Gray
 Write-Host "    Sublabels:             $($sublabels.Count)" -ForegroundColor Gray
 foreach ($group in $groupLabels) {
     $children = $sublabels | Where-Object { $_.parentGroup -eq $group.name }
-    Write-Host "      $(Resolve-DeploymentLabelName -SourceName $group.name):" -ForegroundColor Gray -NoNewline
+    Write-Host "      $(Resolve-DeploymentLabelName -Label $group):" -ForegroundColor Gray -NoNewline
     Write-Host "   $( ($children.displayName) -join ', ')" -ForegroundColor DarkGray
 }
 Write-Host "    Publishable labels:    $publishableCount" -ForegroundColor Gray
@@ -221,7 +256,7 @@ $labelIndex = 0
 foreach ($label in $sortedLabels) {
     if ($labelIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $deployDelay }
     $labelIndex++
-    $labelName = Resolve-DeploymentLabelName -SourceName $label.name
+    $labelName = Resolve-DeploymentLabelName -Label $label
     $labelType = if ($label.isGroup) { "Label Group" } else { "Label" }
     Write-Host "`n  Processing: $($label.displayName) ($labelType, Name: $labelName)" -ForegroundColor Cyan
 
@@ -354,7 +389,7 @@ if ($SkipPublish) {
     Write-Host "`n=== Publishing Label Policy ===" -ForegroundColor Cyan
 
     $policyName = $script:LabelPolicyName
-    $publishableLabels = @($LabelDefinitions | Where-Object { -not $_.isGroup } | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name } | Select-Object -Unique)
+    $publishableLabels = @($LabelDefinitions | Where-Object { -not $_.isGroup } | ForEach-Object { Resolve-DeploymentLabelName -Label $_ } | Select-Object -Unique)
 
     $existingPolicy = $null
     try { $existingPolicy = Get-LabelPolicy -Identity $policyName -ErrorAction Stop } catch { }

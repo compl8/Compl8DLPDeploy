@@ -31,7 +31,7 @@ function Get-ModuleDefaults {
         publisher                = ""
         labelPolicyName          = "Label-Policy"
         nameTemplates            = @{
-            label             = "{prefix}-{name}"
+            label             = "{prefix}-{name}-{labelCode}"
             labelPolicy       = "{prefix}-{name}"
             dlpPolicy         = "{prefix}-P{policyNumber}-{policyCode}-{suffix}"
             dlpRule           = "{prefix}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}"
@@ -545,6 +545,9 @@ function Expand-DeploymentNameTemplate {
         $expanded = $expanded.Replace("{$key}", $value)
     }
 
+    # Drop any {placeholder} that no caller supplied so we never leak literal tokens into Purview names.
+    $expanded = $expanded -replace '\{[^{}]+\}', ''
+
     return (($expanded -replace '-{2,}', '-').Trim('-').Trim())
 }
 
@@ -590,9 +593,7 @@ function Get-PolicyName {
     )
 
     if (-not $Config) {
-        $Config = Get-ModuleDefaults
-        if ($Prefix) { $Config.namingPrefix = $Prefix }
-        if ($Suffix) { $Config.namingSuffix = $Suffix }
+        return "P{0:D2}-{1}-{2}-{3}" -f $PolicyNumber, $PolicyCode, $Prefix, $Suffix
     }
 
     $resolvedSuffix = if ($Suffix) { $Suffix } else { $Config.namingSuffix }
@@ -616,9 +617,7 @@ function Get-RuleName {
     )
 
     if (-not $Config) {
-        $Config = Get-ModuleDefaults
-        if ($Prefix) { $Config.namingPrefix = $Prefix }
-        if ($Suffix) { $Config.namingSuffix = $Suffix }
+        return "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $PolicyNumber, $RuleNumber, $ChunkLetter, $PolicyCode, $LabelCode, $Suffix
     }
 
     $resolvedSuffix = if ($Suffix) { $Suffix } else { $Config.namingSuffix }
@@ -1856,6 +1855,10 @@ function Resolve-CleanupTargets {
     $suffix          = $Config.namingSuffix
     $publisher       = $Config.publisher
     $labelPolicyName = $Config.labelPolicyName
+    $generatedLabelPolicyName = $null
+    if ($labelPolicyName) {
+        $generatedLabelPolicyName = Get-DeploymentObjectName -Config $Config -ObjectType "labelPolicy" -Name $labelPolicyName
+    }
     $manifest        = [System.Collections.Generic.List[object]]::new()
 
     function New-CleanupTarget {
@@ -1940,8 +1943,10 @@ function Resolve-CleanupTargets {
                 $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" $provenance "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
             } elseif ($lp.Name -like "*$prefix*") {
                 $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "prefix '$prefix'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
+            } elseif ($generatedLabelPolicyName -and $lp.Name -eq $generatedLabelPolicyName) {
+                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "configured labelPolicyName '$generatedLabelPolicyName'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
             } elseif ($labelPolicyName -and $lp.Name -eq $labelPolicyName) {
-                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "configured labelPolicyName '$labelPolicyName'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
+                $manifest.Add((New-CleanupTarget $lp.Name "LabelPolicy" "Label policy" "legacy configured labelPolicyName '$labelPolicyName'" "scoped" "Get-LabelPolicy" "Remove-LabelPolicy" $lp))
             }
         }
         foreach ($l in @($Objects['Label'])) {

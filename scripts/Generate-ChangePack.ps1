@@ -79,7 +79,10 @@ if ($doRules) {
 
 $registryJson = $null
 if ($doClassifiers) {
-    $registryJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "classifiers-registry.json") -Description "classifier registry"
+    $deployRegistryPath = Join-Path (Join-Path $XmlDir "deploy") "deploy-registry.json"
+    $legacyRegistryPath = Join-Path $ConfigPath "classifiers-registry.json"
+    $registryPath = if (Test-Path -LiteralPath $deployRegistryPath) { $deployRegistryPath } else { $legacyRegistryPath }
+    $registryJson = Import-JsonConfig -FilePath $registryPath -Description "classifier registry"
 }
 
 $Labels = Resolve-LabelConfig -LabelsJson $labelsJson
@@ -135,6 +138,12 @@ function Get-DeployedPkgInfo {
 function Resolve-RegistryFile {
     <# Resolves the XML file path for a registry package given the deployment tier. #>
     param([object]$Package, [string]$Tier)
+    if ($Package.path) {
+        return Join-Path $ProjectRoot $Package.path
+    }
+    if (-not $Package.variants) {
+        return Join-Path (Join-Path $XmlDir "deploy") "$($Package.key).xml"
+    }
     $variants = @{}
     foreach ($prop in $Package.variants.PSObject.Properties) {
         $variants[$prop.Name] = $prop.Value
@@ -158,6 +167,30 @@ function Add-Row {
         Detail    = $Detail
     })
 }
+
+function Resolve-DeploymentLabelName {
+    param([Parameter(Mandatory)][object]$Label)
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $Label.name -Tokens @{
+        labelCode   = $Label.code
+        displayName = $Label.displayName
+    }
+}
+
+function Resolve-DeploymentPolicyName {
+    param([Parameter(Mandatory)][hashtable]$Policy)
+    return Get-PolicyName -PolicyNumber $Policy.Number -PolicyCode $Policy.Code -Config $Config
+}
+
+function Resolve-DeploymentRuleName {
+    param(
+        [Parameter(Mandatory)][hashtable]$Policy,
+        [Parameter(Mandatory)][int]$RuleNumber,
+        [Parameter(Mandatory)][string]$LabelCode,
+        [string]$ChunkLetter = ""
+    )
+    return Get-RuleName -PolicyNumber $Policy.Number -RuleNumber $RuleNumber -PolicyCode $Policy.Code -LabelCode $LabelCode -ChunkLetter $ChunkLetter -Config $Config
+}
 #endregion
 
 $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -175,14 +208,15 @@ if ($doLabels) {
     # Process in priority order (parents before children)
     $sortedLabels = $labelsJson | Sort-Object { $_.priority }
     foreach ($label in $sortedLabels) {
-        $configLabelNames[$label.name] = $true
-        $deployed = $tenantLabelMap[$label.name]
+        $labelName = Resolve-DeploymentLabelName -Label $label
+        $configLabelNames[$labelName] = $true
+        $deployed = $tenantLabelMap[$labelName]
         $lc = if ($label.code) { $label.code } else { "" }
 
         if (-not $deployed) {
             $kind = if ($label.isGroup) { "label group" } else { "label" }
-            Add-Row -Component "Label" -Action "add" -Identity $label.name -LabelCode $lc -Detail "New $kind"
-            Write-Host "  ADD    $($label.name)" -ForegroundColor Green
+            Add-Row -Component "Label" -Action "add" -Identity $labelName -LabelCode $lc -Detail "New $kind"
+            Write-Host "  ADD    $labelName" -ForegroundColor Green
         } else {
             # Compare key properties
             $diffs = @()
@@ -194,11 +228,11 @@ if ($doLabels) {
             }
 
             if ($diffs.Count -gt 0) {
-                Add-Row -Component "Label" -Action "update" -Identity $label.name -LabelCode $lc -Detail "Changed: $($diffs -join ', ')"
-                Write-Host "  UPDATE $($label.name) - $($diffs -join ', ')" -ForegroundColor Yellow
+                Add-Row -Component "Label" -Action "update" -Identity $labelName -LabelCode $lc -Detail "Changed: $($diffs -join ', ')"
+                Write-Host "  UPDATE $labelName - $($diffs -join ', ')" -ForegroundColor Yellow
             } else {
-                Add-Row -Component "Label" -Action "skip" -Identity $label.name -LabelCode $lc -Detail "Matches config"
-                Write-Host "  SKIP   $($label.name)" -ForegroundColor Gray
+                Add-Row -Component "Label" -Action "skip" -Identity $labelName -LabelCode $lc -Detail "Matches config"
+                Write-Host "  SKIP   $labelName" -ForegroundColor Gray
             }
         }
     }
@@ -231,7 +265,7 @@ if ($doClassifiers -and $registryJson) {
     $registryNames = @{}
 
     foreach ($pkg in $registryJson.packages) {
-        if (-not $pkg.enabled) { continue }
+        if ($pkg.PSObject.Properties["enabled"] -and -not [bool]$pkg.enabled) { continue }
 
         $registryNames[$pkg.displayName] = $true
         if ($pkg.rulePackId) { $registryIds[$pkg.rulePackId.ToLower()] = $true }
@@ -294,7 +328,7 @@ if ($doRules -and $Policies -and $Classifiers) {
     $expectedRuleSet  = @{}
 
     foreach ($policy in $Policies) {
-        $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+        $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Config $Config
         $expectedPolicies[$policyName] = $policy
 
         $ruleNum = 0
@@ -309,9 +343,9 @@ if ($doRules -and $Policies -and $Classifiers) {
                 $chunkIndex++
                 if ($chunks.Count -gt 1) {
                     $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                    $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                    $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -ChunkLetter $chunkLetter -Config $Config
                 } else {
-                    $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                    $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Config $Config
                 }
                 $expectedRuleSet[$ruleName] = @{
                     PolicyName = $policyName
@@ -353,10 +387,10 @@ if ($doRules -and $Policies -and $Classifiers) {
                     $chunkIndex++
                     if ($chunks.Count -gt 1) {
                         $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                        $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -ChunkLetter $chunkLetter -Config $Config
                         $chunkNote = " [chunk $chunkIndex/$($chunks.Count)]"
                     } else {
-                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Config $Config
                         $chunkNote = ""
                     }
                     Add-Row -Component "DLPRule" -Action "add" -Identity $ruleName -Policy $policyName -LabelCode $labelCode -Detail "New rule$chunkNote ($($chunk.Count) classifiers)"
@@ -381,9 +415,9 @@ if ($doRules -and $Policies -and $Classifiers) {
                     $chunkIndex++
                     if ($chunks.Count -gt 1) {
                         $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                        $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -ChunkLetter $chunkLetter -Config $Config
                     } else {
-                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                        $ruleName = Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Config $Config
                     }
                     $classCount = $chunk.Count
                     $deployed   = $deployedRuleMap[$ruleName]
@@ -418,8 +452,10 @@ if ($doRules -and $Policies -and $Classifiers) {
             $escapedCode   = [regex]::Escape($policy.Code)
             $escapedSuffix = [regex]::Escape($Config.namingSuffix)
             $namingPattern = "^P\d{2}-R\d{2}[a-z]?-${escapedCode}-\w+-${escapedSuffix}$"
+            $templateScopedPrefix = "$($Config.namingPrefix)-"
             foreach ($orphanName in @($deployedRuleMap.Keys)) {
-                if ($orphanName -match $namingPattern) {
+                $matchesTemplateScope = $orphanName.StartsWith($templateScopedPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and $orphanName.EndsWith("-$($Config.namingSuffix)", [System.StringComparison]::OrdinalIgnoreCase)
+                if ($orphanName -match $namingPattern -or $matchesTemplateScope) {
                     Add-Row -Component "DLPRule" -Action "delete" -Identity $orphanName -Policy $policyName -Detail "Not in expected rule set"
                     Write-Host "  DELETE $orphanName - orphan" -ForegroundColor Red
                 }

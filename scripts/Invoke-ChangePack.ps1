@@ -225,7 +225,7 @@ if (-not $hasComponent) {
                 $policyCode = ""
                 if ($Policies) {
                     foreach ($p in $Policies) {
-                        $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+                        $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $Config
                         if ($expectedName -eq $policy) {
                             $scopeParam = $p.ScopeParam
                             $scopeValue = $p.ScopeValue
@@ -292,7 +292,7 @@ if (-not $hasComponent) {
                 $scopeValue = $null
                 if ($Policies) {
                     foreach ($p in $Policies) {
-                        $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+                        $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $Config
                         if ($expectedName -eq $policy) {
                             $scopeParam = $p.ScopeParam
                             $scopeValue = $p.ScopeValue
@@ -482,7 +482,14 @@ if (-not $hasComponent) {
             $LabelsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "labels.json") -Description "label definitions"
             if ($LabelsJson) {
                 $LabelMap = @{}
-                foreach ($l in $LabelsJson) { $LabelMap[$l.name] = $l }
+                foreach ($l in $LabelsJson) {
+                    $generatedName = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $l.name -Tokens @{
+                        labelCode   = $l.code
+                        displayName = $l.displayName
+                    }
+                    $LabelMap[$generatedName] = $l
+                    if (-not $LabelMap.ContainsKey($l.name)) { $LabelMap[$l.name] = $l }
+                }
                 Write-Host "  Loaded $($LabelsJson.Count) label definitions" -ForegroundColor Gray
             }
         }
@@ -490,11 +497,14 @@ if (-not $hasComponent) {
         # SIT Package registry (for SITPackage add/update)
         $hasPkgAddUpdate = $needsConfig | Where-Object { $_.Component.Trim() -eq "SITPackage" }
         if ($hasPkgAddUpdate) {
-            $RegistryJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "classifiers-registry.json") -Description "classifier registry"
+            $deployRegistryPath = Join-Path (Join-Path $XmlDir "deploy") "deploy-registry.json"
+            $legacyRegistryPath = Join-Path $ConfigPath "classifiers-registry.json"
+            $registryPath = if (Test-Path -LiteralPath $deployRegistryPath) { $deployRegistryPath } else { $legacyRegistryPath }
+            $RegistryJson = Import-JsonConfig -FilePath $registryPath -Description "classifier registry"
             if ($RegistryJson) {
                 $RegistryMap = @{}
                 foreach ($pkg in $RegistryJson.packages) {
-                    if ($pkg.enabled) { $RegistryMap[$pkg.key] = $pkg }
+                    if ((-not $pkg.PSObject.Properties["enabled"]) -or [bool]$pkg.enabled) { $RegistryMap[$pkg.key] = $pkg }
                 }
                 Write-Host "  Loaded $($RegistryMap.Count) package definitions" -ForegroundColor Gray
             }
@@ -574,15 +584,16 @@ if (-not $hasComponent) {
                             $labelParams["ContentType"] = "File, Email"
                         }
                         if ($labelDef.parentGroup) {
-                            if ($parentGuids.ContainsKey($labelDef.parentGroup)) {
-                                $labelParams["ParentId"] = $parentGuids[$labelDef.parentGroup]
+                            $parentIdentity = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $labelDef.parentGroup
+                            if ($parentGuids.ContainsKey($parentIdentity)) {
+                                $labelParams["ParentId"] = $parentGuids[$parentIdentity]
                             } else {
                                 try {
-                                    $parentLabel = Get-Label -Identity $labelDef.parentGroup -ErrorAction Stop
+                                    $parentLabel = Get-Label -Identity $parentIdentity -ErrorAction Stop
                                     $labelParams["ParentId"] = $parentLabel.Guid.ToString()
-                                    $parentGuids[$labelDef.parentGroup] = $parentLabel.Guid.ToString()
+                                    $parentGuids[$parentIdentity] = $parentLabel.Guid.ToString()
                                 } catch {
-                                    Write-Warning "  $tag FAILED  Label '$identity' - parent '$($labelDef.parentGroup)' not found"
+                                    Write-Warning "  $tag FAILED  Label '$identity' - parent '$parentIdentity' not found"
                                     $results.failed++
                                     continue
                                 }
@@ -699,12 +710,18 @@ if (-not $hasComponent) {
 
                         # Resolve XML file path
                         $tier = $Config.deploymentTier
-                        $variants = @{}
-                        foreach ($prop in $pkgDef.variants.PSObject.Properties) { $variants[$prop.Name] = $prop.Value }
                         $xmlFile = $null
-                        if ($variants.ContainsKey($tier))  { $xmlFile = Join-Path $XmlDir $variants[$tier] }
-                        elseif ($variants.ContainsKey("full")) { $xmlFile = Join-Path $XmlDir $variants["full"] }
-                        else { $firstKey = $variants.Keys | Select-Object -First 1; if ($firstKey) { $xmlFile = Join-Path $XmlDir $variants[$firstKey] } }
+                        if ($pkgDef.path) {
+                            $xmlFile = Join-Path $ProjectRoot $pkgDef.path
+                        } elseif ($pkgDef.variants) {
+                            $variants = @{}
+                            foreach ($prop in $pkgDef.variants.PSObject.Properties) { $variants[$prop.Name] = $prop.Value }
+                            if ($variants.ContainsKey($tier))  { $xmlFile = Join-Path $XmlDir $variants[$tier] }
+                            elseif ($variants.ContainsKey("full")) { $xmlFile = Join-Path $XmlDir $variants["full"] }
+                            else { $firstKey = $variants.Keys | Select-Object -First 1; if ($firstKey) { $xmlFile = Join-Path $XmlDir $variants[$firstKey] } }
+                        } else {
+                            $xmlFile = Join-Path (Join-Path $XmlDir "deploy") "$($pkgDef.key).xml"
+                        }
 
                         if (-not $xmlFile -or -not (Test-Path $xmlFile)) {
                             Write-Warning "  $tag FAILED  SITPackage '$identity' - XML file not found: $xmlFile"
@@ -736,12 +753,18 @@ if (-not $hasComponent) {
                         }
 
                         $tier = $Config.deploymentTier
-                        $variants = @{}
-                        foreach ($prop in $pkgDef.variants.PSObject.Properties) { $variants[$prop.Name] = $prop.Value }
                         $xmlFile = $null
-                        if ($variants.ContainsKey($tier))  { $xmlFile = Join-Path $XmlDir $variants[$tier] }
-                        elseif ($variants.ContainsKey("full")) { $xmlFile = Join-Path $XmlDir $variants["full"] }
-                        else { $firstKey = $variants.Keys | Select-Object -First 1; if ($firstKey) { $xmlFile = Join-Path $XmlDir $variants[$firstKey] } }
+                        if ($pkgDef.path) {
+                            $xmlFile = Join-Path $ProjectRoot $pkgDef.path
+                        } elseif ($pkgDef.variants) {
+                            $variants = @{}
+                            foreach ($prop in $pkgDef.variants.PSObject.Properties) { $variants[$prop.Name] = $prop.Value }
+                            if ($variants.ContainsKey($tier))  { $xmlFile = Join-Path $XmlDir $variants[$tier] }
+                            elseif ($variants.ContainsKey("full")) { $xmlFile = Join-Path $XmlDir $variants["full"] }
+                            else { $firstKey = $variants.Keys | Select-Object -First 1; if ($firstKey) { $xmlFile = Join-Path $XmlDir $variants[$firstKey] } }
+                        } else {
+                            $xmlFile = Join-Path (Join-Path $XmlDir "deploy") "$($pkgDef.key).xml"
+                        }
 
                         if (-not $xmlFile -or -not (Test-Path $xmlFile)) {
                             Write-Warning "  $tag FAILED  SITPackage '$identity' - XML file not found: $xmlFile"
@@ -809,7 +832,7 @@ if (-not $hasComponent) {
                         $policyDef = $null
                         if ($Policies -and $Config) {
                             foreach ($p in $Policies) {
-                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $Config
                                 if ($expectedName -eq $identity) {
                                     $policyDef = $p
                                     break
@@ -905,7 +928,7 @@ if (-not $hasComponent) {
                         $policyCode = ""
                         if ($Policies -and $Config) {
                             foreach ($p in $Policies) {
-                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $Config
                                 if ($expectedName -eq $policy) {
                                     $scopeParam = $p.ScopeParam
                                     $scopeValue = $p.ScopeValue
@@ -970,7 +993,7 @@ if (-not $hasComponent) {
                         $scopeValue = $null
                         if ($Policies -and $Config) {
                             foreach ($p in $Policies) {
-                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+                                $expectedName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $Config
                                 if ($expectedName -eq $policy) {
                                     $scopeParam = $p.ScopeParam
                                     $scopeValue = $p.ScopeValue

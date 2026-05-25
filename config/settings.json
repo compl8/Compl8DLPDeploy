@@ -15,7 +15,7 @@
     "sitPrefix": "QGISCF",
     "labelPolicyName": "Label-Policy",
     "nameTemplates": {
-        "label": "{prefix}-{name}",
+        "label": "{prefix}-{name}-{labelCode}",
         "labelPolicy": "{prefix}-{name}",
         "dlpPolicy": "{prefix}-P{policyNumber}-{policyCode}-{suffix}",
         "dlpRule": "{prefix}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}",

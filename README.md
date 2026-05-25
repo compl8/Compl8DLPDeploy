@@ -340,7 +340,7 @@ All tenant resources are named using a consistent convention driven by `namingPr
 | `namingSuffix` | `EXT-ADT` | Encodes deployment mode | `EXT-ADT`, `INT-BLK` |
 | `publisher` | (empty) | Publisher name on SIT rule packages | `Queensland Government CSU` |
 | `sitPrefix` | (empty) | Replaces `TestPattern - ` in SIT entity display names | `QGISCF` |
-| `labelPolicyName` | `DLP-Label-Policy` | Name of the sensitivity label publishing policy | `QGISCF-Label-Policy` |
+| `labelPolicyName` | `Label-Policy` | Base name of the sensitivity label publishing policy; rendered via `nameTemplates.labelPolicy` (defaults to `{prefix}-{name}`) | `Label-Policy` → `QGISCF-Label-Policy` |
 
 The suffix encodes two things: **scoping** (`EXT` = external/outbound, `INT` = internal) and **enforcement mode** (`ADT` = audit, `NFY` = notify, `BLK` = block).
 

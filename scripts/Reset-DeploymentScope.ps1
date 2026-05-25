@@ -363,7 +363,7 @@ function Get-ScopedDlpState {
     } else {
         $targetPolicies = @($ConfigData.Policies | ForEach-Object {
             [pscustomobject]@{
-                Name     = Get-PolicyName -PolicyNumber $_.Number -PolicyCode $_.Code -Prefix $config.namingPrefix -Suffix $config.namingSuffix
+                Name     = Get-PolicyName -PolicyNumber $_.Number -PolicyCode $_.Code -Config $config
                 Code     = $_.Code
                 Optional = [bool]$_.Optional
                 Enabled  = [bool]$_.Enabled
