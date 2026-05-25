@@ -80,3 +80,17 @@ Describe 'Start-DLPDeploy launcher dispatch' {
         $names.Contains('QGISCF-P01-ECH-EXT-ADT') | Should -BeFalse
     }
 }
+
+Describe 'Customer rollout wizard threads the deployment session through phases' {
+    BeforeAll {
+        $script:LauncherPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Start-DLPDeploy.ps1'
+    }
+
+    It 'invokes Initialize-DeploymentSession and Finalize-DeploymentSession in the wizard' {
+        $contents = Get-Content -Raw -LiteralPath $script:LauncherPath
+        $wizardBlock = ($contents -split 'function Invoke-CustomerRolloutWizard ')[1]
+        ($wizardBlock -match 'Initialize-DeploymentSession\.ps1') | Should -BeTrue
+        ($wizardBlock -match 'Finalize-DeploymentSession\.ps1')   | Should -BeTrue
+        ($wizardBlock -match '-DeploymentSessionPath')             | Should -BeTrue
+    }
+}

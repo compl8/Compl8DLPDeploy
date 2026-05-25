@@ -1704,6 +1704,33 @@ function Invoke-CustomerRolloutWizard {
     if (-not (Require-Connection $Connected)) { return }
     $commonArgs = @(Get-CommonDeploymentArgs)
 
+    # Optional deployment-session lifecycle: bundle this rollout into a pinned package
+    # (drift -> phases -> verify -> archive). When declined, the wizard runs without
+    # session bookkeeping and skips the finalise step at the end.
+    $sessionPath = $null
+    if (Read-YesNo "Bundle this rollout into a tenant-pinned deployment package (audit trail + archive)?" -Default $false) {
+        $basePackage = Get-ChildItem (Join-Path $ProjectRoot 'dist/compl8dlpdeploy-base-*.zip') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $basePackage) {
+            Write-Host "  No base package found in dist/. Building one now..." -ForegroundColor Yellow
+            Invoke-ToolkitScript -ScriptName "New-ReleasePackage.ps1" -ArgumentList @()
+            $basePackage = Get-ChildItem (Join-Path $ProjectRoot 'dist/compl8dlpdeploy-base-*.zip') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        }
+        if (-not $basePackage) {
+            Write-Host "  Could not build a base package. Continuing without session bundling." -ForegroundColor Yellow
+        } else {
+            $initArgs = @("-BasePackagePath", $basePackage.FullName, "-Tenant", $script:Tenant, "-TargetEnvironment", $script:TargetEnvironment)
+            if ($script:Prefix) { $initArgs += @("-Prefix", $script:Prefix) }
+            $initResult = @(Invoke-ToolkitScript -ScriptName "Initialize-DeploymentSession.ps1" -ArgumentList $initArgs)
+            $sessionPath = $initResult | Where-Object { $_ -is [string] -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Last 1
+            if ($sessionPath) {
+                Write-Host "  Session: $sessionPath" -ForegroundColor Cyan
+                $commonArgs += @("-DeploymentSessionPath", $sessionPath)
+            } else {
+                Write-Host "  Could not resolve session path from Initialize-DeploymentSession output. Continuing without session bundling." -ForegroundColor Yellow
+            }
+        }
+    }
+
     # 2. Readiness gate (unconditional; OVERRIDE typed-confirm to bypass)
     Write-Host ""
     Write-Host "  Phase 2/6: Pre-deployment readiness" -ForegroundColor Cyan
@@ -1802,6 +1829,14 @@ function Invoke-CustomerRolloutWizard {
         if (Read-YesNo "WhatIf looked good — apply DLP rules for real?" -Default $false) {
             Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $commonArgs
         }
+    }
+
+    # Finalise the deployment session (verify against tenant + archive).
+    if ($sessionPath) {
+        Write-Host ""
+        Write-Host "  Finalising deployment session (verify + archive)..." -ForegroundColor Cyan
+        $finalArgs = @("-SessionPath", $sessionPath, "-AcceptIncomplete")
+        Invoke-ToolkitScript -ScriptName "Finalize-DeploymentSession.ps1" -ArgumentList $finalArgs
     }
 
     Write-Host ""
