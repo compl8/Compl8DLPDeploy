@@ -313,7 +313,50 @@ function Add-DeploymentPlanAdjustment {
         $tgt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tgtFile -Encoding UTF8
     }
 }
-function Add-DeploymentPhaseResult { throw 'Not implemented in module skeleton' }
+function Add-DeploymentPhaseResult {
+    param(
+        [Parameter(Mandatory)][string]$SessionPath,
+        [Parameter(Mandatory)][ValidateSet('classifiers','labels','dlprules','refit')][string]$Phase,
+        [Parameter(Mandatory)][string]$Action,
+        [Parameter(Mandatory)][ValidateSet('success','partial','failed')][string]$Status,
+        [Parameter(Mandatory)][string]$StartedAt,
+        [Parameter(Mandatory)][string]$CompletedAt,
+        [object[]]$Artifacts = @(),
+        [object[]]$Errors    = @(),
+        [string]$ReportPath
+    )
+
+    # Write phase-{name}.json into the sealed zip via Update-PendingPackage.
+    Update-PendingPackage -SessionPath $SessionPath -Mutator {
+        param($workingDir)
+        $phaseFile = Join-Path $workingDir "phase-$Phase.json"
+        $record = [ordered]@{
+            schemaVersion = 1
+            phase         = $Phase
+            action        = $Action
+            status        = $Status
+            startedAt     = $StartedAt
+            completedAt   = $CompletedAt
+            artifacts     = @($Artifacts)
+            errors        = @($Errors)
+        }
+        if ($ReportPath) { $record.reportPath = $ReportPath }
+        $record | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $phaseFile -Encoding UTF8
+    }
+
+    # Status.json lives OUTSIDE the zip in the session dir. Update-PendingPackage already
+    # refreshed pendingZipSha256 + lastUpdated; we read the post-seal version, layer the
+    # phase-transition fields on top, write back.
+    $statusFp = Join-Path $SessionPath 'status.json'
+    $s = Get-Content -Raw -LiteralPath $statusFp | ConvertFrom-Json -AsHashtable
+    if ($Status -eq 'success') {
+        if ($s.phasesCompleted -notcontains $Phase) { $s.phasesCompleted += $Phase }
+        $s.phasesPending = @($s.phasesPending | Where-Object { $_ -ne $Phase })
+    }
+    if ($s.state -eq 'pending') { $s.state = 'in-progress' }
+    $s.lastUpdated = (Get-Date).ToString('o')
+    $s | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusFp -Encoding UTF8
+}
 function Move-DeploymentPackageToArchive { throw 'Not implemented in module skeleton' }
 
 Export-ModuleMember -Function @(

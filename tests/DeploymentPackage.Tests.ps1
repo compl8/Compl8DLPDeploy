@@ -275,3 +275,46 @@ Describe 'Add-DeploymentPlanAdjustment' {
         $r.Target.dlpRules.Count | Should -Be 0
     }
 }
+
+Describe 'Add-DeploymentPhaseResult' {
+    BeforeAll {
+        $script:PhRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-ph-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:PhRoot -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:PhRoot) { Remove-Item $script:PhRoot -Recurse -Force }
+    }
+
+    It 'writes phase file and moves status from pending to in-progress' {
+        $sessionDir = New-TestSession -Root $script:PhRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Add-DeploymentPhaseResult -SessionPath $sessionDir -Phase 'classifiers' -Action 'Upload' -Status 'success' `
+            -StartedAt (Get-Date).AddMinutes(-2).ToString('o') -CompletedAt (Get-Date).ToString('o') `
+            -Artifacts @(@{name='QGISCF-medium-01'; action='created'}) -Errors @() -ReportPath 'reports/deployments/x/'
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Phases.classifiers.action | Should -Be 'Upload'
+        $r.Phases.classifiers.status | Should -Be 'success'
+        $r.Status.state              | Should -Be 'in-progress'
+        $r.Status.phasesCompleted    | Should -Contain 'classifiers'
+        $r.Status.phasesPending      | Should -Not -Contain 'classifiers'
+    }
+
+    It 'records a failed phase without moving state to terminal' {
+        $sessionDir = New-TestSession -Root $script:PhRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Add-DeploymentPhaseResult -SessionPath $sessionDir -Phase 'labels' -Action 'Deploy' -Status 'failed' `
+            -StartedAt (Get-Date).ToString('o') -CompletedAt (Get-Date).ToString('o') -Artifacts @() -Errors @('boom')
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Phases.labels.status   | Should -Be 'failed'
+        $r.Status.state           | Should -Be 'in-progress'
+        $r.Status.phasesCompleted | Should -Not -Contain 'labels'
+    }
+}
