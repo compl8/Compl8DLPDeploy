@@ -69,12 +69,16 @@ $resultRecord = [ordered]@{
     summary       = $diff.summary
 }
 
-$actualState = $actual
+# Pre-serialise to plain strings; pass them in via script-scope vars so the mutator
+# scriptblock (which runs in a different scope inside Update-PendingPackage) can read them
+# without closure quirks.
+$script:DPF_ActualJson = $actual        | ConvertTo-Json -Depth 10
+$script:DPF_ResultJson = $resultRecord  | ConvertTo-Json -Depth 10
 Update-PendingPackage -SessionPath $SessionPath -Mutator {
     param($workingDir)
-    $actualState  | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $workingDir 'actual-state.json')        -Encoding UTF8
-    $resultRecord | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $workingDir 'deployment-result.json')   -Encoding UTF8
-}.GetNewClosure()
+    Set-Content -LiteralPath (Join-Path $workingDir 'actual-state.json')      -Value $script:DPF_ActualJson -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $workingDir 'deployment-result.json') -Value $script:DPF_ResultJson -Encoding UTF8
+}
 
 # Update status state to terminal before move.
 $statusFp = Join-Path $SessionPath 'status.json'

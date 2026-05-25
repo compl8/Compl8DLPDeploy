@@ -300,6 +300,14 @@ function Update-PendingPackage {
 
         if (Test-Path -LiteralPath $zipPath) {
             Expand-Archive -LiteralPath $zipPath -DestinationPath $tempWork -Force
+        } else {
+            # First-seal path: no pending.zip exists yet (Initialize-DeploymentSession case).
+            # Seed the temp dir from the session's working/ directory so the mutator sees the
+            # pre-populated contents and the resulting zip is non-empty.
+            $sessionWorking = Join-Path $SessionPath 'working'
+            if (Test-Path -LiteralPath $sessionWorking) {
+                Copy-Item -Path (Join-Path $sessionWorking '*') -Destination $tempWork -Recurse -Force
+            }
         }
 
         # Run caller's mutation against the temp working dir.

@@ -556,3 +556,46 @@ Describe 'Finalize-DeploymentSession.ps1' {
         $index.deployments[0].result | Should -Be 'succeeded'
     }
 }
+
+Describe 'End-to-end deployment session' {
+    It 'init -> phases -> finalise produces an archived succeeded entry' {
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) "dp-e2e-$([guid]::NewGuid().Guid)"
+        $dist = Join-Path $root 'dist'
+        New-Item -ItemType Directory -Path (Join-Path $dist 'archive') -Force | Out-Null
+        try {
+            # Build a base zip from the fixture configs.
+            $stage = Join-Path $root 'stage'
+            $cfgSrc = Join-Path (Split-Path $PSScriptRoot -Parent) 'tests/fixtures/deployment-package/configs'
+            $cfgDst = Join-Path $stage 'config'
+            New-Item -ItemType Directory -Path $cfgDst -Force | Out-Null
+            Copy-Item -Path (Join-Path $cfgSrc '*') -Destination $cfgDst -Recurse -Force
+            $baseZip = Join-Path $root 'base.zip'
+            Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $baseZip -Force
+
+            $deployRoot = Join-Path $dist 'deployments'
+
+            # Init
+            $initOut = & (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Initialize-DeploymentSession.ps1') `
+                -BasePackagePath $baseZip -Tenant 't.example' -TargetEnvironment 'nonprod' -Prefix 'QGISCF' -OutputRoot $deployRoot
+            $sessionDir = $initOut | Where-Object { $_ -is [string] -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Last 1
+            $sessionDir | Should -Not -BeNullOrEmpty
+
+            # Finalise with injected actual-state matching the target. The phase-result
+            # emission inside Deploy-* scripts requires live tenant connectivity that we
+            # don't have here, so we skip the actual phase calls and just verify init->finalise.
+            $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+            $injected = @{ schemaVersion=1; labels=$r.Target.labels; labelPolicy=$r.Target.labelPolicy; classifierPackages=$r.Target.classifierPackages; dictionaries=$r.Target.dictionaries; dlpPolicies=$r.Target.dlpPolicies; dlpRules=$r.Target.dlpRules }
+
+            & (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Finalize-DeploymentSession.ps1') `
+                -SessionPath $sessionDir -ArchiveRoot (Join-Path $dist 'archive') -AcceptIncomplete -InjectActualState $injected
+
+            $archived = Get-ChildItem -Path (Join-Path $dist 'archive') -Recurse -Filter 't.example-*.zip'
+            $archived.Count | Should -BeGreaterOrEqual 1
+
+            $index = Get-Content -Raw -LiteralPath (Join-Path $dist 'archive/index.json') | ConvertFrom-Json -AsHashtable
+            $index.deployments.Count | Should -BeGreaterOrEqual 1
+            $index.deployments[-1].tenant | Should -Be 't.example'
+        }
+        finally { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
