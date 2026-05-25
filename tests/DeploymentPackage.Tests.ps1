@@ -20,5 +20,6 @@ Describe 'DeploymentPackage module loads' {
         )
         $actual = (Get-Command -Module DeploymentPackage).Name
         foreach ($name in $expected) { $actual | Should -Contain $name }
+        $actual.Count | Should -Be 9
     }
 }
