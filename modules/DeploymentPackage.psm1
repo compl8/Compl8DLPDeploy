@@ -178,7 +178,93 @@ function Get-TenantActualState {
         dlpRules           = $dlpRules
     }
 }
-function Compare-DeploymentState { throw 'Not implemented in module skeleton' }
+function Compare-DeploymentState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Target,
+        [Parameter(Mandatory)][hashtable]$Actual,
+        [object[]]$Adjustments = @()
+    )
+
+    $compareFields = @{
+        label              = @('code','parentGroup','encryption','priority','isGroup')
+        labelPolicy        = @('publishTo','labels','settings')
+        classifierPackage  = @('rulePackId','dictionaryRefs')
+        dictionary         = @('termSetSha256')
+        dlpPolicy          = @('mode','scopeParam','scopeValue')
+        dlpRule            = @('policy','classifiers','scopeParam','scopeValue')
+    }
+    $collections = @{
+        label             = 'labels'
+        labelPolicy       = $null   # singleton
+        classifierPackage = 'classifierPackages'
+        dictionary        = 'dictionaries'
+        dlpPolicy         = 'dlpPolicies'
+        dlpRule           = 'dlpRules'
+    }
+
+    $skipKeys = @{}
+    foreach ($entry in $Adjustments) {
+        if ($entry.action -eq 'skip') { $skipKeys["$($entry.artifactType):$($entry.key)"] = $true }
+    }
+
+    $missing    = @()
+    $extras     = @()
+    $mismatches = @()
+    $summary    = [ordered]@{}
+
+    foreach ($type in @('label','classifierPackage','dictionary','dlpPolicy','dlpRule')) {
+        $coll = $collections[$type]
+        $tgtItems = @($Target.$coll | Where-Object { -not $skipKeys.ContainsKey("$type`:$($_.name)") })
+        $actItems = @($Actual.$coll)
+
+        $tgtMap = @{}; foreach ($i in $tgtItems) { $tgtMap[$i.name] = $i }
+        $actMap = @{}; foreach ($i in $actItems) { $actMap[$i.name] = $i }
+
+        foreach ($name in $tgtMap.Keys) {
+            if (-not $actMap.ContainsKey($name)) {
+                $missing += @{ artifactType=$type; name=$name }
+            } else {
+                foreach ($field in $compareFields[$type]) {
+                    $tv = $tgtMap[$name][$field]; $av = $actMap[$name][$field]
+                    if (($tv -is [array]) -or ($av -is [array])) {
+                        if ($null -ne (Compare-Object @($tv) @($av) -SyncWindow 0)) {
+                            $mismatches += @{ artifactType=$type; name=$name; field=$field; target=$tv; actual=$av }
+                        }
+                    } elseif ($tv -ne $av) {
+                        $mismatches += @{ artifactType=$type; name=$name; field=$field; target=$tv; actual=$av }
+                    }
+                }
+            }
+        }
+        foreach ($name in $actMap.Keys) {
+            if (-not $tgtMap.ContainsKey($name)) {
+                $extras += @{ artifactType=$type; name=$name }
+            }
+        }
+
+        $matchedCount = $tgtItems.Count - @($missing | Where-Object artifactType -eq $type).Count
+        $summary[$coll] = [ordered]@{ target = $tgtItems.Count; actual = $actItems.Count; matched = $matchedCount }
+    }
+
+    # Singleton labelPolicy
+    if (-not $skipKeys.ContainsKey("labelPolicy:$($Target.labelPolicy.name)")) {
+        if ($Target.labelPolicy.name -and ($Target.labelPolicy.name -ne $Actual.labelPolicy.name)) {
+            if (-not $Actual.labelPolicy.name) { $missing += @{ artifactType='labelPolicy'; name=$Target.labelPolicy.name } }
+            else                                { $mismatches += @{ artifactType='labelPolicy'; name=$Target.labelPolicy.name; field='name'; target=$Target.labelPolicy.name; actual=$Actual.labelPolicy.name } }
+        }
+    }
+
+    $status = if ($missing.Count -eq 0 -and $extras.Count -eq 0 -and $mismatches.Count -eq 0) { 'succeeded' } else { 'failed' }
+    return [ordered]@{
+        status      = $status
+        verifiedAt  = (Get-Date).ToString('o')
+        missing     = $missing
+        extras      = $extras
+        mismatches  = $mismatches
+        summary     = $summary
+    }
+}
 function Update-PendingPackage {
     param(
         [Parameter(Mandatory)][string]$SessionPath,

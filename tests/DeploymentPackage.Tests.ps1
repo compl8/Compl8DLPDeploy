@@ -371,3 +371,51 @@ Describe 'Get-TenantActualState' {
         $cmd.Parameters.Keys | Should -Contain 'TargetEnvironment'
     }
 }
+
+Describe 'Compare-DeploymentState' {
+    It 'is succeeded when target and actual match exactly' {
+        $target = @{ labels=@(@{name='QGISCF-OFFI';code='OFFI';parentGroup=$null;encryption=$false;priority=1;isGroup=$false}); labelPolicy=@{name='QGISCF-Label-Policy';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $actual = @{ labels=@(@{name='QGISCF-OFFI';code='OFFI';parentGroup=$null;encryption=$false;priority=1;isGroup=$false}); labelPolicy=@{name='QGISCF-Label-Policy';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $r = Compare-DeploymentState -Target $target -Actual $actual -Adjustments @()
+        $r.status              | Should -Be 'succeeded'
+        $r.missing.Count       | Should -Be 0
+        $r.extras.Count        | Should -Be 0
+        $r.mismatches.Count    | Should -Be 0
+    }
+
+    It 'fails when a target artifact is missing from the tenant' {
+        $target = @{ labels=@(@{name='QGISCF-OFFI';code='OFFI';parentGroup=$null;encryption=$false;priority=1;isGroup=$false}); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $actual = @{ labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $r = Compare-DeploymentState -Target $target -Actual $actual -Adjustments @()
+        $r.status        | Should -Be 'failed'
+        $r.missing.Count | Should -Be 1
+        $r.missing[0].artifactType | Should -Be 'label'
+        $r.missing[0].name         | Should -Be 'QGISCF-OFFI'
+    }
+
+    It 'fails when the tenant has a provenance-stamped extra not in target' {
+        $target = @{ labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $actual = @{ labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@(@{name='X-rule-leftover';policy='X-p';classifiers=@();scopeParam='';scopeValue=''}) }
+        $r = Compare-DeploymentState -Target $target -Actual $actual -Adjustments @()
+        $r.status       | Should -Be 'failed'
+        $r.extras.Count | Should -Be 1
+        $r.extras[0].name | Should -Be 'X-rule-leftover'
+    }
+
+    It 'fails on structural mismatch (label encryption flag)' {
+        $target = @{ labels=@(@{name='QGISCF-OFFI';code='OFFI';parentGroup=$null;encryption=$true;priority=1;isGroup=$false}); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $actual = @{ labels=@(@{name='QGISCF-OFFI';code='OFFI';parentGroup=$null;encryption=$false;priority=1;isGroup=$false}); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $r = Compare-DeploymentState -Target $target -Actual $actual -Adjustments @()
+        $r.status           | Should -Be 'failed'
+        $r.mismatches.Count | Should -Be 1
+        $r.mismatches[0].field | Should -Be 'encryption'
+    }
+
+    It 'treats a skip adjustment as expected absence (no failure)' {
+        $target = @{ labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $actual = @{ labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+        $adjustments = @(@{ source='operator-review'; artifactType='dlpRule'; key='P04-R11-END-PROT_IT-EXT-ADT'; action='skip'; reason='deferred' })
+        $r = Compare-DeploymentState -Target $target -Actual $actual -Adjustments $adjustments
+        $r.status | Should -Be 'succeeded'
+    }
+}
