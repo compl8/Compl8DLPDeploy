@@ -146,6 +146,16 @@ function Invoke-ReadinessGate {
         RequireTenant = $true
         NoExit        = $true
     }
+    # Forward tenant-targeting params so the inner readiness check uses the SAME
+    # tenant pin / connection / prefix as this Deploy-Classifiers invocation —
+    # otherwise the inner call falls back to defaultEnvironment from the config
+    # and prints a misleading "Environment: <wrong-env>" for the readiness gate.
+    if ($TargetEnvironment)     { $params.TargetEnvironment   = $TargetEnvironment }
+    if ($Tenant)                { $params.Tenant              = $Tenant }
+    if ($UPN)                   { $params.UPN                 = $UPN }
+    if ($Delegated)             { $params.Delegated           = $true }
+    if ($Prefix)                { $params.Prefix              = $Prefix }
+    if ($RegisterFingerprint)   { $params.RegisterFingerprint = $true }
 
     $result = @(& $readinessScript @params)
     if ($result.Count -eq 0 -or $result[-1] -ne $true) {
