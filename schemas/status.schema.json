@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Status",
+  "type": "object",
+  "required": ["schemaVersion","state","phasesCompleted","phasesPending","pendingZipSha256","lastUpdated"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "state": { "enum": ["pending","in-progress","succeeded","partial","failed","rolledback"] },
+    "phasesCompleted": { "type": "array", "items": { "type": "string" } },
+    "phasesPending": { "type": "array", "items": { "type": "string" } },
+    "pendingZipSha256": { "type": "string" },
+    "lastUpdated": { "type": "string", "format": "date-time" }
+  }
+}

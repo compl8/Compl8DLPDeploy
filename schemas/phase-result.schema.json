@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PhaseResult",
+  "type": "object",
+  "required": ["schemaVersion","phase","action","status","startedAt","completedAt","artifacts","errors"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "phase": { "enum": ["classifiers","labels","dlprules","refit"] },
+    "action": { "type": "string" },
+    "status": { "enum": ["success","partial","failed"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "artifacts": { "type": "array" },
+    "errors": { "type": "array" },
+    "reportPath": { "type": "string" }
+  }
+}

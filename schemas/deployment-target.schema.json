@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DeploymentTarget",
+  "type": "object",
+  "required": ["schemaVersion", "labels", "labelPolicy", "classifierPackages", "dictionaries", "dlpPolicies", "dlpRules"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "labels": { "type": "array", "items": { "type": "object", "required": ["name","code","parentGroup","encryption","priority","isGroup"] } },
+    "labelPolicy": { "type": "object", "required": ["name","publishTo","labels","settings"] },
+    "classifierPackages": { "type": "array", "items": { "type": "object", "required": ["name","rulePackId","entities","dictionaryRefs"] } },
+    "dictionaries": { "type": "array", "items": { "type": "object", "required": ["name","termCountHint","termSetSha256"] } },
+    "dlpPolicies": { "type": "array", "items": { "type": "object", "required": ["name","mode","scopeParam","scopeValue"] } },
+    "dlpRules": { "type": "array", "items": { "type": "object", "required": ["name","policy","classifiers","scopeParam","scopeValue"] } }
+  }
+}

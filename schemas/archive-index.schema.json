@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ArchiveIndex",
+  "type": "object",
+  "required": ["schemaVersion","deployments"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "deployments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sessionId","tenant","targetEnvironment","result","archivedAt","archivePath","targetSha256","resultSha256"]
+      }
+    }
+  }
+}

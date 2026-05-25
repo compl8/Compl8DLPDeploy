@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TenantPin",
+  "type": "object",
+  "required": ["schemaVersion", "tenant", "tenantId", "targetEnvironment", "namingPrefix", "namingSuffix", "deploymentTier", "basePackage", "createdAt", "sessionId"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "tenant": { "type": "string" },
+    "tenantId": { "type": "string" },
+    "targetEnvironment": { "type": "string" },
+    "namingPrefix": { "type": "string" },
+    "namingSuffix": { "type": "string" },
+    "sitPrefix": { "type": "string" },
+    "deploymentTier": { "type": "string" },
+    "basePackage": {
+      "type": "object",
+      "required": ["name", "version", "sha256"],
+      "properties": { "name": {"type":"string"}, "version": {"type":"string"}, "sha256": {"type":"string"} }
+    },
+    "createdBy": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "sessionId": { "type": "string" }
+  }
+}

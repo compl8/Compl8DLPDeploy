@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PlanAdjustments",
+  "type": "object",
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts","source","artifactType","key","action","reason"],
+        "properties": {
+          "ts": { "type": "string", "format": "date-time" },
+          "source": { "enum": ["refit","operator-review"] },
+          "artifactType": { "enum": ["label","labelPolicy","classifierPackage","dictionary","dlpPolicy","dlpRule"] },
+          "key": { "type": "string" },
+          "action": { "type": "string" },
+          "before": { "type": "object" },
+          "after": { "type": "object" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DeploymentResult",
+  "type": "object",
+  "required": ["schemaVersion","status","verifiedAt","missing","extras","mismatches","summary"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "status": { "enum": ["succeeded","partial","failed","rolledback"] },
+    "verifiedAt": { "type": "string", "format": "date-time" },
+    "missing": { "type": "array" },
+    "extras": { "type": "array" },
+    "mismatches": { "type": "array" },
+    "summary": { "type": "object" }
+  }
+}
