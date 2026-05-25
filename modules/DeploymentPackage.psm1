@@ -164,7 +164,37 @@ function Update-PendingPackage {
         if (Test-Path -LiteralPath $stagingZip) { Remove-Item -LiteralPath $stagingZip -Force -ErrorAction SilentlyContinue }
     }
 }
-function Get-PendingDeploymentPackage { throw 'Not implemented in module skeleton' }
+function Get-PendingDeploymentPackage {
+    [CmdletBinding(DefaultParameterSetName='Auto')]
+    param(
+        [Parameter(ParameterSetName='Path', Mandatory)][string]$SessionPath,
+        [Parameter(ParameterSetName='Auto', Mandatory)][string]$DeploymentsRoot,
+        [Parameter(ParameterSetName='Auto', Mandatory)][string]$Tenant,
+        [Parameter(ParameterSetName='Auto', Mandatory)][string]$TargetEnvironment
+    )
+
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        return Read-DeploymentPackageManifest -SessionPath $SessionPath
+    }
+
+    if (-not (Test-Path -LiteralPath $DeploymentsRoot)) { throw "Deployments root not found: $DeploymentsRoot" }
+    $hits = @()
+    foreach ($dir in Get-ChildItem -Path $DeploymentsRoot -Directory) {
+        try {
+            $r = Read-DeploymentPackageManifest -SessionPath $dir.FullName
+            $terminal = $r.Status.state -in @('succeeded','partial','failed','rolledback')
+            if (-not $terminal -and $r.TenantPin.tenant -eq $Tenant -and $r.TenantPin.targetEnvironment -eq $TargetEnvironment) {
+                $hits += $r
+            }
+        } catch { continue }
+    }
+    if ($hits.Count -eq 0) { throw "No pending session for tenant=$Tenant targetEnvironment=$TargetEnvironment under $DeploymentsRoot" }
+    if ($hits.Count -gt 1) {
+        $candidates = ($hits | ForEach-Object { $_.SessionPath }) -join "`n"
+        throw "Found multiple pending sessions for tenant=$Tenant targetEnvironment=$TargetEnvironment; pass -SessionPath explicitly. Candidates:`n$candidates"
+    }
+    return $hits[0]
+}
 function Read-DeploymentPackageManifest {
     param(
         [Parameter(Mandatory)][string]$SessionPath,

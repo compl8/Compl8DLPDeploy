@@ -318,3 +318,42 @@ Describe 'Add-DeploymentPhaseResult' {
         $r.Status.phasesCompleted | Should -Not -Contain 'labels'
     }
 }
+
+Describe 'Get-PendingDeploymentPackage' {
+    BeforeAll {
+        $script:LookRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-look-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:LookRoot -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:LookRoot) { Remove-Item $script:LookRoot -Recurse -Force }
+    }
+
+    It 'returns the single matching pending session' {
+        New-TestSession -Root $script:LookRoot `
+            -Pin @{ schemaVersion=1; tenant='alpha.example'; tenantId='g1'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='alpha' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() } | Out-Null
+
+        $r = Get-PendingDeploymentPackage -DeploymentsRoot $script:LookRoot -Tenant 'alpha.example' -TargetEnvironment 'nonprod'
+        $r.TenantPin.tenant | Should -Be 'alpha.example'
+    }
+
+    It 'throws a clear error when no match exists' {
+        { Get-PendingDeploymentPackage -DeploymentsRoot $script:LookRoot -Tenant 'noone' -TargetEnvironment 'nowhere' } |
+            Should -Throw '*No pending session*'
+    }
+
+    It 'throws with candidate list on multi-match' {
+        New-TestSession -Root $script:LookRoot `
+            -Pin @{ schemaVersion=1; tenant='dup.example'; tenantId='g2'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='dup1' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() } | Out-Null
+        New-TestSession -Root $script:LookRoot `
+            -Pin @{ schemaVersion=1; tenant='dup.example'; tenantId='g2'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='dup2' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() } | Out-Null
+
+        { Get-PendingDeploymentPackage -DeploymentsRoot $script:LookRoot -Tenant 'dup.example' -TargetEnvironment 'nonprod' } |
+            Should -Throw '*multiple*'
+    }
+}
