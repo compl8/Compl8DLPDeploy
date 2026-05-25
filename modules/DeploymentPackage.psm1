@@ -553,7 +553,56 @@ function Add-DeploymentPhaseResult {
     $s.lastUpdated = (Get-Date).ToString('o')
     $s | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusFp -Encoding UTF8
 }
-function Move-DeploymentPackageToArchive { throw 'Not implemented in module skeleton' }
+function Move-DeploymentPackageToArchive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SessionPath,
+        [Parameter(Mandatory)][ValidateSet('succeeded','partial','failed','rolledback')][string]$Result,
+        [Parameter(Mandatory)][string]$ArchiveRoot,
+        [string]$ArchiveTimestamp
+    )
+
+    $manifest = Read-DeploymentPackageManifest -SessionPath $SessionPath
+    if (-not $ArchiveTimestamp) {
+        $ArchiveTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    }
+
+    $resultDir = Join-Path $ArchiveRoot $Result
+    New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+
+    $tenantSlug = $manifest.TenantPin.tenant -replace '[^a-zA-Z0-9.\-]','_'
+    $candidate  = Join-Path $resultDir "$tenantSlug-$ArchiveTimestamp.zip"
+    if (Test-Path -LiteralPath $candidate) {
+        $short = ([guid]::NewGuid().Guid.Substring(0,8))
+        $candidate = Join-Path $resultDir "$tenantSlug-$ArchiveTimestamp-$short.zip"
+    }
+
+    Move-Item -LiteralPath (Join-Path $SessionPath 'pending.zip') -Destination $candidate -Force
+    $shaSrc = Join-Path $SessionPath 'pending.zip.sha256'
+    if (Test-Path -LiteralPath $shaSrc) {
+        Move-Item -LiteralPath $shaSrc -Destination "$candidate.sha256" -Force
+    }
+
+    $indexPath = Join-Path $ArchiveRoot 'index.json'
+    $index = if (Test-Path -LiteralPath $indexPath) {
+        Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json -AsHashtable
+    } else {
+        @{ schemaVersion = 1; deployments = @() }
+    }
+    $index.deployments += [ordered]@{
+        sessionId         = $manifest.TenantPin.sessionId
+        tenant            = $manifest.TenantPin.tenant
+        targetEnvironment = $manifest.TenantPin.targetEnvironment
+        result            = $Result
+        archivedAt        = (Get-Date).ToString('o')
+        archivePath       = [System.IO.Path]::GetRelativePath($ArchiveRoot, $candidate) -replace '\\','/'
+        targetSha256      = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash
+        resultSha256      = ''
+    }
+    $index | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $indexPath -Encoding UTF8
+
+    Remove-Item -LiteralPath $SessionPath -Recurse -Force
+}
 
 Export-ModuleMember -Function @(
     'New-DeploymentTargetSnapshot',

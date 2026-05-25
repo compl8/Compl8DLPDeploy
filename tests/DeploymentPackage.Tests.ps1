@@ -419,3 +419,48 @@ Describe 'Compare-DeploymentState' {
         $r.status | Should -Be 'succeeded'
     }
 }
+
+Describe 'Move-DeploymentPackageToArchive' {
+    BeforeAll {
+        $script:ArcRoot  = Join-Path ([System.IO.Path]::GetTempPath()) "dp-arc-$([guid]::NewGuid().Guid)"
+        $script:ArcDist  = Join-Path $script:ArcRoot 'dist'
+        New-Item -ItemType Directory -Path (Join-Path $script:ArcDist 'archive') -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:ArcRoot) { Remove-Item $script:ArcRoot -Recurse -Force }
+    }
+
+    It 'moves pending.zip to dist/archive/{result}/ and appends an index entry' {
+        $sessionDir = New-TestSession -Root $script:ArcRoot `
+            -Pin @{ schemaVersion=1; tenant='t.example'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='abc' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Move-DeploymentPackageToArchive -SessionPath $sessionDir -Result 'succeeded' -ArchiveRoot (Join-Path $script:ArcDist 'archive')
+
+        Test-Path $sessionDir | Should -BeFalse
+        Get-ChildItem -Path (Join-Path $script:ArcDist 'archive/succeeded') -Filter 't.example-*.zip' | Should -Not -BeNullOrEmpty
+
+        $index = Get-Content -Raw -LiteralPath (Join-Path $script:ArcDist 'archive/index.json') | ConvertFrom-Json -AsHashtable
+        $index.deployments.Count | Should -Be 1
+        $index.deployments[0].sessionId | Should -Be 'abc'
+        $index.deployments[0].result    | Should -Be 'succeeded'
+    }
+
+    It 'appends -{shortGuid} suffix on archive-path collision' {
+        $a = New-TestSession -Root $script:ArcRoot `
+            -Pin @{ schemaVersion=1; tenant='dup.example'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt='2026-05-25T10:00:00Z'; sessionId='A' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+        $b = New-TestSession -Root $script:ArcRoot `
+            -Pin @{ schemaVersion=1; tenant='dup.example'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt='2026-05-25T10:00:00Z'; sessionId='B' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        Move-DeploymentPackageToArchive -SessionPath $a -Result 'failed' -ArchiveRoot (Join-Path $script:ArcDist 'archive') -ArchiveTimestamp '20260525-100000'
+        Move-DeploymentPackageToArchive -SessionPath $b -Result 'failed' -ArchiveRoot (Join-Path $script:ArcDist 'archive') -ArchiveTimestamp '20260525-100000'
+
+        $files = Get-ChildItem -Path (Join-Path $script:ArcDist 'archive/failed') -Filter 'dup.example-*.zip'
+        $files.Count | Should -BeGreaterOrEqual 2
+    }
+}
