@@ -527,3 +527,32 @@ Describe 'Edit-DeploymentTarget.ps1' {
         $r.Adjustments.entries[0].reason | Should -Be 'deferred'
     }
 }
+
+Describe 'Finalize-DeploymentSession.ps1' {
+    BeforeAll {
+        $script:FinRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-fin-$([guid]::NewGuid().Guid)"
+        $script:FinDist = Join-Path $script:FinRoot 'dist'
+        New-Item -ItemType Directory -Path (Join-Path $script:FinDist 'archive') -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:FinRoot) { Remove-Item $script:FinRoot -Recurse -Force }
+    }
+
+    It 'verifies, writes result, and archives a succeeded session' {
+        $sessionDir = New-TestSession -Root $script:FinRoot `
+            -Pin @{ schemaVersion=1; tenant='t.example'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='QGISCF'; namingSuffix='EXT-ADT'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='abc' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() } `
+            -Status @{ schemaVersion=1; state='in-progress'; phasesCompleted=@('classifiers','labels','dlprules'); phasesPending=@(); pendingZipSha256=''; lastUpdated=(Get-Date).ToString('o') }
+
+        $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Finalize-DeploymentSession.ps1'
+
+        & $script -SessionPath $sessionDir -ArchiveRoot (Join-Path $script:FinDist 'archive') `
+            -InjectActualState @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() }
+
+        $archived = Get-ChildItem -Path (Join-Path $script:FinDist 'archive/succeeded') -Filter 't.example-*.zip'
+        $archived.Count | Should -Be 1
+        $index = Get-Content -Raw -LiteralPath (Join-Path $script:FinDist 'archive/index.json') | ConvertFrom-Json -AsHashtable
+        $index.deployments[0].result | Should -Be 'succeeded'
+    }
+}
