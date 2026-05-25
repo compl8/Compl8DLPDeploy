@@ -3,6 +3,41 @@
 BeforeAll {
     $ModulePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'DeploymentPackage.psm1'
     Import-Module $ModulePath -Force
+
+    # Shared helper used by Read-DeploymentPackageManifest tests and by upcoming Describes
+    # for Tasks 4-11 (Initialize-DeploymentSession, Add-DeploymentPlanAdjustment, phase
+    # results, archive move, etc.). Defined at file-scope so Pester v5 propagates it to
+    # every child Describe automatically.
+    function New-TestSession {
+        param([string]$Root, [hashtable]$Pin, [hashtable]$Target, [hashtable]$Adjustments, [hashtable]$Status)
+
+        $sessionDir = Join-Path $Root ([guid]::NewGuid().Guid)
+        $workingDir = Join-Path $sessionDir 'working'
+        New-Item -ItemType Directory -Path $workingDir -Force | Out-Null
+
+        if ($Pin)         { $Pin         | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'tenant-pin.json')         -Encoding UTF8 }
+        if ($Target)      { $Target      | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'deployment-target.json') -Encoding UTF8 }
+        if ($Adjustments) { $Adjustments | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'plan-adjustments.json')  -Encoding UTF8 }
+
+        $zip = Join-Path $sessionDir 'pending.zip'
+        Compress-Archive -Path (Join-Path $workingDir '*') -DestinationPath $zip -Force
+        $sha = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
+        Set-Content -Path "$zip.sha256" -Value $sha -Encoding ASCII
+
+        if (-not $Status) {
+            $Status = @{
+                schemaVersion    = 1
+                state            = 'pending'
+                phasesCompleted  = @()
+                phasesPending    = @('classifiers','labels','dlprules')
+                pendingZipSha256 = $sha
+                lastUpdated      = (Get-Date).ToString('o')
+            }
+        }
+        $Status | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $sessionDir 'status.json') -Encoding UTF8
+
+        return $sessionDir
+    }
 }
 
 Describe 'DeploymentPackage module loads' {
@@ -26,37 +61,6 @@ Describe 'DeploymentPackage module loads' {
 
 Describe 'Read-DeploymentPackageManifest' {
     BeforeAll {
-        function New-TestSession {
-            param([string]$Root, [hashtable]$Pin, [hashtable]$Target, [hashtable]$Adjustments, [hashtable]$Status)
-
-            $sessionDir = Join-Path $Root ([guid]::NewGuid().Guid)
-            $workingDir = Join-Path $sessionDir 'working'
-            New-Item -ItemType Directory -Path $workingDir -Force | Out-Null
-
-            if ($Pin)         { $Pin         | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'tenant-pin.json')         -Encoding UTF8 }
-            if ($Target)      { $Target      | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'deployment-target.json') -Encoding UTF8 }
-            if ($Adjustments) { $Adjustments | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $workingDir 'plan-adjustments.json')  -Encoding UTF8 }
-
-            $zip = Join-Path $sessionDir 'pending.zip'
-            Compress-Archive -Path (Join-Path $workingDir '*') -DestinationPath $zip -Force
-            $sha = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
-            Set-Content -Path "$zip.sha256" -Value $sha -Encoding ASCII
-
-            if (-not $Status) {
-                $Status = @{
-                    schemaVersion    = 1
-                    state            = 'pending'
-                    phasesCompleted  = @()
-                    phasesPending    = @('classifiers','labels','dlprules')
-                    pendingZipSha256 = $sha
-                    lastUpdated      = (Get-Date).ToString('o')
-                }
-            }
-            $Status | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $sessionDir 'status.json') -Encoding UTF8
-
-            return $sessionDir
-        }
-
         $script:TmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-read-$(([guid]::NewGuid()).Guid)"
         New-Item -ItemType Directory -Path $script:TmpRoot -Force | Out-Null
     }

@@ -19,7 +19,7 @@ function Read-DeploymentPackageManifest {
     $shaFile   = Join-Path $SessionPath 'pending.zip.sha256'
     $statusFp  = Join-Path $SessionPath 'status.json'
 
-    if ((Test-Path $zip) -and (Test-Path $shaFile)) {
+    if ((Test-Path -LiteralPath $zip) -and (Test-Path -LiteralPath $shaFile)) {
         $expected = (Get-Content -Raw -LiteralPath $shaFile).Trim()
         $actual   = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash
         if ($expected -ne $actual) {
@@ -31,12 +31,12 @@ function Read-DeploymentPackageManifest {
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("dp-read-$([guid]::NewGuid().Guid)")
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     try {
-        if (Test-Path $zip) {
+        if (Test-Path -LiteralPath $zip) {
             Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
         } else {
             # Fall back to the live working dir if no zip is sealed yet (during Initialize-DeploymentSession).
             $working = Join-Path $SessionPath 'working'
-            if (Test-Path $working) { Copy-Item -Path (Join-Path $working '*') -Destination $temp -Recurse -Force }
+            if (Test-Path -LiteralPath $working) { Copy-Item -Path (Join-Path $working '*') -Destination $temp -Recurse -Force }
         }
 
         $pin = Get-Content -Raw -LiteralPath (Join-Path $temp 'tenant-pin.json')         | ConvertFrom-Json -AsHashtable
@@ -49,7 +49,7 @@ function Read-DeploymentPackageManifest {
             }
         }
 
-        $status = if (Test-Path $statusFp) {
+        $status = if (Test-Path -LiteralPath $statusFp) {
             Get-Content -Raw -LiteralPath $statusFp | ConvertFrom-Json -AsHashtable
         } else {
             @{ schemaVersion = 1; state = 'pending'; phasesCompleted = @(); phasesPending = @(); pendingZipSha256 = ''; lastUpdated = '' }

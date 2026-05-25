@@ -8,8 +8,8 @@
     Author            = 'Compl8 DLP Deploy'
     CompanyName       = ''
     Copyright         = '(c) 2026. All rights reserved.'
-    Description       = 'Tenant deployment package lifecycle: target snapshot, plan adjustments, phase results, verification, archive.'
-    PowerShellVersion = '5.1'
+    Description       = 'Tenant deployment package lifecycle: target snapshot, plan adjustments, phase results, verification, archive. Requires PowerShell 7+ (uses ConvertFrom-Json -AsHashtable).'
+    PowerShellVersion = '7.0'
 
     FunctionsToExport = @(
         'New-DeploymentTargetSnapshot'
