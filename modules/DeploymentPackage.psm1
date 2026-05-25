@@ -1,6 +1,102 @@
 # Functions are added in subsequent tasks. Stubs throw so tests fail loudly if anyone calls them prematurely.
 
-function New-DeploymentTargetSnapshot { throw 'Not implemented in module skeleton' }
+function New-DeploymentTargetSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ConfigDir
+    )
+
+    # Lazy-import DLP-Deploy.psm1 for the templating engine + config resolvers.
+    $dlpModule = Join-Path $PSScriptRoot 'DLP-Deploy.psm1'
+    if (-not (Get-Module DLP-Deploy)) { Import-Module $dlpModule -Force }
+
+    function Read-JsonFile { param($p) Get-Content -Raw -LiteralPath $p | ConvertFrom-Json -AsHashtable }
+
+    $settings    = Read-JsonFile (Join-Path $ConfigDir 'settings.json')
+    $labelsJson  = Read-JsonFile (Join-Path $ConfigDir 'labels.json')
+    $policies    = Read-JsonFile (Join-Path $ConfigDir 'policies.json')
+    $classifiers = Read-JsonFile (Join-Path $ConfigDir 'classifiers.json')
+
+    $cfg = Merge-GlobalConfig -Defaults (Get-ModuleDefaults) -GlobalJson ([pscustomobject]$settings)
+
+    # Labels
+    $labels = foreach ($l in $labelsJson) {
+        [ordered]@{
+            name        = Get-DeploymentObjectName -Config $cfg -ObjectType 'label' -Name $l.name -Tokens @{ labelCode = $l.code; displayName = $l.displayName }
+            code        = $l.code
+            parentGroup = $l.parentGroup
+            encryption  = [bool]$l.encrypt
+            priority    = [int]$l.priority
+            isGroup     = [bool]$l.isGroup
+        }
+    }
+
+    # Label policy
+    $labelPolicy = [ordered]@{
+        name      = Get-DeploymentObjectName -Config $cfg -ObjectType 'labelPolicy' -Name $cfg.labelPolicyName
+        publishTo = @()
+        labels    = @($labels | Where-Object { -not $_.isGroup } | ForEach-Object { $_.name })
+        settings  = @{}
+    }
+
+    # DLP policies + rules
+    $dlpPolicies = @()
+    $dlpRules    = @()
+    foreach ($p in $policies) {
+        if (-not $p.Enabled) { continue }
+        $policyName = Get-PolicyName -PolicyNumber $p.Number -PolicyCode $p.Code -Config $cfg
+        $dlpPolicies += [ordered]@{
+            name       = $policyName
+            mode       = (Resolve-PolicyMode -AuditMode:$cfg.auditMode -NotifyUser:$cfg.notifyUser)
+            scopeParam = $p.ScopeParam
+            scopeValue = $p.ScopeValue
+        }
+        $ruleNum = 0
+        foreach ($key in $classifiers.Keys) {
+            $ruleNum++
+            $chunks = @(Split-ClassifierChunks -ClassifierList $classifiers[$key] -MaxPerRule 125)
+            $idx = 0
+            foreach ($chunk in $chunks) {
+                $idx++
+                $chunkLetter = if ($chunks.Count -gt 1) { Get-ChunkLetter -ChunkIndex $idx } else { '' }
+                $ruleName = Get-RuleName -PolicyNumber $p.Number -RuleNumber $ruleNum -PolicyCode $p.Code -LabelCode $key -ChunkLetter $chunkLetter -Config $cfg
+                $dlpRules += [ordered]@{
+                    name        = $ruleName
+                    policy      = $policyName
+                    classifiers = @($chunk | ForEach-Object { $_.Id })
+                    scopeParam  = $p.ScopeParam
+                    scopeValue  = $p.ScopeValue
+                }
+            }
+        }
+    }
+
+    # Classifier packages + dictionaries — sourced from xml/deploy/deploy-registry.json if present, else empty.
+    $classifierPackages = @()
+    $dictionaries       = @()
+    $registryFile = Join-Path (Split-Path $ConfigDir -Parent) 'xml/deploy/deploy-registry.json'
+    if (Test-Path -LiteralPath $registryFile) {
+        $registry = Get-Content -Raw -LiteralPath $registryFile | ConvertFrom-Json -AsHashtable
+        foreach ($pkg in $registry.packages) {
+            $classifierPackages += [ordered]@{
+                name           = Get-DeploymentObjectName -Config $cfg -ObjectType 'classifierPackage' -Name $pkg.key
+                rulePackId     = $null
+                entities       = @()
+                dictionaryRefs = @()
+            }
+        }
+    }
+
+    return [ordered]@{
+        schemaVersion       = 1
+        labels              = @($labels)
+        labelPolicy         = $labelPolicy
+        classifierPackages  = @($classifierPackages)
+        dictionaries        = @($dictionaries)
+        dlpPolicies         = @($dlpPolicies)
+        dlpRules            = @($dlpRules)
+    }
+}
 function Get-TenantActualState { throw 'Not implemented in module skeleton' }
 function Compare-DeploymentState { throw 'Not implemented in module skeleton' }
 function Update-PendingPackage {

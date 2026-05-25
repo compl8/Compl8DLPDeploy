@@ -172,3 +172,36 @@ Describe 'Update-PendingPackage' {
         $actual | Should -Be $origSha
     }
 }
+
+Describe 'New-DeploymentTargetSnapshot' {
+    BeforeAll {
+        $script:FixturesDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'tests/fixtures/deployment-package/configs'
+    }
+
+    It 'produces the expected target for the fixture configs' {
+        $target = New-DeploymentTargetSnapshot -ConfigDir $script:FixturesDir
+
+        $target.schemaVersion | Should -Be 1
+        $target.labels.Count  | Should -Be 1
+        $target.labels[0].name | Should -Be 'QGISCF-OFFICIAL-OFFI'
+        $target.labels[0].code | Should -Be 'OFFI'
+
+        $target.labelPolicy.name | Should -Be 'QGISCF-Label-Policy'
+
+        $target.dlpPolicies.Count | Should -Be 1
+        $target.dlpPolicies[0].name | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
+
+        $target.dlpRules.Count | Should -Be 1
+        $target.dlpRules[0].name   | Should -Be 'P01-R01-ECH-OFFI-EXT-ADT'
+        $target.dlpRules[0].policy | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
+        $target.dlpRules[0].classifiers | Should -Contain '00000000-0000-0000-0000-000000000001'
+    }
+
+    It 'returns null rulePackId and null entity ids for classifier packages at init' {
+        $target = New-DeploymentTargetSnapshot -ConfigDir $script:FixturesDir
+        foreach ($pkg in $target.classifierPackages) {
+            $pkg.rulePackId | Should -BeNullOrEmpty
+            foreach ($e in $pkg.entities) { $e.id | Should -BeNullOrEmpty }
+        }
+    }
+}
