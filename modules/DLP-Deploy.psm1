@@ -33,14 +33,14 @@ function Get-ModuleDefaults {
         nameTemplates            = @{
             label             = "{prefix}-{name}-{labelCode}"
             labelPolicy       = "{prefix}-{name}"
-            dlpPolicy         = "{prefix}-P{policyNumber}-{policyCode}-{suffix}"
-            dlpRule           = "{prefix}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}"
+            dlpPolicy         = "P{policyNumber}-{policyCode}-{prefix}-{suffix}"
+            dlpRule           = "P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}"
             classifierPackage = "{prefix}-{name}"
             classifierEntity  = "{prefix}-{name}"
             canaryPackage     = "{prefix}-DLPDeploy-Canary-{suffix}"
             canaryEntity      = "{prefix}-DLPDeploy-Canary-{name}"
-            autoLabelPolicy   = "{prefix}-AL{policyNumber}-{labelCode}-{suffix}"
-            autoLabelRule     = "{prefix}-AL{policyNumber}-R{ruleNumber}{chunkLetter}-{workloadCode}-{labelCode}-{suffix}"
+            autoLabelPolicy   = "AL{policyNumber}-{labelCode}-{prefix}-{suffix}"
+            autoLabelRule     = "AL{policyNumber}-R{ruleNumber}{chunkLetter}-{workloadCode}-{labelCode}-{suffix}"
         }
         # Data pipeline
         inputSpreadsheet         = ""

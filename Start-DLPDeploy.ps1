@@ -209,6 +209,28 @@ function Get-CommonDeploymentArgs {
     return $commonArgs
 }
 
+function Get-ExpectedDlpPolicyNameSet {
+    param([Parameter(Mandatory)][hashtable]$Config)
+
+    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $policiesPath = Join-Path $ConfigPath "policies.json"
+    if (-not (Test-Path -LiteralPath $policiesPath -PathType Leaf)) {
+        return $names
+    }
+
+    try {
+        $policiesJson = Get-Content -Raw -LiteralPath $policiesPath | ConvertFrom-Json -ErrorAction Stop
+        foreach ($policy in @(Resolve-PolicyConfig -PoliciesJson $policiesJson)) {
+            $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Config $Config
+            if ($policyName) { [void]$names.Add($policyName) }
+        }
+    } catch {
+        Write-Host "  Warning: could not derive configured DLP policy names: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    return $names
+}
+
 function Get-LatestRefitPlanPath {
     $root = Join-Path (Join-Path $ProjectRoot "reports") "refit-plans"
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -890,10 +912,11 @@ function Invoke-CleanupDLPRules {
     Write-Host "  --- Remove DLP Rules ---" -ForegroundColor Cyan
     Write-Host "  Fetching DLP policies and rules..." -ForegroundColor Gray
 
-    # Load config for deployment identification
+    # Derive deployment-owned policies from the same naming helper used by Deploy-DLPRules.ps1.
     $prefix = $_Config.namingPrefix
     $suffix = $_Config.namingSuffix
-    $deployPattern = "P0*-*-$prefix-$suffix"
+    $expectedPolicyNames = Get-ExpectedDlpPolicyNameSet -Config $_Config
+    $legacyDeployPattern = "P0*-*-$prefix-$suffix"
 
     # Fetch all DLP policies
     $allPolicies = @()
@@ -912,7 +935,7 @@ function Invoke-CleanupDLPRules {
     foreach ($pol in $allPolicies) {
         $rules = @()
         try { $rules = @(Get-DlpComplianceRule -Policy $pol.Name -ErrorAction Stop) } catch { }
-        $isManaged = $pol.Name -like $deployPattern
+        $isManaged = $expectedPolicyNames.Contains($pol.Name) -or $pol.Name -like $legacyDeployPattern
         $policyInfo += @{ Policy = $pol; Rules = $rules; IsManaged = $isManaged }
     }
 
@@ -1062,7 +1085,12 @@ function Invoke-CleanupLabels {
     $configLookup = @{}
     if ($labelsJson) {
         foreach ($lbl in $labelsJson) {
-            $configLookup[$lbl.name] = $lbl
+            if ($lbl.name) { $configLookup[$lbl.name] = $lbl }
+            $generatedName = Get-DeploymentObjectName -Config $_Config -ObjectType "label" -Name $lbl.name -Tokens @{
+                labelCode   = $lbl.code
+                displayName = $lbl.displayName
+            }
+            if ($generatedName) { $configLookup[$generatedName] = $lbl }
         }
     }
 
@@ -1228,7 +1256,7 @@ function Invoke-CleanupLabels {
     $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
 
     # Check if label policy should be removed
-    $policyName = $_Config.labelPolicyName
+    $policyName = Get-DeploymentObjectName -Config $_Config -ObjectType "labelPolicy" -Name $_Config.labelPolicyName
     $removePolicy = $false
     if ($pick.ToUpper() -eq "A") {
         # Removing all — also remove the label policy

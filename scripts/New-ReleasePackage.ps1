@@ -121,7 +121,11 @@ if ($unmatched.Count -gt 0) {
 
 $zipPath = Join-Path $OutputDirectory $OutputName
 if ((Test-Path -LiteralPath $zipPath) -and -not $Force) {
-    throw "Output package already exists. Use -Force to overwrite: $zipPath"
+    if ($WhatIfPreference) {
+        Write-Host "Warning: output package already exists; preview will not overwrite it: $zipPath" -ForegroundColor Yellow
+    } else {
+        throw "Output package already exists. Use -Force to overwrite: $zipPath"
+    }
 }
 
 Write-Host "Package files selected: $($selected.Count)" -ForegroundColor Cyan

@@ -254,6 +254,13 @@ Describe 'Resolve-LabelAssignment' {
         $result.AssignedBy | Should -Be 'naming-convention'
     }
 
+    It 'Resolves via naming convention with chunk letter' {
+        $result = Resolve-LabelAssignment -RuleName 'P01-R05b-ECH-SENS_Fin-EXT-ADT' -Mappings $null -TenantLabels $null -LabelsJson $script:testLabels
+        $result.LabelCode | Should -Be 'SENS_Fin'
+        $result.Label | Should -Be 'SENSITIVE Financial'
+        $result.AssignedBy | Should -Be 'naming-convention'
+    }
+
     It 'Resolves via exact mapping' {
         $mappings = @(
             [PSCustomObject]@{ Pattern = 'Custom-Rule-Finance'; LabelCode = 'SENS_Fin' }

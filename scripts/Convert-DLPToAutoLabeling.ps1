@@ -58,21 +58,22 @@ $maxRetries = 3
 $baseDelaySec = 300
 $overwriteLabel = $false
 
+$Defaults = Get-ModuleDefaults
+$Defaults.namingPrefix = $namingPrefix
+$Defaults.namingSuffix = $namingSuffix
+
 try {
     $globalJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 } catch {
     $globalJson = $null
 }
-if ($globalJson) {
-    $defaults = Get-ModuleDefaults
-    $mergedConfig = Merge-GlobalConfig -Defaults $defaults -GlobalJson $globalJson
-    if ($mergedConfig.namingPrefix) { $namingPrefix = $mergedConfig.namingPrefix }
-    if ($mergedConfig.namingSuffix) { $namingSuffix = $mergedConfig.namingSuffix }
-    if ($mergedConfig.interCallDelaySec) { $interCallDelaySec = $mergedConfig.interCallDelaySec }
-    if ($mergedConfig.maxRetries) { $maxRetries = $mergedConfig.maxRetries }
-    if ($mergedConfig.baseDelaySec) { $baseDelaySec = $mergedConfig.baseDelaySec }
-    if ($mergedConfig.overwriteLabel) { $overwriteLabel = $mergedConfig.overwriteLabel }
-}
+$Config = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $globalJson
+if ($Config.namingPrefix) { $namingPrefix = $Config.namingPrefix }
+if ($Config.namingSuffix) { $namingSuffix = $Config.namingSuffix }
+if ($Config.interCallDelaySec) { $interCallDelaySec = $Config.interCallDelaySec }
+if ($Config.maxRetries) { $maxRetries = $Config.maxRetries }
+if ($Config.baseDelaySec) { $baseDelaySec = $Config.baseDelaySec }
+if ($Config.overwriteLabel) { $overwriteLabel = $Config.overwriteLabel }
 
 # Load optional labels.json
 $labelsJson = $null
@@ -90,6 +91,63 @@ $WorkloadCodeMap = @{
 }
 
 $SupportedWorkloads = @('Exchange', 'SharePoint', 'OneDriveForBusiness')
+
+function Get-ConversionEntryLabelCode {
+    param([Parameter(Mandatory)][object]$Entry)
+
+    $labelCodes = @($Entry.labelCodes)
+    if ($labelCodes.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($labelCodes[0])) {
+        return [string]$labelCodes[0]
+    }
+
+    $fallback = ([string]$Entry.labelName -replace '[^A-Za-z0-9_.-]', '') -replace '-{2,}', '-'
+    $fallback = $fallback.Trim('-')
+    if ([string]::IsNullOrWhiteSpace($fallback)) { return "LABEL" }
+    return $fallback
+}
+
+function Get-ConversionLabelObjectName {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$LabelCode,
+        [string]$DisplayName
+    )
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $Name -Tokens @{
+        labelCode   = $LabelCode
+        displayName = $DisplayName
+    }
+}
+
+function Get-AutoLabelPolicyName {
+    param(
+        [Parameter(Mandatory)][int]$PolicyNumber,
+        [Parameter(Mandatory)][string]$LabelCode
+    )
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "autoLabelPolicy" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        labelCode    = $LabelCode
+    }
+}
+
+function Get-AutoLabelRuleName {
+    param(
+        [Parameter(Mandatory)][int]$PolicyNumber,
+        [Parameter(Mandatory)][int]$RuleNumber,
+        [Parameter(Mandatory)][string]$WorkloadCode,
+        [Parameter(Mandatory)][string]$LabelCode,
+        [string]$ChunkLetter = ""
+    )
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "autoLabelRule" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        ruleNumber   = ("{0:D2}" -f $RuleNumber)
+        chunkLetter  = $ChunkLetter
+        workloadCode = $WorkloadCode
+        labelCode    = $LabelCode
+    }
+}
 #endregion
 
 #region Helper: Count SITs from CCSI structure
@@ -611,7 +669,9 @@ if ($Execute) {
     if ($labelsJson) {
         foreach ($lj in $labelsJson) {
             if ($lj.displayName -and $lj.name -and -not $lj.isGroup) {
-                $labelDisplayToName[$lj.displayName] = $lj.name
+                $generatedLabelName = Get-ConversionLabelObjectName -Name $lj.name -LabelCode $lj.code -DisplayName $lj.displayName
+                $labelDisplayToName[$lj.displayName] = $generatedLabelName
+                $labelDisplayToName[$lj.name] = $generatedLabelName
             }
         }
         Write-Host "  Label name lookup: $($labelDisplayToName.Count) entries from labels.json" -ForegroundColor Gray
@@ -634,10 +694,8 @@ if ($Execute) {
     $pn = 0
     foreach ($entry in $approvedEntries) {
         $pn++
-        $lc = $null
-        if ($entry.labelCodes -and @($entry.labelCodes).Count -gt 0) { $lc = @($entry.labelCodes)[0] }
-        if (-not $lc) { $lc = ($entry.labelName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-' }
-        $plannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $pn, $lc, $namingPrefix, $namingSuffix
+        $lc = Get-ConversionEntryLabelCode -Entry $entry
+        $plannedPolicyNames += Get-AutoLabelPolicyName -PolicyNumber $pn -LabelCode $lc
     }
 
     # Query existing AL rules under the planned policy names
@@ -663,9 +721,7 @@ if ($Execute) {
         $rpn = 0
         foreach ($entry in $approvedEntries) {
             $rpn++
-            $lc = $null
-            if ($entry.labelCodes -and @($entry.labelCodes).Count -gt 0) { $lc = @($entry.labelCodes)[0] }
-            if (-not $lc) { $lc = ($entry.labelName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-' }
+            $lc = Get-ConversionEntryLabelCode -Entry $entry
             # Group source rules by workload (same logic as execute loop)
             $wlGroups = @{}
             foreach ($sr in $entry.sourceRules) {
@@ -686,7 +742,7 @@ if ($Execute) {
                 if ($chunkCount -lt 1) { $chunkCount = 1 }
                 for ($ci = 1; $ci -le $chunkCount; $ci++) {
                     $cs = if ($chunkCount -gt 1) { Get-ChunkLetter -ChunkIndex $ci } else { '' }
-                    $plannedRuleNames += "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $rpn, $rrn, $wlCode, $lc, $namingSuffix, $cs
+                    $plannedRuleNames += Get-AutoLabelRuleName -PolicyNumber $rpn -RuleNumber $rrn -WorkloadCode $wlCode -LabelCode $lc -ChunkLetter $cs
                 }
             }
         }
@@ -722,16 +778,9 @@ if ($Execute) {
         }
 
         # Determine label code for naming
-        $labelCode = $null
-        if ($entry.labelCodes -and @($entry.labelCodes).Count -gt 0) {
-            $labelCode = @($entry.labelCodes)[0]
-        }
-        if (-not $labelCode) {
-            # Derive from display name: strip spaces and special chars
-            $labelCode = ($labelDisplayName -replace '[^A-Za-z0-9-]', '') -replace '--+', '-'
-        }
+        $labelCode = Get-ConversionEntryLabelCode -Entry $entry
 
-        $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $labelCode, $namingPrefix, $namingSuffix
+        $policyName = Get-AutoLabelPolicyName -PolicyNumber $policyNum -LabelCode $labelCode
         try {
             $null = Assert-PurviewObjectNameSafety -Names @($policyName) -ObjectType "auto-labeling policy"
         } catch {
@@ -926,7 +975,7 @@ if ($Execute) {
                 $chunkIdx++
                 # Append chunk letter suffix for multi-chunk rules (a, b, c...)
                 $chunkSuffix = if ($sitChunks.Count -gt 1) { Get-ChunkLetter -ChunkIndex $chunkIdx } else { '' }
-                $ruleName = "AL{0:D2}-R{1:D2}{5}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wlCode, $labelCode, $namingSuffix, $chunkSuffix
+                $ruleName = Get-AutoLabelRuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -WorkloadCode $wlCode -LabelCode $labelCode -ChunkLetter $chunkSuffix
                 try {
                     $null = Assert-PurviewObjectNameSafety -Names @($ruleName) -ObjectType "auto-labeling rule"
                 } catch {

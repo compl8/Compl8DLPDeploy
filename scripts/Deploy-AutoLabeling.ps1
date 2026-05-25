@@ -158,7 +158,42 @@ $Labels = $Labels | Where-Object { $_.code -and $Classifiers.ContainsKey($_.code
 # Must read from raw labelsJson — Resolve-LabelConfig strips the name property
 $LabelNameLookup = @{}
 foreach ($l in $labelsJson) {
-    if ($l.code) { $LabelNameLookup[$l.code] = $l.name }
+    if ($l.code) {
+        $LabelNameLookup[$l.code] = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $l.name -Tokens @{
+            labelCode   = $l.code
+            displayName = $l.displayName
+        }
+    }
+}
+
+function Get-AutoLabelPolicyName {
+    param(
+        [Parameter(Mandatory)][int]$PolicyNumber,
+        [Parameter(Mandatory)][string]$LabelCode
+    )
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "autoLabelPolicy" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        labelCode    = $LabelCode
+    }
+}
+
+function Get-AutoLabelRuleName {
+    param(
+        [Parameter(Mandatory)][int]$PolicyNumber,
+        [Parameter(Mandatory)][int]$RuleNumber,
+        [Parameter(Mandatory)][string]$WorkloadCode,
+        [Parameter(Mandatory)][string]$LabelCode,
+        [string]$ChunkLetter = ""
+    )
+
+    return Get-DeploymentObjectName -Config $Config -ObjectType "autoLabelRule" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        ruleNumber   = ("{0:D2}" -f $RuleNumber)
+        chunkLetter  = $ChunkLetter
+        workloadCode = $WorkloadCode
+        labelCode    = $LabelCode
+    }
 }
 
 $totalPolicies = $Labels.Count
@@ -176,7 +211,7 @@ if (-not $Cleanup -and -not $StartSimulation) {
     $policyNum = 0
     foreach ($label in $Labels) {
         $policyNum++
-        $plannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $label.code, $Config.namingPrefix, $Config.namingSuffix
+        $plannedPolicyNames += Get-AutoLabelPolicyName -PolicyNumber $policyNum -LabelCode $label.code
         $chunks = @(Split-ClassifierChunks -ClassifierList $Classifiers[$label.code] -MaxPerRule 125)
         $ruleNum = 0
         foreach ($wl in $AutoLabelWorkloads) {
@@ -186,9 +221,9 @@ if (-not $Cleanup -and -not $StartSimulation) {
                 $chunkIndex++
                 if ($chunks.Count -gt 1) {
                     $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                    $plannedRuleNames += "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $wl.Code, $label.code, $Config.namingSuffix
+                    $plannedRuleNames += Get-AutoLabelRuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -WorkloadCode $wl.Code -LabelCode $label.code -ChunkLetter $chunkLetter
                 } else {
-                    $plannedRuleNames += "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wl.Code, $label.code, $Config.namingSuffix
+                    $plannedRuleNames += Get-AutoLabelRuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -WorkloadCode $wl.Code -LabelCode $label.code
                 }
             }
         }
@@ -234,8 +269,14 @@ if ($StartSimulation) {
     Write-Host "`n=== Start Simulation ===" -ForegroundColor Cyan
     Write-Host "  Querying auto-labeling policies matching $($Config.namingPrefix)..." -ForegroundColor Gray
 
+    $expectedPolicyNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $policyNum = 0
+    foreach ($label in $Labels) {
+        $policyNum++
+        [void]$expectedPolicyNames.Add((Get-AutoLabelPolicyName -PolicyNumber $policyNum -LabelCode $label.code))
+    }
     $alPolicies = @(Get-AutoSensitivityLabelPolicy -ErrorAction Stop |
-        Where-Object { $_.Name -like "AL*-$($Config.namingPrefix)-$($Config.namingSuffix)" })
+        Where-Object { $expectedPolicyNames.Contains($_.Name) })
 
     if ($alPolicies.Count -eq 0) {
         Write-Host "  No matching policies found." -ForegroundColor Yellow
@@ -271,7 +312,7 @@ if ($Cleanup) {
     $policyNum = 0
     foreach ($label in $Labels) {
         $policyNum++
-        $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $label.code, $Config.namingPrefix, $Config.namingSuffix
+        $policyName = Get-AutoLabelPolicyName -PolicyNumber $policyNum -LabelCode $label.code
 
         $existingPolicy = $null
         try { $existingPolicy = Get-AutoSensitivityLabelPolicy -Identity $policyName -ErrorAction Stop } catch { }
@@ -383,7 +424,7 @@ $allPlannedRuleNames = @()
 $pn = 0
 foreach ($l in $Labels) {
     $pn++
-    $allPlannedPolicyNames += "AL{0:D2}-{1}-{2}-{3}" -f $pn, $l.code, $Config.namingPrefix, $Config.namingSuffix
+    $allPlannedPolicyNames += Get-AutoLabelPolicyName -PolicyNumber $pn -LabelCode $l.code
     $classifierList = $Classifiers[$l.code]
     $chunks = @(Split-ClassifierChunks -ClassifierList $classifierList -MaxPerRule 125)
     $rn = 0
@@ -394,9 +435,9 @@ foreach ($l in $Labels) {
             $ci++
             if ($chunks.Count -gt 1) {
                 $cl = Get-ChunkLetter -ChunkIndex $ci
-                $allPlannedRuleNames += "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $pn, $rn, $cl, $wl.Code, $l.code, $Config.namingSuffix
+                $allPlannedRuleNames += Get-AutoLabelRuleName -PolicyNumber $pn -RuleNumber $rn -WorkloadCode $wl.Code -LabelCode $l.code -ChunkLetter $cl
             } else {
-                $allPlannedRuleNames += "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $pn, $rn, $wl.Code, $l.code, $Config.namingSuffix
+                $allPlannedRuleNames += Get-AutoLabelRuleName -PolicyNumber $pn -RuleNumber $rn -WorkloadCode $wl.Code -LabelCode $l.code
             }
         }
     }
@@ -445,7 +486,7 @@ foreach ($label in $Labels) {
     $policyNum++
     $labelCode  = $label.code
     $labelName  = $LabelNameLookup[$labelCode]
-    $policyName = "AL{0:D2}-{1}-{2}-{3}" -f $policyNum, $labelCode, $Config.namingPrefix, $Config.namingSuffix
+    $policyName = Get-AutoLabelPolicyName -PolicyNumber $policyNum -LabelCode $labelCode
 
     Write-Host "`n--- Policy: $policyName (label: $labelName) ---" -ForegroundColor Green
 
@@ -525,9 +566,9 @@ foreach ($label in $Labels) {
             # Build rule name: AL{policy}-R{rule}{chunk}-{workload}-{label}-{suffix}
             if ($chunks.Count -gt 1) {
                 $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                $ruleName = "AL{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $wl.Code, $labelCode, $Config.namingSuffix
+                $ruleName = Get-AutoLabelRuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -WorkloadCode $wl.Code -LabelCode $labelCode -ChunkLetter $chunkLetter
             } else {
-                $ruleName = "AL{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $policyNum, $ruleNum, $wl.Code, $labelCode, $Config.namingSuffix
+                $ruleName = Get-AutoLabelRuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -WorkloadCode $wl.Code -LabelCode $labelCode
             }
 
             # Build SIT condition (reuse existing helper — same hashtable format)

@@ -451,8 +451,10 @@ function Resolve-LabelAssignment {
     )
 
     # Strategy 1: Toolkit naming convention
-    # Format: P{nn}-R{nn}-{Workload}-{LabelCode}-{Suffix}
-    if ($RuleName -match '^P\d{2}-R\d{2}-([^-]+)-([^-]+)-') {
+    # Formats:
+    #   P{nn}-R{nn}{chunk?}-{Workload}-{LabelCode}-{Suffix}
+    #   {Prefix}-P{nn}-R{nn}{chunk?}-{Workload}-{LabelCode}-{Suffix} (transitional compatibility)
+    if ($RuleName -match '(?:^|-)P\d{2}-R\d{2}[a-z]?-([^-]+)-([^-]+)(?:-|$)') {
         $labelCode = $Matches[2]
 
         if ($LabelsJson) {

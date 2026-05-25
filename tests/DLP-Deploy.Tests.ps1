@@ -61,14 +61,14 @@ Describe 'Get-DeploymentObjectName' {
         $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpPolicy' -Tokens @{
             policyNumber = '01'; policyCode = 'ECH'; suffix = 'EXT-ADT'
         }
-        $result | Should -Be 'QGISCF-P01-ECH-EXT-ADT'
+        $result | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
     }
 
     It 'Expands the default dlpRule template including chunk letter' {
         $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpRule' -Tokens @{
             policyNumber = '02'; ruleNumber = '05'; chunkLetter = 'b'; policyCode = 'ODB'; labelCode = 'SENS'; suffix = 'EXT-ADT'
         }
-        $result | Should -Be 'QGISCF-P02-R05b-ODB-SENS-EXT-ADT'
+        $result | Should -Be 'P02-R05b-ODB-SENS-EXT-ADT'
     }
 
     It 'Honors a custom template from nameTemplates' {
@@ -87,6 +87,13 @@ Describe 'Get-DeploymentObjectName' {
         $result | Should -Be 'QGISCF-Confidential'
     }
 
+    It 'Adds labelCode for leaf label names' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'label' -Name 'SENSITIVE-Personal-Privacy' -Tokens @{
+            labelCode = 'SENS_Pvca'
+        }
+        $result | Should -Be 'QGISCF-SENSITIVE-Personal-Privacy-SENS_Pvca'
+    }
+
     It 'Strips an explicit SourcePrefix from -Name before re-applying the template' {
         $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'classifierEntity' -Name 'TestPattern-AU-DriverLicence' -SourcePrefix 'TestPattern'
         $result | Should -Be 'QGISCF-AU-DriverLicence'
@@ -96,7 +103,21 @@ Describe 'Get-DeploymentObjectName' {
         $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'dlpRule' -Tokens @{
             policyNumber = '01'; ruleNumber = '01'; chunkLetter = ''; policyCode = 'ECH'; labelCode = 'OFFI'; suffix = 'EXT-ADT'
         }
-        $result | Should -Be 'QGISCF-P01-R01-ECH-OFFI-EXT-ADT'
+        $result | Should -Be 'P01-R01-ECH-OFFI-EXT-ADT'
+    }
+
+    It 'Expands the default autoLabelPolicy template using legacy prefix placement' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'autoLabelPolicy' -Tokens @{
+            policyNumber = '01'; labelCode = 'OFFI'; suffix = 'EXT-ADT'
+        }
+        $result | Should -Be 'AL01-OFFI-QGISCF-EXT-ADT'
+    }
+
+    It 'Expands the default autoLabelRule template without a leading prefix' {
+        $result = Get-DeploymentObjectName -Config $script:baseConfig -ObjectType 'autoLabelRule' -Tokens @{
+            policyNumber = '01'; ruleNumber = '02'; chunkLetter = ''; workloadCode = 'ECH'; labelCode = 'OFFI'; suffix = 'EXT-ADT'
+        }
+        $result | Should -Be 'AL01-R02-ECH-OFFI-EXT-ADT'
     }
 
     It 'Collapses double-dashes left behind by an empty token mid-template' {

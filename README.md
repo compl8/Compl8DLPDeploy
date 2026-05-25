@@ -396,7 +396,13 @@ QGISCF-medium-01        QGISCF-medium-07a
 └── Prefix from settings.json
 ```
 
-**Label Publishing Policy** — configured directly via `labelPolicyName`
+**Sensitivity Labels** — `{Prefix}-{LabelName}-{LabelCode}` for leaf labels; `{Prefix}-{LabelName}` for label groups
+```
+QGISCF-SENSITIVE-Personal-Privacy-SENS_Pvca
+QGISCF-SENSITIVE
+```
+
+**Label Publishing Policy** — `{Prefix}-{labelPolicyName}`
 ```
 QGISCF-Label-Policy
 ```

@@ -1,7 +1,10 @@
 #Requires -Modules Pester
 
 BeforeAll {
-    $script:LauncherPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Start-DLPDeploy.ps1'
+    $script:ProjectRoot = Split-Path $PSScriptRoot -Parent
+    $script:LauncherPath = Join-Path $script:ProjectRoot 'Start-DLPDeploy.ps1'
+    $script:ConfigPath = Join-Path $script:ProjectRoot 'config'
+    Import-Module (Join-Path $script:ProjectRoot 'modules' 'DLP-Deploy.psm1') -Force
 
     function Import-LauncherFunction {
         param([Parameter(Mandatory)][string]$Name)
@@ -31,6 +34,7 @@ BeforeAll {
 
     Import-LauncherFunction -Name 'Convert-ArgumentListToSplat'
     Import-LauncherFunction -Name 'Resolve-TestPatternDriftChoice'
+    Import-LauncherFunction -Name 'Get-ExpectedDlpPolicyNameSet'
 }
 
 Describe 'Start-DLPDeploy launcher dispatch' {
@@ -63,5 +67,16 @@ Describe 'Start-DLPDeploy launcher dispatch' {
         Resolve-TestPatternDriftChoice -Choice 'b' | Should -Be 'Continue'
         Resolve-TestPatternDriftChoice -Choice 'exit' | Should -Be 'Exit'
         Resolve-TestPatternDriftChoice -Choice 'invalid' | Should -BeNullOrEmpty
+    }
+
+    It 'derives managed DLP policy names from shared legacy naming templates' {
+        $cfg = Get-ModuleDefaults
+        $cfg.namingPrefix = 'QGISCF'
+        $cfg.namingSuffix = 'EXT-ADT'
+
+        $names = Get-ExpectedDlpPolicyNameSet -Config $cfg
+
+        $names.Contains('P01-ECH-QGISCF-EXT-ADT') | Should -BeTrue
+        $names.Contains('QGISCF-P01-ECH-EXT-ADT') | Should -BeFalse
     }
 }
