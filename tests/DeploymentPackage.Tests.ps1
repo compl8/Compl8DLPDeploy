@@ -101,3 +101,74 @@ Describe 'Read-DeploymentPackageManifest' {
         { Read-DeploymentPackageManifest -SessionPath $sessionDir } | Should -Throw '*SHA*'
     }
 }
+
+Describe 'Update-PendingPackage' {
+    BeforeAll {
+        $script:UpdRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-upd-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:UpdRoot -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:UpdRoot) { Remove-Item $script:UpdRoot -Recurse -Force }
+    }
+
+    It 'extracts, runs the mutator, re-seals, updates SHA + status' {
+        $sessionDir = New-TestSession -Root $script:UpdRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        $origSha = (Get-Content -Raw -LiteralPath (Join-Path $sessionDir 'pending.zip.sha256')).Trim()
+
+        Update-PendingPackage -SessionPath $sessionDir -Mutator {
+            param($workingDir)
+            New-Item -Path (Join-Path $workingDir 'evidence.txt') -ItemType File -Value 'hello' | Out-Null
+        }
+
+        $newSha = (Get-Content -Raw -LiteralPath (Join-Path $sessionDir 'pending.zip.sha256')).Trim()
+        $newSha | Should -Not -Be $origSha
+
+        $status = Get-Content -Raw -LiteralPath (Join-Path $sessionDir 'status.json') | ConvertFrom-Json -AsHashtable
+        $status.pendingZipSha256 | Should -Be $newSha
+
+        # The mutator's evidence.txt should now be inside pending.zip.
+        $tempRead = Join-Path ([System.IO.Path]::GetTempPath()) "dp-verify-$([guid]::NewGuid().Guid)"
+        try {
+            Expand-Archive -LiteralPath (Join-Path $sessionDir 'pending.zip') -DestinationPath $tempRead -Force
+            Test-Path (Join-Path $tempRead 'evidence.txt') | Should -BeTrue
+        }
+        finally { Remove-Item $tempRead -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'aborts cleanly when the lock cannot be acquired within the timeout' {
+        $sessionDir = New-TestSession -Root $script:UpdRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        # Hold the lock manually.
+        $lockPath = Join-Path $sessionDir '.lock'
+        $lockHandle = [System.IO.File]::Open($lockPath, 'CreateNew', 'Write', 'None')
+        try {
+            { Update-PendingPackage -SessionPath $sessionDir -Mutator { param($w) } -LockTimeoutSec 1 } |
+                Should -Throw '*lock*'
+        }
+        finally { $lockHandle.Dispose(); Remove-Item $lockPath -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'leaves the prior pending.zip readable if the mutator throws' {
+        $sessionDir = New-TestSession -Root $script:UpdRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@() } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        $origSha = (Get-Content -Raw -LiteralPath (Join-Path $sessionDir 'pending.zip.sha256')).Trim()
+
+        { Update-PendingPackage -SessionPath $sessionDir -Mutator { throw 'boom' } } | Should -Throw '*boom*'
+
+        # SHA file unchanged, pending.zip still has the original content.
+        $unchanged = (Get-Content -Raw -LiteralPath (Join-Path $sessionDir 'pending.zip.sha256')).Trim()
+        $unchanged | Should -Be $origSha
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $sessionDir 'pending.zip')).Hash
+        $actual | Should -Be $origSha
+    }
+}

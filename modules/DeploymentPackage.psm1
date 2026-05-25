@@ -3,7 +3,71 @@
 function New-DeploymentTargetSnapshot { throw 'Not implemented in module skeleton' }
 function Get-TenantActualState { throw 'Not implemented in module skeleton' }
 function Compare-DeploymentState { throw 'Not implemented in module skeleton' }
-function Update-PendingPackage { throw 'Not implemented in module skeleton' }
+function Update-PendingPackage {
+    param(
+        [Parameter(Mandatory)][string]$SessionPath,
+        [Parameter(Mandatory)][scriptblock]$Mutator,
+        [int]$LockTimeoutSec = 30
+    )
+
+    if (-not (Test-Path -LiteralPath $SessionPath)) { throw "Session path not found: $SessionPath" }
+
+    $lockPath  = Join-Path $SessionPath '.lock'
+    $zipPath   = Join-Path $SessionPath 'pending.zip'
+    $shaPath   = "$zipPath.sha256"
+    $statusFp  = Join-Path $SessionPath 'status.json'
+
+    # Acquire a non-blocking lock file with retry/backoff.
+    $deadline = [datetime]::UtcNow.AddSeconds($LockTimeoutSec)
+    $lockHandle = $null
+    while ($null -eq $lockHandle) {
+        try {
+            $lockHandle = [System.IO.File]::Open($lockPath, 'CreateNew', 'Write', 'None')
+        } catch {
+            if ([datetime]::UtcNow -ge $deadline) {
+                throw "Could not acquire session lock at $lockPath after ${LockTimeoutSec}s"
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+
+    $stagingZip = "$zipPath.new"
+    $tempWork   = Join-Path ([System.IO.Path]::GetTempPath()) ("dp-upd-$([guid]::NewGuid().Guid)")
+    try {
+        New-Item -ItemType Directory -Path $tempWork -Force | Out-Null
+
+        if (Test-Path -LiteralPath $zipPath) {
+            Expand-Archive -LiteralPath $zipPath -DestinationPath $tempWork -Force
+        }
+
+        # Run caller's mutation against the temp working dir.
+        & $Mutator $tempWork
+
+        # Re-seal to staging path, validate, then atomic rename.
+        if (Test-Path -LiteralPath $stagingZip) { Remove-Item -LiteralPath $stagingZip -Force }
+        Compress-Archive -Path (Join-Path $tempWork '*') -DestinationPath $stagingZip -CompressionLevel Optimal -Force
+        $newSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagingZip).Hash
+
+        Move-Item -LiteralPath $stagingZip -Destination $zipPath -Force
+        Set-Content -LiteralPath $shaPath -Value $newSha -Encoding ASCII
+
+        # Update status.json with new SHA + timestamp.
+        $status = if (Test-Path -LiteralPath $statusFp) {
+            Get-Content -Raw -LiteralPath $statusFp | ConvertFrom-Json -AsHashtable
+        } else {
+            @{ schemaVersion = 1; state = 'pending'; phasesCompleted = @(); phasesPending = @(); pendingZipSha256 = ''; lastUpdated = '' }
+        }
+        $status.pendingZipSha256 = $newSha
+        $status.lastUpdated      = (Get-Date).ToString('o')
+        $status | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusFp -Encoding UTF8
+    }
+    finally {
+        if ($lockHandle) { $lockHandle.Dispose() }
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tempWork -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $stagingZip) { Remove-Item -LiteralPath $stagingZip -Force -ErrorAction SilentlyContinue }
+    }
+}
 function Get-PendingDeploymentPackage { throw 'Not implemented in module skeleton' }
 function Read-DeploymentPackageManifest {
     param(
