@@ -39,6 +39,7 @@
         'Get-DeploymentTenantInfo'
         'Get-DlpClassifierRuleReferences'
         'Get-DlpRulePackageEntityIds'
+        'Get-DeploymentObjectName'
         'Get-MergedRuleParams'
         'Get-ModuleDefaults'
         'Get-PolicyName'

@@ -81,14 +81,28 @@ if (-not $labelsJson) {
 }
 
 $LabelDefinitions = $labelsJson
+$script:LabelNameMap = @{}
+foreach ($label in $LabelDefinitions) {
+    $script:LabelNameMap[$label.name] = Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $label.name -Tokens @{
+        labelCode   = $label.code
+        displayName = $label.displayName
+    }
+}
+$script:LabelPolicyName = Get-DeploymentObjectName -Config $Config -ObjectType "labelPolicy" -Name $Config.labelPolicyName
+
+function Resolve-DeploymentLabelName {
+    param([Parameter(Mandatory)][string]$SourceName)
+    if ($script:LabelNameMap.ContainsKey($SourceName)) { return $script:LabelNameMap[$SourceName] }
+    return Get-DeploymentObjectName -Config $Config -ObjectType "label" -Name $SourceName
+}
 #endregion
 
 if (-not $Cleanup) {
     try {
-        $plannedLabelNames = @($LabelDefinitions | ForEach-Object { $_.name })
+        $plannedLabelNames = @($LabelDefinitions | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name })
         $null = Assert-PurviewObjectNameSafety -Names $plannedLabelNames -ObjectType "label name"
         if (-not $SkipPublish -and $PublishTo) {
-            $null = Assert-PurviewObjectNameSafety -Names @($Config.labelPolicyName) -ObjectType "label policy"
+            $null = Assert-PurviewObjectNameSafety -Names @($script:LabelPolicyName) -ObjectType "label policy"
         }
         Write-Host "  Name safety: generated label names are ASCII deployment-safe." -ForegroundColor Green
     } catch {
@@ -130,7 +144,7 @@ if ($Cleanup) {
     $sortedLabels = $LabelDefinitions | Sort-Object { $_.priority } -Descending
 
     # Remove label policy first
-    $policyName = $Config.labelPolicyName
+    $policyName = $script:LabelPolicyName
     $cleanupDelay = if ($Config.interCallDelaySec) { $Config.interCallDelaySec } else { 2 }
     Remove-PurviewObject -Identity $policyName `
         -GetCommand "Get-LabelPolicy" -RemoveCommand "Remove-LabelPolicy" `
@@ -141,7 +155,8 @@ if ($Cleanup) {
     foreach ($label in $sortedLabels) {
         if ($labelIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $cleanupDelay }
         $labelIndex++
-        Remove-PurviewObject -Identity $label.name `
+        $labelName = Resolve-DeploymentLabelName -SourceName $label.name
+        Remove-PurviewObject -Identity $labelName `
             -GetCommand "Get-Label" -RemoveCommand "Remove-Label" `
             -OperationName "label" `
             -MaxRetries $Config.maxRetries -BaseDelaySec $Config.baseDelaySec -WhatIf:$WhatIfPreference
@@ -161,12 +176,12 @@ $publishableCount = ($LabelDefinitions | Where-Object { -not $_.isGroup }).Count
 
 Write-Host "`n=== Deployment Plan ===" -ForegroundColor Cyan
 Write-Host "  Labels to deploy:       $($LabelDefinitions.Count) total" -ForegroundColor White
-Write-Host "    Top-level labels:      $($topLevelLeaves.Count)  ($( ($topLevelLeaves.name) -join ', '))" -ForegroundColor Gray
-Write-Host "    Label groups:          $($groupLabels.Count)  ($( ($groupLabels.name) -join ', '))" -ForegroundColor Gray
+Write-Host "    Top-level labels:      $($topLevelLeaves.Count)  ($( ($topLevelLeaves | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name }) -join ', '))" -ForegroundColor Gray
+Write-Host "    Label groups:          $($groupLabels.Count)  ($( ($groupLabels | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name }) -join ', '))" -ForegroundColor Gray
 Write-Host "    Sublabels:             $($sublabels.Count)" -ForegroundColor Gray
 foreach ($group in $groupLabels) {
     $children = $sublabels | Where-Object { $_.parentGroup -eq $group.name }
-    Write-Host "      $($group.name):" -ForegroundColor Gray -NoNewline
+    Write-Host "      $(Resolve-DeploymentLabelName -SourceName $group.name):" -ForegroundColor Gray -NoNewline
     Write-Host "   $( ($children.displayName) -join ', ')" -ForegroundColor DarkGray
 }
 Write-Host "    Publishable labels:    $publishableCount" -ForegroundColor Gray
@@ -185,7 +200,7 @@ if (-not $SkipPublish -and $PublishTo -eq "All" -and -not $ApproveOpenPublish) {
 if ($SkipPublish) {
     Write-Host "  Publish policy:          SKIP (labels only)" -ForegroundColor White
 } else {
-    Write-Host "  Publish policy:          $($Config.labelPolicyName) (scope: $PublishTo)" -ForegroundColor White
+    Write-Host "  Publish policy:          $script:LabelPolicyName (scope: $PublishTo)" -ForegroundColor White
 }
 #endregion
 
@@ -206,7 +221,7 @@ $labelIndex = 0
 foreach ($label in $sortedLabels) {
     if ($labelIndex -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds $deployDelay }
     $labelIndex++
-    $labelName = $label.name
+    $labelName = Resolve-DeploymentLabelName -SourceName $label.name
     $labelType = if ($label.isGroup) { "Label Group" } else { "Label" }
     Write-Host "`n  Processing: $($label.displayName) ($labelType, Name: $labelName)" -ForegroundColor Cyan
 
@@ -220,7 +235,7 @@ foreach ($label in $sortedLabels) {
             -Component "SensitivityLabel" `
             -DeploymentId $DeploymentId `
             -TargetEnvironment $TargetEnvironment `
-            -Metadata @{ LabelCode = $label.code; LabelName = $label.name })
+                -Metadata @{ LabelCode = $label.code; LabelName = $labelName })
     }
 
     if ($label.isGroup) {
@@ -231,15 +246,16 @@ foreach ($label in $sortedLabels) {
 
     # Set parent for sublabels
     if ($label.parentGroup) {
+        $parentLabelName = Resolve-DeploymentLabelName -SourceName $label.parentGroup
         if ($parentGuids.ContainsKey($label.parentGroup)) {
             $labelParams["ParentId"] = $parentGuids[$label.parentGroup]
         } else {
             try {
-                $parentLabel = Get-Label -Identity $label.parentGroup -ErrorAction Stop
+                $parentLabel = Get-Label -Identity $parentLabelName -ErrorAction Stop
                 $labelParams["ParentId"] = $parentLabel.Guid.ToString()
                 $parentGuids[$label.parentGroup] = $parentLabel.Guid.ToString()
             } catch {
-                Write-Warning "  Parent group '$($label.parentGroup)' not found. Skipping sublabel '$labelName'."
+                Write-Warning "  Parent group '$parentLabelName' not found. Skipping sublabel '$labelName'."
                 $failLabels++
                 continue
             }
@@ -337,8 +353,8 @@ if ($SkipPublish) {
 } else {
     Write-Host "`n=== Publishing Label Policy ===" -ForegroundColor Cyan
 
-    $policyName = $Config.labelPolicyName
-    $publishableLabels = ($LabelDefinitions | Where-Object { -not $_.isGroup }).name | Select-Object -Unique
+    $policyName = $script:LabelPolicyName
+    $publishableLabels = @($LabelDefinitions | Where-Object { -not $_.isGroup } | ForEach-Object { Resolve-DeploymentLabelName -SourceName $_.name } | Select-Object -Unique)
 
     $existingPolicy = $null
     try { $existingPolicy = Get-LabelPolicy -Identity $policyName -ErrorAction Stop } catch { }

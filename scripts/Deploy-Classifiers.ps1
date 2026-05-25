@@ -355,6 +355,7 @@ function Get-DictionaryPlaceholderMap {
 function Resolve-RulePackageUploadContent {
     param(
         [Parameter(Mandatory)][string]$FilePath,
+        [object]$Package,
         [hashtable]$DictionaryGuidMap
     )
 
@@ -373,6 +374,12 @@ function Resolve-RulePackageUploadContent {
             "`${1}$($Config.namingPrefix)",
             [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
         )
+    }
+
+    $deploymentPackageName = Get-ClassifierDeploymentPackageName -FilePath $FilePath -Package $Package
+    if (-not [string]::IsNullOrWhiteSpace($deploymentPackageName)) {
+        $null = Assert-PurviewObjectNameSafety -Names @($deploymentPackageName) -ObjectType "classifier package"
+        $content = Set-RulePackageDeploymentPackageName -Content $content -PackageName $deploymentPackageName
     }
 
     if ($DictionaryGuidMap) {
@@ -413,6 +420,13 @@ function Get-LocalPackageInfo {
 
     $version = $rulePack.Version
     $rulePackId = $rulePack.id
+    $packageName = $null
+    $details = $rulePack.ChildNodes | Where-Object { $_.LocalName -eq "Details" } | Select-Object -First 1
+    $localized = if ($details) { $details.ChildNodes | Where-Object { $_.LocalName -eq "LocalizedDetails" } | Select-Object -First 1 } else { $null }
+    if ($localized) {
+        $nameNode = $localized.ChildNodes | Where-Object { $_.LocalName -eq "Name" } | Select-Object -First 1
+        if ($nameNode) { $packageName = $nameNode.InnerText }
+    }
 
     $rules = $xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" }
     $nameMap = @{}
@@ -450,10 +464,54 @@ function Get-LocalPackageInfo {
         }
         VersionStr  = "$($version.major).$($version.minor).$($version.build).$($version.revision)"
         RulePackId  = $rulePackId
+        Name        = $packageName
         Entities    = $entityInfo
         EntityCount = $entityInfo.Count
         FileSize    = (Get-Item $FilePath).Length
     }
+}
+
+function Get-ClassifierDeploymentPackageName {
+    param(
+        [string]$FilePath,
+        [object]$Package,
+        [hashtable]$LocalInfo
+    )
+
+    if (-not $LocalInfo -and $FilePath -and (Test-Path -LiteralPath $FilePath)) {
+        $LocalInfo = Get-LocalPackageInfo -FilePath $FilePath
+    }
+
+    $sourceName = $null
+    if ($LocalInfo -and -not [string]::IsNullOrWhiteSpace($LocalInfo.Name)) {
+        $sourceName = $LocalInfo.Name
+    } elseif ($Package -and $Package.PSObject.Properties["displayName"] -and -not [string]::IsNullOrWhiteSpace($Package.displayName)) {
+        $sourceName = $Package.displayName
+    } elseif ($Package -and $Package.PSObject.Properties["key"] -and -not [string]::IsNullOrWhiteSpace($Package.key)) {
+        $sourceName = $Package.key
+    } elseif ($FilePath) {
+        $sourceName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($sourceName)) { return $null }
+
+    $tokens = @{
+        packageKey = if ($Package -and $Package.PSObject.Properties["key"]) { $Package.key } else { $sourceName }
+        tier       = $Tier
+    }
+    return Get-DeploymentObjectName -Config $Config -ObjectType "classifierPackage" -Name $sourceName -SourcePrefix $script:SourceNamingPrefix -Tokens $tokens
+}
+
+function Set-RulePackageDeploymentPackageName {
+    param(
+        [Parameter(Mandatory)][string]$Content,
+        [Parameter(Mandatory)][string]$PackageName
+    )
+
+    $nameXml = ConvertTo-XmlText -Text $PackageName
+    $pattern = '(<RulePack\b[\s\S]*?<Details\b[^>]*>[\s\S]*?<LocalizedDetails\b[^>]*>[\s\S]*?<Name>)([\s\S]*?)(</Name>)'
+    $regex = [System.Text.RegularExpressions.Regex]::new($pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    return $regex.Replace($Content, { param($m) "$($m.Groups[1].Value)$nameXml$($m.Groups[3].Value)" }, 1)
 }
 
 function Get-DeployedPackageInfo {
@@ -734,6 +792,8 @@ function Find-DeployedMatch {
     )
 
     $localRulePackId = $null
+    $localInfo = $null
+    $filePath = $null
     try {
         $filePath = Resolve-PackageFile -Package $RegistryPackage -RequestedTier $Tier
         if (Test-Path -LiteralPath $filePath) {
@@ -774,6 +834,14 @@ function Find-DeployedMatch {
         }
 
         $deployedNames = @($deployed.Name, $deployedInfo.Name) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        $deploymentName = Get-ClassifierDeploymentPackageName -FilePath $filePath -Package $RegistryPackage -LocalInfo $localInfo
+        if ($deploymentName) {
+            foreach ($deployedName in $deployedNames) {
+                if ($deployedName.Equals($deploymentName, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $deployed
+                }
+            }
+        }
 
         # Match by display name
         if ($RegistryPackage.displayName) {
@@ -3654,17 +3722,19 @@ function Get-ClassifierManifestTargets {
         $pkg = $Packages[$name]
         $filePath = Resolve-PackageFile -Package $pkg -RequestedTier $Tier
         $target = [ordered]@{
-            type        = "ClassifierBundle"
-            packageKey  = $name
-            displayName = $pkg.displayName
-            rulePackId  = $pkg.rulePackId
-            tier        = $Tier
-            path        = $null
-            version     = $null
-            entityCount = $null
-            sizeBytes   = $null
-            sha256      = $null
+            type           = "ClassifierBundle"
+            packageKey     = $name
+            displayName    = $pkg.displayName
+            deploymentName = $null
+            rulePackId     = $pkg.rulePackId
+            tier           = $Tier
+            path           = $null
+            version        = $null
+            entityCount    = $null
+            sizeBytes      = $null
+            sha256         = $null
         }
+        $target.deploymentName = Get-ClassifierDeploymentPackageName -FilePath $filePath -Package $pkg
 
         if (Test-Path -LiteralPath $filePath) {
             $artifact = Get-DeploymentFileArtifact -Path $filePath -Role "classifier-xml" -ProjectRoot $ProjectRoot
@@ -4020,6 +4090,7 @@ function New-CanaryRulePackagePayload {
         [Parameter(Mandatory)][string]$PublisherName,
         [Parameter(Mandatory)][int]$Revision,
         [Parameter(Mandatory)][string]$Suffix,
+        [Parameter(Mandatory)][string]$CanaryPrefix,
         [Parameter(Mandatory)][object[]]$Entities
     )
 
@@ -4039,7 +4110,7 @@ function New-CanaryRulePackagePayload {
         $token = if ($entity.Token) { $entity.Token } else { "E$idx" }
         $regexId = "Regex_canary_$($Suffix)_$($idx)_r$Revision"
         $entityNameXml = ConvertTo-XmlText -Text $entityName
-        $patternXml = "\bQGISCF-CANARY-$Suffix-$token-[0-9]{6}\b"
+        $patternXml = "\b$([regex]::Escape($CanaryPrefix))-CANARY-$Suffix-$token-[0-9]{6}\b"
 
         $entityXml += @"
     <Entity id="$entityId" patternsProximity="300" recommendedConfidence="85">
@@ -4453,7 +4524,7 @@ function Invoke-ClassifierUploadPlan {
         }
 
         try {
-            $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
+            $content = Resolve-RulePackageUploadContent -FilePath $filePath -Package $pkg -DictionaryGuidMap $dictionaryGuidMap
 
             # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
             Assert-RulePackageUploadDictionaryReferences -PackageName $name -ResolvedXmlText $content
@@ -5260,7 +5331,7 @@ function Invoke-Upload {
         }
 
         try {
-            $content = Resolve-RulePackageUploadContent -FilePath $filePath -DictionaryGuidMap $dictionaryGuidMap
+            $content = Resolve-RulePackageUploadContent -FilePath $filePath -Package $pkg -DictionaryGuidMap $dictionaryGuidMap
 
             # Pre-upload guard: never upload a classifier that references a non-existent dictionary.
             Assert-RulePackageUploadDictionaryReferences -PackageName $name -ResolvedXmlText $content
@@ -6393,21 +6464,21 @@ function Invoke-Canary {
     $rulePackId = [guid]::NewGuid().ToString()
     $entitySurvivor = [guid]::NewGuid().ToString()
     $entityRemoved = [guid]::NewGuid().ToString()
-    $packageName = "QGISCF-DLPDeploy-Canary-$suffix"
-    $survivorV1Name = "QGISCF-DLPDeploy-Canary-Survivor-V1"
-    $survivorV2Name = "QGISCF-DLPDeploy-Canary-Survivor-V2"
-    $removedV1Name = "QGISCF-DLPDeploy-Canary-Removed-V1"
+    $packageName = Get-DeploymentObjectName -Config $Config -ObjectType "canaryPackage" -Tokens @{ suffix = $suffix }
+    $survivorV1Name = Get-DeploymentObjectName -Config $Config -ObjectType "canaryEntity" -Name "Survivor-V1"
+    $survivorV2Name = Get-DeploymentObjectName -Config $Config -ObjectType "canaryEntity" -Name "Survivor-V2"
+    $removedV1Name = Get-DeploymentObjectName -Config $Config -ObjectType "canaryEntity" -Name "Removed-V1"
     try {
         $null = Assert-PurviewObjectNameSafety -Names @($packageName, $survivorV1Name, $survivorV2Name, $removedV1Name) -ObjectType "classifier canary name"
     } catch {
         Write-Error $_.Exception.Message
         return
     }
-    $payloadV1 = New-CanaryRulePackagePayload -RulePackId $rulePackId -PackageName $packageName -PublisherName $Publisher -Revision 0 -Suffix $suffix -Entities @(
+    $payloadV1 = New-CanaryRulePackagePayload -RulePackId $rulePackId -PackageName $packageName -PublisherName $Publisher -Revision 0 -Suffix $suffix -CanaryPrefix $Config.namingPrefix -Entities @(
         [ordered]@{ Id = $entitySurvivor; Name = $survivorV1Name; Token = "KEEP-V1" },
         [ordered]@{ Id = $entityRemoved; Name = $removedV1Name; Token = "DROP-V1" }
     )
-    $payloadV2 = New-CanaryRulePackagePayload -RulePackId $rulePackId -PackageName $packageName -PublisherName $Publisher -Revision 1 -Suffix $suffix -Entities @(
+    $payloadV2 = New-CanaryRulePackagePayload -RulePackId $rulePackId -PackageName $packageName -PublisherName $Publisher -Revision 1 -Suffix $suffix -CanaryPrefix $Config.namingPrefix -Entities @(
         [ordered]@{ Id = $entitySurvivor; Name = $survivorV2Name; Token = "KEEP-V2" }
     )
 

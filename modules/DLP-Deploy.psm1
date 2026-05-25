@@ -29,7 +29,19 @@ function Get-ModuleDefaults {
         # Classifier deployment
         deploymentTier           = "full"
         publisher                = ""
-        labelPolicyName          = "DLP-Label-Policy"
+        labelPolicyName          = "Label-Policy"
+        nameTemplates            = @{
+            label             = "{prefix}-{name}"
+            labelPolicy       = "{prefix}-{name}"
+            dlpPolicy         = "{prefix}-P{policyNumber}-{policyCode}-{suffix}"
+            dlpRule           = "{prefix}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}"
+            classifierPackage = "{prefix}-{name}"
+            classifierEntity  = "{prefix}-{name}"
+            canaryPackage     = "{prefix}-DLPDeploy-Canary-{suffix}"
+            canaryEntity      = "{prefix}-DLPDeploy-Canary-{name}"
+            autoLabelPolicy   = "{prefix}-AL{policyNumber}-{labelCode}-{suffix}"
+            autoLabelRule     = "{prefix}-AL{policyNumber}-R{ruleNumber}{chunkLetter}-{workloadCode}-{labelCode}-{suffix}"
+        }
         # Data pipeline
         inputSpreadsheet         = ""
         # External pattern registry — base URL for the dictionary manifest export API.
@@ -272,7 +284,20 @@ function Merge-GlobalConfig {
     if ($GlobalJson) {
         foreach ($prop in $GlobalJson.PSObject.Properties) {
             if ($merged.ContainsKey($prop.Name)) {
-                $merged[$prop.Name] = $prop.Value
+                if ($prop.Name -eq "nameTemplates") {
+                    $templates = @{}
+                    foreach ($templateKey in $Defaults.nameTemplates.Keys) {
+                        $templates[$templateKey] = $Defaults.nameTemplates[$templateKey]
+                    }
+                    if ($prop.Value) {
+                        foreach ($templateProp in $prop.Value.PSObject.Properties) {
+                            $templates[$templateProp.Name] = $templateProp.Value
+                        }
+                    }
+                    $merged[$prop.Name] = $templates
+                } else {
+                    $merged[$prop.Name] = $prop.Value
+                }
             }
         }
         # Warn on unrecognized keys (skip _comment-style keys)
@@ -307,15 +332,15 @@ function Set-DeploymentConfigPrefix {
     $Config["sitPrefix"] = $prefixValue
 
     if ([string]::IsNullOrWhiteSpace($oldLabelPolicy)) {
-        $Config["labelPolicyName"] = "$prefixValue-Label-Policy"
+        $Config["labelPolicyName"] = "Label-Policy"
     } elseif (-not [string]::IsNullOrWhiteSpace($oldPrefix) -and $oldLabelPolicy -match "^$([regex]::Escape($oldPrefix))(?=-|$)") {
-        $Config["labelPolicyName"] = [regex]::Replace($oldLabelPolicy, "^$([regex]::Escape($oldPrefix))", $prefixValue, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        $Config["labelPolicyName"] = [regex]::Replace($oldLabelPolicy, "^$([regex]::Escape($oldPrefix))-?", "", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     } elseif ($oldLabelPolicy -eq "DLP-Label-Policy") {
-        $Config["labelPolicyName"] = "$prefixValue-Label-Policy"
+        $Config["labelPolicyName"] = "Label-Policy"
     }
 
     Write-Host "  Prefix override: namingPrefix/sitPrefix = $prefixValue" -ForegroundColor Gray
-    Write-Host "  Label policy:    $($Config["labelPolicyName"])" -ForegroundColor Gray
+    Write-Host "  Label policy:    $(Get-DeploymentObjectName -Config $Config -ObjectType "labelPolicy" -Name $Config["labelPolicyName"])" -ForegroundColor Gray
     return $Config
 }
 
@@ -330,7 +355,7 @@ function Assert-ConfigCustomised {
     $defaults = @{
         namingPrefix    = "DLP"
         publisher       = ""
-        labelPolicyName = "DLP-Label-Policy"
+        labelPolicyName = "Label-Policy"
     }
     $warnings = @()
     foreach ($key in $defaults.Keys) {
@@ -472,14 +497,110 @@ function Resolve-RuleOverrides {
 #endregion
 
 #region Naming
+function ConvertTo-DeploymentNameTemplates {
+    param([object]$Templates)
+
+    $result = @{}
+    if (-not $Templates) { return $result }
+
+    if ($Templates -is [hashtable]) {
+        foreach ($key in $Templates.Keys) {
+            $result[$key] = $Templates[$key]
+        }
+        return $result
+    }
+
+    foreach ($prop in $Templates.PSObject.Properties) {
+        $result[$prop.Name] = $prop.Value
+    }
+    return $result
+}
+
+function Remove-DeploymentNamePrefix {
+    param(
+        [string]$Name,
+        [string]$Prefix
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or [string]::IsNullOrWhiteSpace($Prefix)) {
+        return $Name
+    }
+
+    $marker = "$Prefix-"
+    if ($Name.StartsWith($marker, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $Name.Substring($marker.Length)
+    }
+    return $Name
+}
+
+function Expand-DeploymentNameTemplate {
+    param(
+        [Parameter(Mandatory)][string]$Template,
+        [Parameter(Mandatory)][hashtable]$Tokens
+    )
+
+    $expanded = $Template
+    foreach ($key in @($Tokens.Keys | Sort-Object { $_.Length } -Descending)) {
+        $value = if ($null -eq $Tokens[$key]) { "" } else { $Tokens[$key].ToString() }
+        $expanded = $expanded.Replace("{$key}", $value)
+    }
+
+    return (($expanded -replace '-{2,}', '-').Trim('-').Trim())
+}
+
+function Get-DeploymentObjectName {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$ObjectType,
+        [string]$Name,
+        [string]$SourcePrefix,
+        [hashtable]$Tokens = @{}
+    )
+
+    $prefix = if ($Config.ContainsKey("namingPrefix")) { $Config.namingPrefix } else { "" }
+    $suffix = if ($Config.ContainsKey("namingSuffix")) { $Config.namingSuffix } else { "" }
+    $templates = ConvertTo-DeploymentNameTemplates -Templates $Config.nameTemplates
+    $template = if ($templates.ContainsKey($ObjectType)) { $templates[$ObjectType] } else { "{prefix}-{name}" }
+
+    $baseName = Remove-DeploymentNamePrefix -Name $Name -Prefix $prefix
+    if (-not [string]::IsNullOrWhiteSpace($SourcePrefix)) {
+        $baseName = Remove-DeploymentNamePrefix -Name $baseName -Prefix $SourcePrefix
+    }
+    $allTokens = @{
+        prefix      = $prefix
+        suffix      = $suffix
+        name        = $baseName
+        rawName     = $Name
+        chunkLetter = ""
+    }
+    foreach ($key in $Tokens.Keys) {
+        $allTokens[$key] = $Tokens[$key]
+    }
+
+    return Expand-DeploymentNameTemplate -Template $template -Tokens $allTokens
+}
+
 function Get-PolicyName {
     param(
         [int]$PolicyNumber,
         [string]$PolicyCode,
         [string]$Prefix,
-        [string]$Suffix
+        [string]$Suffix,
+        [hashtable]$Config
     )
-    return "P{0:D2}-{1}-{2}-{3}" -f $PolicyNumber, $PolicyCode, $Prefix, $Suffix
+
+    if (-not $Config) {
+        $Config = Get-ModuleDefaults
+        if ($Prefix) { $Config.namingPrefix = $Prefix }
+        if ($Suffix) { $Config.namingSuffix = $Suffix }
+    }
+
+    $resolvedSuffix = if ($Suffix) { $Suffix } else { $Config.namingSuffix }
+    return Get-DeploymentObjectName -Config $Config -ObjectType "dlpPolicy" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        policyCode   = $PolicyCode
+        suffix       = $resolvedSuffix
+    }
 }
 
 function Get-RuleName {
@@ -488,9 +609,27 @@ function Get-RuleName {
         [int]$RuleNumber,
         [string]$PolicyCode,
         [string]$LabelCode,
-        [string]$Suffix
+        [string]$Suffix,
+        [string]$Prefix,
+        [string]$ChunkLetter = "",
+        [hashtable]$Config
     )
-    return "P{0:D2}-R{1:D2}-{2}-{3}-{4}" -f $PolicyNumber, $RuleNumber, $PolicyCode, $LabelCode, $Suffix
+
+    if (-not $Config) {
+        $Config = Get-ModuleDefaults
+        if ($Prefix) { $Config.namingPrefix = $Prefix }
+        if ($Suffix) { $Config.namingSuffix = $Suffix }
+    }
+
+    $resolvedSuffix = if ($Suffix) { $Suffix } else { $Config.namingSuffix }
+    return Get-DeploymentObjectName -Config $Config -ObjectType "dlpRule" -Tokens @{
+        policyNumber = ("{0:D2}" -f $PolicyNumber)
+        ruleNumber   = ("{0:D2}" -f $RuleNumber)
+        chunkLetter  = $ChunkLetter
+        policyCode   = $PolicyCode
+        labelCode    = $LabelCode
+        suffix       = $resolvedSuffix
+    }
 }
 
 function Get-PurviewUnsafeNameCharacterSummary {
@@ -3192,6 +3331,7 @@ Export-ModuleMember -Function @(
     'Resolve-ClassifierConfig'
     'Resolve-LabelConfig'
     'Resolve-RuleOverrides'
+    'Get-DeploymentObjectName'
     'Get-PolicyName'
     'Get-RuleName'
     'New-DLPSITCondition'

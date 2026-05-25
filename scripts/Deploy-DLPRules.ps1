@@ -89,6 +89,33 @@ $DeploymentId = if ($env:COMPL8_DEPLOYMENT_ID) { $env:COMPL8_DEPLOYMENT_ID } els
 
 Write-Host "  Policy Mode: $PolicyMode" -ForegroundColor Gray
 
+function Resolve-DeploymentPolicyName {
+    param([Parameter(Mandatory)][hashtable]$Policy)
+    return Get-PolicyName -PolicyNumber $Policy.Number -PolicyCode $Policy.Code -Config $Config
+}
+
+function Resolve-DeploymentRuleName {
+    param(
+        [Parameter(Mandatory)][hashtable]$Policy,
+        [Parameter(Mandatory)][int]$RuleNumber,
+        [Parameter(Mandatory)][string]$LabelCode,
+        [string]$ChunkLetter = ""
+    )
+    return Get-RuleName -PolicyNumber $Policy.Number -RuleNumber $RuleNumber -PolicyCode $Policy.Code -LabelCode $LabelCode -ChunkLetter $ChunkLetter -Config $Config
+}
+
+function Get-ExpectedClassifierNames {
+    param([Parameter(Mandatory)][string]$Name)
+    $names = @($Name)
+    if ($Config.sitPrefix) {
+        $sitPrefixed = $Name -replace '^TestPattern\s*-\s*', "$($Config.sitPrefix) - "
+        if ($sitPrefixed -and $names -notcontains $sitPrefixed) { $names += $sitPrefixed }
+    }
+    $templateName = Get-DeploymentObjectName -Config $Config -ObjectType "classifierEntity" -Name $Name
+    if ($templateName -and $names -notcontains $templateName) { $names += $templateName }
+    return $names
+}
+
 # Cross-validation
 $validationErrors = @()
 $validationWarnings = @()
@@ -143,7 +170,7 @@ if (-not $Cleanup) {
     $plannedPolicyNames = @()
     $plannedRuleNames = @()
     foreach ($policy in ($Policies | Where-Object { $_.Enabled })) {
-        $plannedPolicyNames += Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+        $plannedPolicyNames += Resolve-DeploymentPolicyName -Policy $policy
         $ruleNum = 0
         foreach ($label in $Labels) {
             $ruleNum++
@@ -153,9 +180,9 @@ if (-not $Cleanup) {
                 $chunkIndex++
                 if ($chunks.Count -gt 1) {
                     $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                    $plannedRuleNames += "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policy.Number, $ruleNum, $chunkLetter, $policy.Code, $label.code, $Config.namingSuffix
+                    $plannedRuleNames += Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $label.code -ChunkLetter $chunkLetter
                 } else {
-                    $plannedRuleNames += Get-RuleName -PolicyNumber $policy.Number -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $label.code -Suffix $Config.namingSuffix
+                    $plannedRuleNames += Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $label.code
                 }
             }
         }
@@ -197,7 +224,7 @@ if ($Cleanup) {
     Write-Host "`n=== Cleanup Mode ===" -ForegroundColor Yellow
 
     $policyNames = foreach ($policy in $Policies) {
-        Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+        Resolve-DeploymentPolicyName -Policy $policy
     }
 
     foreach ($policyName in $policyNames) {
@@ -267,7 +294,7 @@ if (-not $Config.skipSitValidation -and -not $SkipValidation) {
                 $lookupId = $entry.Id.ToLower()
                 if (-not $tenantSITLookup.ContainsKey($lookupId)) {
                     $missingSITs += "  [$labelCode] $($entry.Name) ($($entry.Id))"
-                } elseif ($tenantSITLookup[$lookupId] -ne $entry.Name) {
+                } elseif ((Get-ExpectedClassifierNames -Name $entry.Name) -notcontains $tenantSITLookup[$lookupId]) {
                     $mismatchedNames += "  [$labelCode] Config: '$($entry.Name)' -> Tenant: '$($tenantSITLookup[$lookupId])' ($($entry.Id))"
                 }
             }
@@ -307,7 +334,7 @@ $allPlannedNames = @()
 foreach ($policy in $Policies) {
     if (-not $policy.Enabled) { continue }
     $policyNum = $policy.Number
-    $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+    $policyName = Resolve-DeploymentPolicyName -Policy $policy
     $allPlannedPolicyNames += $policyName
     $ruleNum = 0
     foreach ($label in $Labels) {
@@ -319,9 +346,9 @@ foreach ($policy in $Policies) {
             $chunkIndex++
             if ($chunks.Count -gt 1) {
                 $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                $name = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                $name = Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $labelCode -ChunkLetter $chunkLetter
             } else {
-                $name = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                $name = Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $labelCode
             }
             $allPlannedNames += $name
         }
@@ -341,7 +368,7 @@ try {
 $allExistingRules = @()
 foreach ($policy in $Policies) {
     if (-not $policy.Enabled) { continue }
-    $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+    $policyName = Resolve-DeploymentPolicyName -Policy $policy
     try { $allExistingRules += @(Get-DlpComplianceRule -Policy $policyName -ErrorAction SilentlyContinue) } catch { }
 }
 
@@ -363,7 +390,7 @@ foreach ($policy in $Policies) {
         continue
     }
 
-    $policyName = Get-PolicyName -PolicyNumber $policy.Number -PolicyCode $policy.Code -Prefix $Config.namingPrefix -Suffix $Config.namingSuffix
+    $policyName = Resolve-DeploymentPolicyName -Policy $policy
     $policyNum  = $policy.Number
 
     Write-Host "`n--- Policy: $policyName ---" -ForegroundColor Green
@@ -438,9 +465,9 @@ foreach ($policy in $Policies) {
             # Build rule name: append chunk letter to R-number only when split
             if ($chunks.Count -gt 1) {
                 $chunkLetter = Get-ChunkLetter -ChunkIndex $chunkIndex
-                $ruleName = "P{0:D2}-R{1:D2}{2}-{3}-{4}-{5}" -f $policyNum, $ruleNum, $chunkLetter, $policy.Code, $labelCode, $Config.namingSuffix
+                $ruleName = Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $labelCode -ChunkLetter $chunkLetter
             } else {
-                $ruleName = Get-RuleName -PolicyNumber $policyNum -RuleNumber $ruleNum -PolicyCode $policy.Code -LabelCode $labelCode -Suffix $Config.namingSuffix
+                $ruleName = Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $labelCode
             }
 
             $condition = New-DLPSITCondition -ClassifierList $chunk -ScopeParam $policy.ScopeParam -ScopeValue $policy.ScopeValue
@@ -524,18 +551,28 @@ foreach ($policy in $Policies) {
 if (-not $SkipVerification) {
     Write-Host "`n=== Deployment Verification ===" -ForegroundColor Cyan
 
-    $policyPattern = "P0[1-5]-*-$($Config.namingPrefix)-$($Config.namingSuffix)"
-    $rulePattern   = "P0[1-5]-R*-*-*-$($Config.namingSuffix)"
-
-    $deployedPolicies = Get-DlpCompliancePolicy -ErrorAction Stop | Where-Object { $_.Name -like $policyPattern }
-    $deployedRules = Get-DlpComplianceRule -ErrorAction Stop | Where-Object { $_.Name -like $rulePattern } | Sort-Object Policy, Priority
-
     $expectedPolicies = ($Policies | Where-Object { $_.Enabled }).Count
     $expectedRules = 0
-    foreach ($l in $Labels) {
-        $expectedRules += @(Split-ClassifierChunks -ClassifierList $Classifiers[$l.code] -MaxPerRule 125).Count
+    $expectedPolicyNames = @()
+    $expectedRuleNames = @()
+    foreach ($policy in @($Policies | Where-Object { $_.Enabled })) {
+        $expectedPolicyNames += Resolve-DeploymentPolicyName -Policy $policy
+        $ruleNum = 0
+        foreach ($label in $Labels) {
+            $ruleNum++
+            $chunks = @(Split-ClassifierChunks -ClassifierList $Classifiers[$label.code] -MaxPerRule 125)
+            $expectedRules += $chunks.Count
+            $chunkIndex = 0
+            foreach ($chunk in $chunks) {
+                $chunkIndex++
+                $chunkLetter = if ($chunks.Count -gt 1) { Get-ChunkLetter -ChunkIndex $chunkIndex } else { "" }
+                $expectedRuleNames += Resolve-DeploymentRuleName -Policy $policy -RuleNumber $ruleNum -LabelCode $label.code -ChunkLetter $chunkLetter
+            }
+        }
     }
-    $expectedRules *= $expectedPolicies
+
+    $deployedPolicies = Get-DlpCompliancePolicy -ErrorAction Stop | Where-Object { $expectedPolicyNames -contains $_.Name }
+    $deployedRules = Get-DlpComplianceRule -ErrorAction Stop | Where-Object { $expectedRuleNames -contains $_.Name } | Sort-Object Policy, Priority
 
     Write-Host "`nPolicies deployed: $($deployedPolicies.Count) (expected $expectedPolicies)" -ForegroundColor $(if ($deployedPolicies.Count -ge $expectedPolicies) { "Green" } else { "Yellow" })
     $deployedPolicies | Format-Table Name, Mode -AutoSize

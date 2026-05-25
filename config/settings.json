@@ -13,7 +13,19 @@
     "deploymentTier": "full",
     "publisher": "Queensland Government CSU",
     "sitPrefix": "QGISCF",
-    "labelPolicyName": "QGISCF-Label-Policy",
+    "labelPolicyName": "Label-Policy",
+    "nameTemplates": {
+        "label": "{prefix}-{name}",
+        "labelPolicy": "{prefix}-{name}",
+        "dlpPolicy": "{prefix}-P{policyNumber}-{policyCode}-{suffix}",
+        "dlpRule": "{prefix}-P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}",
+        "classifierPackage": "{prefix}-{name}",
+        "classifierEntity": "{prefix}-{name}",
+        "canaryPackage": "{prefix}-DLPDeploy-Canary-{suffix}",
+        "canaryEntity": "{prefix}-DLPDeploy-Canary-{name}",
+        "autoLabelPolicy": "{prefix}-AL{policyNumber}-{labelCode}-{suffix}",
+        "autoLabelRule": "{prefix}-AL{policyNumber}-R{ruleNumber}{chunkLetter}-{workloadCode}-{labelCode}-{suffix}"
+    },
     "inputSpreadsheet": "SIT-Inputs-Example.xlsx",
     "_sitOverrides_comment": "Reserved for future use. Intended to override per-label SIT thresholds at the settings level. Not currently consumed by any script.",
     "_sitOverrides": {
