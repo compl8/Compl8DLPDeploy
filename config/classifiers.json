@@ -973,32 +973,28 @@
             "id": "074913e9-9d77-4375-9205-f8fe4c1bb677"
         },
         {
-            "name": "TestPattern - Gender Reassignment Medical Record",
-            "id": "b48ea541-d4c3-48ea-8b10-24ea1216749e"
-        },
-        {
             "name": "TestPattern - Gender or sex marker",
             "id": "ef24a169-71fb-4064-b8ab-fcf8ce52ecbd"
+        },
+        {
+            "name": "TestPattern - Gender Reassignment Medical Record",
+            "id": "b48ea541-d4c3-48ea-8b10-24ea1216749e"
         },
         {
             "name": "Generic Medication Names",
             "id": "d82f1c56-8eb9-4cf2-b279-43872774c7f6"
         },
         {
-            "name": "TestPattern - Genetic Test Results with Patient Identifiers",
-            "id": "5dc49e88-76b5-4bca-8a1c-8a3fc48df7fd"
-        },
-        {
             "name": "TestPattern - Genetic data",
             "id": "6cc37013-8f0e-4a62-995f-75871fce969d"
         },
         {
-            "name": "TestPattern - Genomic testing results",
-            "id": "5ea4f7c8-0ba3-43e4-bc33-02403025a089"
+            "name": "TestPattern - Genetic Test Results with Patient Identifiers",
+            "id": "5dc49e88-76b5-4bca-8a1c-8a3fc48df7fd"
         },
         {
-            "name": "TestPattern - HIV status data",
-            "id": "9ceb209e-3866-4468-bf83-0e218d9cce0e"
+            "name": "TestPattern - Genomic testing results",
+            "id": "5ea4f7c8-0ba3-43e4-bc33-02403025a089"
         },
         {
             "name": "TestPattern - Handwritten signatures",
@@ -1007,6 +1003,10 @@
         {
             "name": "TestPattern - Healthcare Provider Identifier - Individual",
             "id": "150a4750-0dd6-4e92-ba9a-8a7b8f06624f"
+        },
+        {
+            "name": "TestPattern - HIV status data",
+            "id": "9ceb209e-3866-4468-bf83-0e218d9cce0e"
         },
         {
             "name": "TestPattern - Hospital billing records",
@@ -1097,6 +1097,10 @@
         {
             "name": "TestPattern - Legal advice memoranda",
             "id": "0188ce5f-3c5a-433e-94be-3351481c066a"
+        },
+        {
+            "name": "TestPattern - Legal Full Name",
+            "id": "d703ae60-eb55-985c-be82-37221ed3ee5b"
         },
         {
             "name": "Lifestyles That Relate To Medical Conditions",
@@ -1215,10 +1219,6 @@
             "id": "ab00273b-7abb-488c-b487-7c94c60137ea"
         },
         {
-            "name": "TestPattern - SOX control deficiency records",
-            "id": "7992591f-92b0-4fb9-aaf9-b6631aca9391"
-        },
-        {
             "name": "TestPattern - Service-level penalty records",
             "id": "c322811a-d17e-4ca0-933d-46566de31af2"
         },
@@ -1241,6 +1241,10 @@
         {
             "name": "TestPattern - Sovereign debt issuance plans",
             "id": "bccb6006-0d11-469b-bc3e-656e0ab57d5c"
+        },
+        {
+            "name": "TestPattern - SOX control deficiency records",
+            "id": "7992591f-92b0-4fb9-aaf9-b6631aca9391"
         },
         {
             "name": "TestPattern - Substance use treatment records",
