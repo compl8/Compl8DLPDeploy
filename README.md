@@ -149,7 +149,41 @@ Operators can also use the launcher instead of constructing long commands:
 pwsh -File .\Start-DLPDeploy.ps1
 ```
 
-Choose `R` for the customer rollout wizard. It prompts once for tenant, target environment, prefix, and admin identity, highlights live TestPattern drift before classifier planning, then walks through readiness, `RefitPlan`, refit plan/hash review, and `ApplyRefitPlan -WhatIf`. The classifier menu also exposes refit planning and ApplyRefitPlan WhatIf directly. Choose `12` to run the TestPattern drift check/update decision point on its own.
+Choose `R` for the customer rollout wizard. The wizard now drives the full rollout (drift -> readiness -> optional cleanup -> labels -> classifiers -> DLP rules) with WhatIf preview before each real-apply step, optional deployment-session bundling for an archived audit trail, and a final verify+archive step against the live tenant. Choose `12` to run the TestPattern drift check/update decision point on its own.
+
+### Tenant Deployment Package Workflow
+
+For change-managed rollouts, drive each deployment through a tenant-pinned package. The package captures the deployment target up front, records refit and operator-review adjustments, and is verified + archived after the deploy completes.
+
+```powershell
+# 1. Build the base package (once per toolkit version)
+pwsh -File scripts/New-ReleasePackage.ps1
+#    -> dist/compl8dlpdeploy-base-{version}.zip
+
+# 2. Initialise a tenant session
+pwsh -File scripts/Initialize-DeploymentSession.ps1 `
+    -BasePackagePath dist/compl8dlpdeploy-base-{version}.zip `
+    -Tenant <tenant.onmicrosoft.com> `
+    -TargetEnvironment <env-profile> `
+    -Prefix <prefix>
+#    -> echoes the session dir, e.g. dist/deployments/<tenant>-<timestamp>/
+
+# 3. Run each phase against the session (pass the session path the init echoed)
+pwsh -File scripts/Deploy-Classifiers.ps1 -DeploymentSessionPath <session> -Action Upload -Greenfield -Connect -UPN <admin>
+# Optional operator-review skip
+pwsh -File scripts/Edit-DeploymentTarget.ps1 -SessionPath <session> -SkipArtifact dlpRule/<name> -Reason "<why>"
+pwsh -File scripts/Deploy-Labels.ps1   -DeploymentSessionPath <session> -Connect -UPN <admin> -PublishTo <group>
+pwsh -File scripts/Deploy-DLPRules.ps1 -DeploymentSessionPath <session> -Connect -UPN <admin>
+
+# 4. Finalise + archive
+pwsh -File scripts/Finalize-DeploymentSession.ps1 -SessionPath <session> -Connect -UPN <admin>
+#    -> verifies provenance-scoped tenant objects against the deployment target,
+#       writes deployment-result.json into the package, then moves the package to
+#       dist/archive/{succeeded|partial|failed}/<tenant>-<timestamp>.zip and appends
+#       dist/archive/index.json.
+```
+
+The TUI wizard (`Start-DLPDeploy.ps1` option `R`) drives steps 2-4 end-to-end with prompts and a "Bundle this rollout into a deployment package?" toggle.
 
 ```powershell
 # Phase 1: Labels only (PublishTo required)
