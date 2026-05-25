@@ -501,3 +501,29 @@ Describe 'Initialize-DeploymentSession.ps1' {
         $r.Status.state                 | Should -Be 'pending'
     }
 }
+
+Describe 'Edit-DeploymentTarget.ps1' {
+    BeforeAll {
+        $script:EditRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dp-edit-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:EditRoot -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:EditRoot) { Remove-Item $script:EditRoot -Recurse -Force }
+    }
+
+    It 'appends a skip adjustment and removes the target artifact' {
+        $sessionDir = New-TestSession -Root $script:EditRoot `
+            -Pin @{ schemaVersion=1; tenant='t'; tenantId='g'; targetEnvironment='nonprod'; namingPrefix='X'; namingSuffix='Y'; deploymentTier='medium'; basePackage=@{name='b';version='v';sha256='s'}; createdAt=(Get-Date).ToString('o'); sessionId='s' } `
+            -Target @{ schemaVersion=1; labels=@(); labelPolicy=@{name='';publishTo=@();labels=@();settings=@{}}; classifierPackages=@(); dictionaries=@(); dlpPolicies=@(); dlpRules=@(@{name='R1';policy='P';classifiers=@();scopeParam='';scopeValue=''}) } `
+            -Adjustments @{ schemaVersion=1; entries=@() }
+
+        $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Edit-DeploymentTarget.ps1'
+        & $script -SessionPath $sessionDir -SkipArtifact 'dlpRule/R1' -Reason 'deferred'
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.Target.dlpRules.Count         | Should -Be 0
+        $r.Adjustments.entries.Count     | Should -Be 1
+        $r.Adjustments.entries[0].source | Should -Be 'operator-review'
+        $r.Adjustments.entries[0].reason | Should -Be 'deferred'
+    }
+}
