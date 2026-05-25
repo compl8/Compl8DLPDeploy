@@ -966,3 +966,66 @@ Describe 'ConvertFrom-DlpDictionaryTermProperty - comma-in-term (deferred)' {
         ConvertFrom-DlpDictionaryTermProperty -Raw "Smith, John`nplain" | Should -Be @('Smith, John','plain')
     }
 }
+
+Describe 'Test-DeploymentTenantFingerprint -RegisterIfMissing' {
+    BeforeAll {
+        $script:FpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dlp-fp-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path (Join-Path $script:FpRoot 'config') -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:FpRoot) { Remove-Item $script:FpRoot -Recurse -Force }
+    }
+
+    It 'appends a new environment entry when -RegisterIfMissing is set and the env is unknown' {
+        $fpFile = Join-Path $script:FpRoot 'config/tenant-fingerprints.json'
+        @{
+            defaultEnvironment = 'existing'
+            environments = @{ existing = @{ mode = 'block'; tenantId = '11111111-1111-1111-1111-111111111111' } }
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fpFile -Encoding UTF8
+
+        Mock -CommandName Get-DeploymentTenantInfo -ModuleName DLP-Deploy -MockWith {
+            [ordered]@{
+                name              = 'NewTenant'
+                id                = 'aaaa-aaaa'
+                guid              = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                tenantId          = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                organizationId    = 'NewTenant'
+                userPrincipalName = 'admin@new.example'
+                connectionUri     = $null
+                source            = 'test'
+                status            = 'Connected'
+            }
+        }
+
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot -TargetEnvironment 'brandnew' -RegisterIfMissing
+
+        $result.configured | Should -Be $true
+        $result.matched    | Should -Be $true
+        $result.passed     | Should -Be $true
+        $result.mode       | Should -Be 'warn'
+
+        $writtenConfig = Get-Content -Raw -LiteralPath $fpFile | ConvertFrom-Json
+        $writtenConfig.environments.brandnew.tenantId | Should -Be 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        $writtenConfig.environments.brandnew.mode     | Should -Be 'warn'
+    }
+
+    It 'leaves passed=true and configured=false when -RegisterIfMissing is NOT set and the env is unknown' {
+        $fpFile = Join-Path $script:FpRoot 'config/tenant-fingerprints.json'
+        @{
+            defaultEnvironment = 'existing'
+            environments = @{ existing = @{ mode = 'block'; tenantId = '11111111-1111-1111-1111-111111111111' } }
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fpFile -Encoding UTF8
+
+        Mock -CommandName Get-DeploymentTenantInfo -ModuleName DLP-Deploy -MockWith {
+            [ordered]@{ name='X'; id=$null; guid=$null; tenantId='zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz'; organizationId=$null; userPrincipalName=$null; connectionUri=$null; source='test'; status='Connected' }
+        }
+
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot -TargetEnvironment 'unregistered'
+        $result.configured | Should -Be $false
+        $result.passed     | Should -Be $true
+        ($result.messages -join ' ') | Should -BeLike '*Available:*existing*'
+
+        $writtenConfig = Get-Content -Raw -LiteralPath $fpFile | ConvertFrom-Json
+        $writtenConfig.environments.PSObject.Properties.Name | Should -Not -Contain 'unregistered'
+    }
+}

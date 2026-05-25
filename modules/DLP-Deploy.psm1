@@ -2673,11 +2673,16 @@ function Test-DeploymentTenantFingerprint {
         Repository root used to find config/tenant-fingerprints.json.
     .PARAMETER TargetEnvironment
         Environment key under the config file's environments object.
+    .PARAMETER RegisterIfMissing
+        When set, an unknown $TargetEnvironment that returns a connected tenant is
+        appended to tenant-fingerprints.json (mode=warn) instead of failing the check.
+        First-deploy bootstrap path for a new tenant.
     #>
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
         [string]$TargetEnvironment,
-        [string]$FingerprintPath
+        [string]$FingerprintPath,
+        [switch]$RegisterIfMissing
     )
 
     if (-not $FingerprintPath) {
@@ -2724,7 +2729,46 @@ function Test-DeploymentTenantFingerprint {
         $envProp = $config.environments.PSObject.Properties | Where-Object { $_.Name -eq $TargetEnvironment } | Select-Object -First 1
     }
     if (-not $envProp) {
-        $result.messages += "No fingerprint entry found for environment '$TargetEnvironment'."
+        $availableEnvs = if ($config.environments) {
+            @($config.environments.PSObject.Properties.Name) -join ', '
+        } else { '(none)' }
+
+        # Bootstrap path: register a new fingerprint entry from the live tenant identity.
+        $actualTenantId = $actual.tenantId
+        if (-not $actualTenantId) { $actualTenantId = $actual.guid }
+        if (-not $actualTenantId) { $actualTenantId = $actual.id }
+
+        if ($RegisterIfMissing -and -not [string]::IsNullOrWhiteSpace($actualTenantId)) {
+            $newEntry = [ordered]@{ mode = 'warn'; tenantId = $actualTenantId.ToString() }
+            if ($actual.name) { $newEntry.name = $actual.name.ToString() }
+
+            if (-not $config.environments) {
+                $config | Add-Member -NotePropertyName 'environments' -NotePropertyValue ([pscustomobject]@{}) -Force
+            }
+            $config.environments | Add-Member -NotePropertyName $TargetEnvironment -NotePropertyValue ([pscustomobject]$newEntry) -Force
+
+            try {
+                $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $FingerprintPath -Encoding UTF8
+                $result.configured = $true
+                $result.matched    = $true
+                $result.mode       = 'warn'
+                foreach ($k in $newEntry.Keys) { $result.expected[$k] = $newEntry[$k] }
+                $result.messages += "Registered new fingerprint entry '$TargetEnvironment' (tenantId=$actualTenantId, mode=warn) at $($result.configPath)."
+                return [PSCustomObject]$result
+            } catch {
+                $result.passed = $false
+                $result.mode   = 'block'
+                $result.messages += "Failed to register fingerprint entry '$TargetEnvironment': $($_.Exception.Message)"
+                return [PSCustomObject]$result
+            }
+        }
+
+        $hint = if ($RegisterIfMissing) {
+            " Live tenant identity unavailable; cannot auto-register."
+        } else {
+            " Re-run with -RegisterFingerprint to bootstrap a new entry from the connected tenant."
+        }
+        $result.messages += "No fingerprint entry for environment '$TargetEnvironment'. Available: $availableEnvs.$hint"
         return [PSCustomObject]$result
     }
 

@@ -26,7 +26,8 @@ param(
     [string]$Tenant,
     [switch]$Delegated,
     [string]$TargetEnvironment,
-    [string]$Prefix
+    [string]$Prefix,
+    [switch]$RegisterFingerprint
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -38,7 +39,7 @@ Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 $ErrorActionPreference = "Stop"
 
 function Invoke-TenantFingerprintGate {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
 
     Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
     Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray

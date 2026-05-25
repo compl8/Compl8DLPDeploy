@@ -33,6 +33,7 @@ param(
     [switch]$SkipWait,
     [switch]$RunDryRunAfterWait,
     [switch]$Force,
+    [switch]$RegisterFingerprint,
     [switch]$AllowBreakingExternalClassifierReferences,
     [int]$InterCallDelaySec = -1
 )
@@ -77,7 +78,7 @@ function Connect-DeploymentResetSession {
 }
 
 function Assert-DeploymentResetTenant {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
 
     Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
     Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray

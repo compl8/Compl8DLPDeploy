@@ -68,7 +68,8 @@ param(
     [switch]$ApproveRefitPlan,
     [switch]$AllowPartialRefitApply,
     [switch]$Greenfield,
-    [switch]$AllowDirectUploadWithoutRefitPlan
+    [switch]$AllowDirectUploadWithoutRefitPlan,
+    [switch]$RegisterFingerprint
 )
 
 $ErrorActionPreference = "Stop"
@@ -167,7 +168,7 @@ function Test-DLPSessionAvailable {
 }
 
 function Invoke-TenantFingerprintGate {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
     if ($script:DeploymentManifest) {
         $script:DeploymentManifest.tenantFingerprint = $fingerprint
     }

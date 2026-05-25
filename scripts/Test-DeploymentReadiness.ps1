@@ -24,7 +24,8 @@ param(
     [switch]$Delegated,
     [switch]$RequireTenant,
     [string]$TrainableClassifierInventory,
-    [switch]$NoExit
+    [switch]$NoExit,
+    [switch]$RegisterFingerprint
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -736,7 +737,7 @@ if ($Connect) {
 }
 
 if ($RequireTenant -or $Connect) {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
     Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
     Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
     Write-Host "  Mode:        $($fingerprint.mode)" -ForegroundColor Gray
