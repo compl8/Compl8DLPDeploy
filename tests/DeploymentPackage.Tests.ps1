@@ -464,3 +464,40 @@ Describe 'Move-DeploymentPackageToArchive' {
         $files.Count | Should -BeGreaterOrEqual 2
     }
 }
+
+Describe 'Initialize-DeploymentSession.ps1' {
+    BeforeAll {
+        $script:InitRoot   = Join-Path ([System.IO.Path]::GetTempPath()) "dp-init-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path $script:InitRoot -Force | Out-Null
+
+        # Build a minimal base zip from the existing fixture configs.
+        $script:BaseZip = Join-Path $script:InitRoot 'base.zip'
+        $stage = Join-Path $script:InitRoot 'stage'
+        $cfgSrc = Join-Path (Split-Path $PSScriptRoot -Parent) 'tests/fixtures/deployment-package/configs'
+        $cfgDst = Join-Path $stage 'config'
+        New-Item -ItemType Directory -Path $cfgDst -Force | Out-Null
+        Copy-Item -Path (Join-Path $cfgSrc '*') -Destination $cfgDst -Recurse -Force
+        Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $script:BaseZip -Force
+    }
+    AfterAll {
+        if (Test-Path $script:InitRoot) { Remove-Item $script:InitRoot -Recurse -Force }
+    }
+
+    It 'creates a pending session with tenant-pin and computed target' {
+        $deployments = Join-Path $script:InitRoot 'deployments'
+        $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/Initialize-DeploymentSession.ps1'
+
+        & $script -BasePackagePath $script:BaseZip -Tenant 't.example' -TargetEnvironment 'nonprod' -Prefix 'QGISCF' -OutputRoot $deployments
+
+        $sessionDirs = Get-ChildItem -Path $deployments -Directory
+        $sessionDirs.Count | Should -Be 1
+        $sessionDir = $sessionDirs[0].FullName
+
+        $r = Read-DeploymentPackageManifest -SessionPath $sessionDir
+        $r.TenantPin.tenant             | Should -Be 't.example'
+        $r.TenantPin.targetEnvironment  | Should -Be 'nonprod'
+        $r.TenantPin.basePackage.sha256 | Should -Not -BeNullOrEmpty
+        $r.Target.labels.Count          | Should -BeGreaterThan 0
+        $r.Status.state                 | Should -Be 'pending'
+    }
+}
