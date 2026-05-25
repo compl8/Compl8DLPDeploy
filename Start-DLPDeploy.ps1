@@ -116,7 +116,7 @@ function Show-Menu {
     Write-BoxLine -Text (Fmt-Row " [10] Remove SIT Packages" "") -InnerWidth $w -Color Cyan
     Write-BoxSeparator -InnerWidth $w -Color Cyan
     Write-BoxLine -Text " [12] TestPattern drift check / update" -InnerWidth $w -Color Yellow
-    Write-BoxLine -Text " [R]  Customer rollout wizard (readiness -> refit -> WhatIf)" -InnerWidth $w -Color Green
+    Write-BoxLine -Text " [R]  Customer rollout wizard (full: drift -> readiness -> cleanup -> labels -> classifiers -> rules)" -InnerWidth $w -Color Green
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
     Write-BoxBottom -InnerWidth $w -Color Cyan
     Write-Host ""
@@ -495,7 +495,15 @@ function Invoke-TestPatternDriftDecision {
                     break
                 }
                 "Continue" {
-                    Write-Host "  Continuing with current local content." -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Host "  Continuing despite drift will deploy LOCAL content that does NOT match the live TestPattern catalogue." -ForegroundColor Red
+                    Write-Host "  Type the word PROCEED (uppercase) to confirm, anything else to cancel: " -NoNewline -ForegroundColor Yellow
+                    $confirm = (Read-Host).Trim()
+                    if ($confirm -cne 'PROCEED') {
+                        Write-Host "  Continue cancelled." -ForegroundColor Yellow
+                        return $false
+                    }
+                    Write-Host "  Continuing with current local content (operator-approved drift override)." -ForegroundColor Yellow
                     return $true
                 }
                 "Exit" {
@@ -589,6 +597,9 @@ function Invoke-DeployLabels {
 
     Write-Host ""
     Write-Host "  --- Deploy Labels ---" -ForegroundColor Cyan
+    if (Read-YesNo "Check live TestPattern drift before deploying labels?" -Default $true) {
+        if (-not (Invoke-TestPatternDriftDecision)) { return }
+    }
     $dryRun   = Read-YesNo "Dry run (WhatIf)?" -Default $true
     $publish  = Read-YesNo "Publish labels after creation?"
     $noMark   = Read-YesNo "Skip visual markings?"
@@ -688,6 +699,9 @@ function Invoke-DeployDLPRules {
 
     Write-Host ""
     Write-Host "  --- Deploy DLP Rules ---" -ForegroundColor Cyan
+    if (Read-YesNo "Check live TestPattern drift before deploying DLP rules?" -Default $true) {
+        if (-not (Invoke-TestPatternDriftDecision)) { return }
+    }
     $dryRun    = Read-YesNo "Dry run (WhatIf)?" -Default $true
     $skipVal   = Read-YesNo "Skip SIT validation?"
     $skipVerif = Read-YesNo "Skip post-deploy verification?"
@@ -710,6 +724,10 @@ function Invoke-ChangePack {
     Write-Host ""
     Write-Host "  Select: " -NoNewline
     $subChoice = (Read-Host).Trim()
+
+    if ($subChoice -in @("1", "2") -and (Read-YesNo "Check live TestPattern drift before running the change pack?" -Default $true)) {
+        if (-not (Invoke-TestPatternDriftDecision)) { return }
+    }
 
     switch ($subChoice) {
         "1" {
@@ -1670,50 +1688,124 @@ function Invoke-CustomerRolloutWizard {
 
     Write-Host ""
     Write-Host "  --- Customer Rollout Wizard ---" -ForegroundColor Cyan
-    Write-Host "  This flow runs readiness, creates a refit plan, and applies the plan in WhatIf mode." -ForegroundColor Gray
+    Write-Host "  Full rollout: drift -> readiness -> [cleanup] -> labels -> classifiers -> DLP rules." -ForegroundColor Gray
+    Write-Host "  Each phase is preview-first; you confirm before any real-apply step." -ForegroundColor Gray
 
     Set-RolloutContext
-    if (Read-YesNo "Check live TestPattern drift before rollout?" -Default $true) {
-        if (-not (Invoke-TestPatternDriftDecision)) { return }
-    }
-    if (-not (Require-Connection $Connected)) { return }
 
+    # 1. Drift gate (unconditional pre-flight)
+    Write-Host ""
+    Write-Host "  Phase 1/6: TestPattern drift check" -ForegroundColor Cyan
+    if (-not (Invoke-TestPatternDriftDecision)) {
+        Write-Host "  Wizard aborted at drift gate." -ForegroundColor Yellow
+        return
+    }
+
+    if (-not (Require-Connection $Connected)) { return }
     $commonArgs = @(Get-CommonDeploymentArgs)
 
-    if (Read-YesNo "Run readiness gate now?" -Default $true) {
-        $readinessArgs = @("-Scope", "All", "-RequireTenant", "-NoExit") + $commonArgs
-        $readinessResult = @(Invoke-ToolkitScript -ScriptName "Test-DeploymentReadiness.ps1" -ArgumentList $readinessArgs)
-        $readinessPassed = ($readinessResult.Count -gt 0 -and $readinessResult[-1] -eq $true)
-        if (-not $readinessPassed) {
-            Write-Host ""
-            Write-Host "  Readiness did not pass." -ForegroundColor Red
-            if (-not (Read-YesNo "Continue to refit planning anyway?" -Default $false)) {
-                return
-            }
+    # 2. Readiness gate (unconditional; OVERRIDE typed-confirm to bypass)
+    Write-Host ""
+    Write-Host "  Phase 2/6: Pre-deployment readiness" -ForegroundColor Cyan
+    $readinessArgs = @("-Scope", "All", "-RequireTenant", "-NoExit") + $commonArgs
+    $readinessResult = @(Invoke-ToolkitScript -ScriptName "Test-DeploymentReadiness.ps1" -ArgumentList $readinessArgs)
+    $readinessPassed = ($readinessResult.Count -gt 0 -and $readinessResult[-1] -eq $true)
+    if (-not $readinessPassed) {
+        Write-Host ""
+        Write-Host "  Readiness did not pass." -ForegroundColor Red
+        Write-Host "  Bypassing readiness will deploy with unresolved validation errors." -ForegroundColor Red
+        Write-Host "  Type the word OVERRIDE (uppercase) to bypass, anything else to abort: " -NoNewline -ForegroundColor Yellow
+        $confirm = (Read-Host).Trim()
+        if ($confirm -cne 'OVERRIDE') {
+            Write-Host "  Wizard aborted at readiness gate." -ForegroundColor Yellow
+            return
+        }
+        Write-Host "  Readiness override accepted." -ForegroundColor Yellow
+    }
+
+    # 3. Cleanup (optional)
+    Write-Host ""
+    Write-Host "  Phase 3/6: Cleanup of prior toolkit-owned objects (optional)" -ForegroundColor Cyan
+    if (Read-YesNo "Run cleanup of any existing toolkit-stamped DLP policies/rules and classifier packages?" -Default $false) {
+        Write-Host "  Cleanup is destructive. Type the word CLEANUP (uppercase) to confirm: " -NoNewline -ForegroundColor Yellow
+        $confirm = (Read-Host).Trim()
+        if ($confirm -cne 'CLEANUP') {
+            Write-Host "  Cleanup skipped." -ForegroundColor Yellow
+        } else {
+            $cleanupArgs = @("-Action", "Execute", "-Force") + $commonArgs
+            Invoke-ToolkitScript -ScriptName "Reset-DeploymentScope.ps1" -ArgumentList $cleanupArgs
         }
     }
 
-    if (Read-YesNo "Generate a fresh classifier refit plan?" -Default $true) {
-        $refitArgs = @("-Action", "RefitPlan") + $commonArgs
-        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $refitArgs
+    # 4. Labels
+    Write-Host ""
+    Write-Host "  Phase 4/6: Labels" -ForegroundColor Cyan
+    if (Read-YesNo "Deploy labels (WhatIf preview first)?" -Default $true) {
+        $labelArgs = @("-WhatIf", "-SkipPublish") + $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-Labels.ps1" -ArgumentList $labelArgs
+        if (Read-YesNo "WhatIf looked good — apply labels for real?" -Default $false) {
+            Write-Host '  Publish to (e.g. "All" or "user@domain.com", Enter to skip publish): ' -NoNewline
+            $target = (Read-Host).Trim()
+            $applyArgs = @() + $commonArgs
+            if ($target) { $applyArgs += @("-PublishTo", $target) } else { $applyArgs += "-SkipPublish" }
+            Invoke-ToolkitScript -ScriptName "Deploy-Labels.ps1" -ArgumentList $applyArgs
+        }
     }
 
-    $planPath = Read-RefitPlanPath
-    if (-not $planPath -or -not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
-        Write-Host "  No valid refit plan selected." -ForegroundColor Red
-        return
+    # 5. Classifiers (Greenfield Upload OR ApplyRefitPlan)
+    Write-Host ""
+    Write-Host "  Phase 5/6: Classifiers" -ForegroundColor Cyan
+    Write-Host "    A. Greenfield Upload (clean tenant with no custom classifier packages)" -ForegroundColor White
+    Write-Host "    B. Refit Plan + Apply (tenant has existing custom packages)" -ForegroundColor White
+    Write-Host "    S. Skip classifiers phase" -ForegroundColor Gray
+    Write-Host "  Select [A/B/S]: " -NoNewline
+    $classifierChoice = (Read-Host).Trim().ToUpper()
+    switch ($classifierChoice) {
+        "A" {
+            $greenArgs = @("-Action", "Upload", "-Greenfield", "-WhatIf") + $commonArgs
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $greenArgs
+            if (Read-YesNo "WhatIf looked good — apply Greenfield Upload for real?" -Default $false) {
+                $applyArgs = @("-Action", "Upload", "-Greenfield") + $commonArgs
+                Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+            }
+        }
+        "B" {
+            $refitArgs = @("-Action", "RefitPlan") + $commonArgs
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $refitArgs
+            $planPath = Read-RefitPlanPath
+            if (-not $planPath -or -not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+                Write-Host "  No valid refit plan selected; skipping classifiers." -ForegroundColor Red
+            } else {
+                Show-RefitPlanEvidence -PlanPath $planPath
+                $whatifArgs = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-WhatIf", "-ApproveRefitPlan") + $commonArgs
+                Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $whatifArgs
+                if (Read-YesNo "WhatIf looked good — apply refit plan for real?" -Default $false) {
+                    $applyArgs = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-ApproveRefitPlan") + $commonArgs
+                    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+                }
+            }
+        }
+        "S" {
+            Write-Host "  Skipping classifiers phase." -ForegroundColor Yellow
+        }
+        default {
+            Write-Host "  Unrecognised selection; skipping classifiers phase." -ForegroundColor Yellow
+        }
     }
-    Show-RefitPlanEvidence -PlanPath $planPath
 
-    if (Read-YesNo "Run ApplyRefitPlan in WhatIf mode with this plan?" -Default $true) {
-        $applyArgs = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-WhatIf", "-ApproveRefitPlan") + $commonArgs
-        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+    # 6. DLP rules
+    Write-Host ""
+    Write-Host "  Phase 6/6: DLP rules" -ForegroundColor Cyan
+    if (Read-YesNo "Deploy DLP rules (WhatIf preview first)?" -Default $true) {
+        $dlpWhatif = @("-WhatIf") + $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $dlpWhatif
+        if (Read-YesNo "WhatIf looked good — apply DLP rules for real?" -Default $false) {
+            Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $commonArgs
+        }
     }
 
-    if (Read-YesNo "Run DLP rule deployment dry run now?" -Default $false) {
-        $dlpArgs = @("-WhatIf") + $commonArgs
-        Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $dlpArgs
-    }
+    Write-Host ""
+    Write-Host "  Customer rollout wizard complete." -ForegroundColor Green
 }
 
 function Invoke-ValidateXML {
