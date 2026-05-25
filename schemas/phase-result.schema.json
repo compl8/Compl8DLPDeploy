@@ -5,13 +5,26 @@
   "required": ["schemaVersion","phase","action","status","startedAt","completedAt","artifacts","errors"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
-    "phase": { "enum": ["classifiers","labels","dlprules","refit"] },
+    "phase": { "type": "string", "enum": ["classifiers","labels","dlprules","refit"] },
     "action": { "type": "string" },
-    "status": { "enum": ["success","partial","failed"] },
+    "status": { "type": "string", "enum": ["success","partial","failed"] },
     "startedAt": { "type": "string", "format": "date-time" },
     "completedAt": { "type": "string", "format": "date-time" },
-    "artifacts": { "type": "array" },
-    "errors": { "type": "array" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","action"],
+        "properties": {
+          "name": { "type": "string" },
+          "action": { "type": "string" }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "reportPath": { "type": "string" }
   }
 }

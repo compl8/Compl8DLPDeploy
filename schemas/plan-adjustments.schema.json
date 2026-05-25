@@ -12,8 +12,8 @@
         "required": ["ts","source","artifactType","key","action","reason"],
         "properties": {
           "ts": { "type": "string", "format": "date-time" },
-          "source": { "enum": ["refit","operator-review"] },
-          "artifactType": { "enum": ["label","labelPolicy","classifierPackage","dictionary","dlpPolicy","dlpRule"] },
+          "source": { "type": "string", "enum": ["refit","operator-review"] },
+          "artifactType": { "type": "string", "enum": ["label","labelPolicy","classifierPackage","dictionary","dlpPolicy","dlpRule"] },
           "key": { "type": "string" },
           "action": { "type": "string" },
           "before": { "type": "object" },

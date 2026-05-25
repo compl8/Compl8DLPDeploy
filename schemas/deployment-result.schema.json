@@ -5,11 +5,44 @@
   "required": ["schemaVersion","status","verifiedAt","missing","extras","mismatches","summary"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
-    "status": { "enum": ["succeeded","partial","failed","rolledback"] },
+    "status": { "type": "string", "enum": ["succeeded","partial","failed","rolledback"] },
     "verifiedAt": { "type": "string", "format": "date-time" },
-    "missing": { "type": "array" },
-    "extras": { "type": "array" },
-    "mismatches": { "type": "array" },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifactType","name"],
+        "properties": {
+          "artifactType": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "extras": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifactType","name"],
+        "properties": {
+          "artifactType": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "mismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifactType","name","field"],
+        "properties": {
+          "artifactType": { "type": "string" },
+          "name": { "type": "string" },
+          "field": { "type": "string" },
+          "target": {},
+          "actual": {}
+        }
+      }
+    },
     "summary": { "type": "object" }
   }
 }

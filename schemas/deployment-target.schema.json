@@ -5,11 +5,91 @@
   "required": ["schemaVersion", "labels", "labelPolicy", "classifierPackages", "dictionaries", "dlpPolicies", "dlpRules"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
-    "labels": { "type": "array", "items": { "type": "object", "required": ["name","code","parentGroup","encryption","priority","isGroup"] } },
-    "labelPolicy": { "type": "object", "required": ["name","publishTo","labels","settings"] },
-    "classifierPackages": { "type": "array", "items": { "type": "object", "required": ["name","rulePackId","entities","dictionaryRefs"] } },
-    "dictionaries": { "type": "array", "items": { "type": "object", "required": ["name","termCountHint","termSetSha256"] } },
-    "dlpPolicies": { "type": "array", "items": { "type": "object", "required": ["name","mode","scopeParam","scopeValue"] } },
-    "dlpRules": { "type": "array", "items": { "type": "object", "required": ["name","policy","classifiers","scopeParam","scopeValue"] } }
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","code","parentGroup","encryption","priority","isGroup"],
+        "properties": {
+          "name": { "type": "string" },
+          "code": { "type": "string" },
+          "parentGroup": { "type": ["string","null"] },
+          "encryption": { "type": "boolean" },
+          "priority": { "type": "integer" },
+          "isGroup": { "type": "boolean" }
+        }
+      }
+    },
+    "labelPolicy": {
+      "type": "object",
+      "required": ["name","publishTo","labels","settings"],
+      "properties": {
+        "name": { "type": "string" },
+        "publishTo": { "type": "array", "items": { "type": "string" } },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "settings": { "type": "object" }
+      }
+    },
+    "classifierPackages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","rulePackId","entities","dictionaryRefs"],
+        "properties": {
+          "name": { "type": "string" },
+          "rulePackId": { "type": ["string","null"] },
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": ["string","null"] },
+                "name": { "type": "string" }
+              }
+            }
+          },
+          "dictionaryRefs": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "dictionaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","termCountHint","termSetSha256"],
+        "properties": {
+          "name": { "type": "string" },
+          "termCountHint": { "type": ["integer","null"] },
+          "termSetSha256": { "type": "string" }
+        }
+      }
+    },
+    "dlpPolicies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","mode","scopeParam","scopeValue"],
+        "properties": {
+          "name": { "type": "string" },
+          "mode": { "type": "string" },
+          "scopeParam": { "type": "string" },
+          "scopeValue": { "type": "string" }
+        }
+      }
+    },
+    "dlpRules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","policy","classifiers","scopeParam","scopeValue"],
+        "properties": {
+          "name": { "type": "string" },
+          "policy": { "type": "string" },
+          "classifiers": { "type": "array", "items": { "type": "string" } },
+          "scopeParam": { "type": "string" },
+          "scopeValue": { "type": "string" }
+        }
+      }
+    }
   }
 }

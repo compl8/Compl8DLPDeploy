@@ -15,7 +15,11 @@
     "basePackage": {
       "type": "object",
       "required": ["name", "version", "sha256"],
-      "properties": { "name": {"type":"string"}, "version": {"type":"string"}, "sha256": {"type":"string"} }
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
     },
     "createdBy": { "type": "string" },
     "createdAt": { "type": "string", "format": "date-time" },

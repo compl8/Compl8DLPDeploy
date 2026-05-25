@@ -5,10 +5,10 @@
   "required": ["schemaVersion","state","phasesCompleted","phasesPending","pendingZipSha256","lastUpdated"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
-    "state": { "enum": ["pending","in-progress","succeeded","partial","failed","rolledback"] },
+    "state": { "type": "string", "enum": ["pending","in-progress","succeeded","partial","failed","rolledback"] },
     "phasesCompleted": { "type": "array", "items": { "type": "string" } },
     "phasesPending": { "type": "array", "items": { "type": "string" } },
-    "pendingZipSha256": { "type": "string" },
+    "pendingZipSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "lastUpdated": { "type": "string", "format": "date-time" }
   }
 }

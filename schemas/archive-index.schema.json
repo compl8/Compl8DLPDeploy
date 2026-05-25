@@ -9,7 +9,17 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["sessionId","tenant","targetEnvironment","result","archivedAt","archivePath","targetSha256","resultSha256"]
+        "required": ["sessionId","tenant","targetEnvironment","result","archivedAt","archivePath","targetSha256","resultSha256"],
+        "properties": {
+          "sessionId": { "type": "string" },
+          "tenant": { "type": "string" },
+          "targetEnvironment": { "type": "string" },
+          "result": { "type": "string", "enum": ["succeeded","partial","failed","rolledback"] },
+          "archivedAt": { "type": "string" },
+          "archivePath": { "type": "string" },
+          "targetSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "resultSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
       }
     }
   }
