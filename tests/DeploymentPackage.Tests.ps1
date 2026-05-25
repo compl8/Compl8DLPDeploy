@@ -357,3 +357,17 @@ Describe 'Get-PendingDeploymentPackage' {
             Should -Throw '*multiple*'
     }
 }
+
+Describe 'Get-TenantActualState' {
+    It 'is exported and accepts -NamingPrefix and -TargetEnvironment' {
+        # End-to-end behaviour (provenance-scoped queries against the 6 Purview cmdlets) is
+        # exercised in the Task 21 integration test via the -InjectActualState code path in
+        # Finalize-DeploymentSession. Mocking ExchangeOnlineManagement cmdlets that aren't
+        # loaded conflicts with Pester's module-scope resolution. We assert here only that
+        # the exported function signature is correct.
+        $cmd = Get-Command Get-TenantActualState -Module DeploymentPackage
+        $cmd | Should -Not -BeNullOrEmpty
+        $cmd.Parameters.Keys | Should -Contain 'NamingPrefix'
+        $cmd.Parameters.Keys | Should -Contain 'TargetEnvironment'
+    }
+}

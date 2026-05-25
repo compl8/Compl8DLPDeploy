@@ -97,7 +97,87 @@ function New-DeploymentTargetSnapshot {
         dlpRules            = @($dlpRules)
     }
 }
-function Get-TenantActualState { throw 'Not implemented in module skeleton' }
+function Get-TenantActualState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$NamingPrefix,
+        [Parameter(Mandatory)][string]$TargetEnvironment
+    )
+
+    if (-not (Get-Command Test-DeploymentProvenanceOwnership -ErrorAction SilentlyContinue)) {
+        $dlp = Join-Path $PSScriptRoot 'DLP-Deploy.psm1'
+        if (-not (Get-Module DLP-Deploy)) { Import-Module $dlp -Force }
+    }
+
+    function Test-OurObject {
+        param([object]$Obj, [string]$Component)
+        $r = Test-DeploymentProvenanceOwnership -InputObject $Obj -Prefix $NamingPrefix -Component $Component
+        return [bool]$r.IsOwned
+    }
+
+    $labels = @(Get-Label | Where-Object { Test-OurObject $_ 'SensitivityLabel' } | ForEach-Object {
+        [ordered]@{
+            name        = $_.Name
+            code        = if ($_.PSObject.Properties['DisplayName']) { $_.DisplayName } else { $null }
+            parentGroup = if ($_.PSObject.Properties['ParentId'])    { $_.ParentId }    else { $null }
+            encryption  = [bool]($_.PSObject.Properties['EncryptionEnabled'] -and $_.EncryptionEnabled)
+            priority    = if ($_.PSObject.Properties['Priority'])    { [int]$_.Priority } else { 0 }
+            isGroup     = [bool]($_.PSObject.Properties['IsGroup']    -and $_.IsGroup)
+        }
+    })
+
+    $labelPolicyObj = Get-LabelPolicy | Where-Object { Test-OurObject $_ 'LabelPolicy' } | Select-Object -First 1
+    $labelPolicy = if ($labelPolicyObj) {
+        [ordered]@{ name = $labelPolicyObj.Name; publishTo = @(); labels = @(); settings = @{} }
+    } else {
+        [ordered]@{ name = ''; publishTo = @(); labels = @(); settings = @{} }
+    }
+
+    # Classifier packages aren't provenance-stamped today; match on configured prefix.
+    $classifierPackages = @(Get-DlpSensitiveInformationTypeRulePackage |
+        Where-Object { $_.Name -and $_.Name.StartsWith("$NamingPrefix-", [System.StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object {
+            [ordered]@{
+                name           = $_.Name
+                rulePackId     = if ($_.PSObject.Properties['RulePackId']) { [string]$_.RulePackId } else { $null }
+                entities       = @()
+                dictionaryRefs = @()
+            }
+        })
+
+    $dictionaries = @(Get-DlpKeywordDictionary | Where-Object { Test-OurObject $_ 'KeywordDictionary' } | ForEach-Object {
+        [ordered]@{ name = $_.Name; termCountHint = $null; termSetSha256 = $null }
+    })
+
+    $dlpPolicies = @(Get-DlpCompliancePolicy | Where-Object { Test-OurObject $_ 'DlpPolicy' } | ForEach-Object {
+        [ordered]@{
+            name       = $_.Name
+            mode       = if ($_.PSObject.Properties['Mode']) { [string]$_.Mode } else { '' }
+            scopeParam = ''
+            scopeValue = ''
+        }
+    })
+
+    $dlpRules = @(Get-DlpComplianceRule | Where-Object { Test-OurObject $_ 'DlpRule' } | ForEach-Object {
+        [ordered]@{
+            name        = $_.Name
+            policy      = if ($_.PSObject.Properties['Policy']) { [string]$_.Policy } else { '' }
+            classifiers = @()
+            scopeParam  = ''
+            scopeValue  = ''
+        }
+    })
+
+    return [ordered]@{
+        schemaVersion      = 1
+        labels             = $labels
+        labelPolicy        = $labelPolicy
+        classifierPackages = $classifierPackages
+        dictionaries       = $dictionaries
+        dlpPolicies        = $dlpPolicies
+        dlpRules           = $dlpRules
+    }
+}
 function Compare-DeploymentState { throw 'Not implemented in module skeleton' }
 function Update-PendingPackage {
     param(
