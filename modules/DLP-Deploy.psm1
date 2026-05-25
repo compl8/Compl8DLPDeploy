@@ -2924,7 +2924,22 @@ function Sync-DlpKeywordDictionaries {
 
     foreach ($dict in $manifest.dictionaries) {
         # Scope the dictionary name to this deployment so prefix-based cleanup can find it.
-        $name = if ($NamePrefix) { "$NamePrefix-$($dict.name)" } else { $dict.name }
+        # When the manifest name starts with "TestPattern - " (the canonical testpattern.dev prefix),
+        # replace that prefix with "<NamePrefix> - " — matching the SIT entity rename in
+        # Deploy-Classifiers.ps1. Result: "TestPattern - Noise Exclusion" -> "QGISCF - Noise Exclusion",
+        # NOT "QGISCF-TestPattern - Noise Exclusion".
+        $rawName = $dict.name
+        $name = if ($NamePrefix) {
+            if ($rawName.StartsWith('TestPattern - ', [System.StringComparison]::OrdinalIgnoreCase)) {
+                "$NamePrefix - $($rawName.Substring('TestPattern - '.Length))"
+            } else {
+                "$NamePrefix-$rawName"
+            }
+        } else { $rawName }
+
+        # Legacy name (pre-fix double-prefix format). Used for tenant-side lookup so dictionaries
+        # already created under the old scheme are reused by GUID, not duplicated.
+        $legacyName = if ($NamePrefix) { "$NamePrefix-$rawName" } else { $rawName }
 
         if ($WhatIf) {
             Write-Host "  [WHATIF] $name ($($dict.terms.Count) terms)"
@@ -2933,6 +2948,12 @@ function Sync-DlpKeywordDictionaries {
         }
 
         $existing = $inventory | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if (-not $existing -and $legacyName -ne $name) {
+            $existing = $inventory | Where-Object { $_.Name -eq $legacyName } | Select-Object -First 1
+            if ($existing) {
+                Write-Host "  LEGACY NAME: '$($existing.Name)' will be reused; on a fresh tenant it would be created as '$name'." -ForegroundColor DarkYellow
+            }
+        }
         $existingForDecision = if ($existing) { @{ Guid = $existing.Guid; Terms = $existing.Terms } } else { $null }
         $headroom = [long]([long]1048576 - $tenantBytes)
         $decision = Resolve-DictionarySyncDecision -OurTerms $dict.terms -Existing $existingForDecision -TenantHeadroomBytes $headroom
