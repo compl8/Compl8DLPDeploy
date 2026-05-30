@@ -9,6 +9,17 @@
 BeforeAll {
     $ModulePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'DLP-Deploy.psm1'
     Import-Module $ModulePath -Force
+
+    # Isolate the provenance registry to a throwaway temp file for the whole run so
+    # tests never write to the real reports/provenance-registry.json.
+    $env:COMPL8_PROVENANCE_REGISTRY = Join-Path ([System.IO.Path]::GetTempPath()) ("compl8-prov-test-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+}
+
+AfterAll {
+    if ($env:COMPL8_PROVENANCE_REGISTRY -and (Test-Path -LiteralPath $env:COMPL8_PROVENANCE_REGISTRY)) {
+        Remove-Item -LiteralPath $env:COMPL8_PROVENANCE_REGISTRY -Force
+    }
+    Remove-Item Env:\COMPL8_PROVENANCE_REGISTRY -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-PolicyName' {
@@ -777,12 +788,43 @@ Describe 'Get-DeploymentReferenceGraph' {
 }
 
 Describe 'Deployment provenance stamps' {
-    It 'creates and parses a stable marker' {
+    BeforeAll {
+        $script:OuterRegistry = $env:COMPL8_PROVENANCE_REGISTRY
+    }
+    BeforeEach {
+        $script:RegistryPath = Join-Path ([System.IO.Path]::GetTempPath()) ("prov-reg-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+        $env:COMPL8_PROVENANCE_REGISTRY = $script:RegistryPath
+    }
+    AfterEach {
+        if (Test-Path -LiteralPath $script:RegistryPath) { Remove-Item -LiteralPath $script:RegistryPath -Force }
+        $env:COMPL8_PROVENANCE_REGISTRY = $script:OuterRegistry
+    }
+
+    It 'emits a short opaque marker, not the long human-readable form' {
+        $stamp = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001'
+        $stamp | Should -Match '^\[\[Compl8:[0-9a-f]{16}\]\]$'
+        $stamp | Should -Not -Match 'provenance'
+    }
+
+    It 'generates a deterministic id from identical inputs' {
+        $a = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'qfd' -Metadata @{ LabelCode='SENS_Fin' }
+        $b = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'qfd' -Metadata @{ LabelCode='SENS_Fin' }
+        $a | Should -Be $b
+    }
+
+    It 'produces a different id when any field differs' {
+        $a = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001'
+        $b = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-002'
+        $a | Should -Not -Be $b
+    }
+
+    It 'writes full fields to the registry and resolves them back through Get' {
         $stamp = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'nonprod' -Metadata @{ LabelCode='SENS_Fin' }
         $parsed = Get-DeploymentProvenanceStamp -Text "Human comment`n$stamp"
 
+        $parsed.Found | Should -BeTrue
+        $parsed.Resolved | Should -BeTrue
         $parsed.Toolkit | Should -Be 'Compl8DLPDeploy'
-        $parsed.Version | Should -Be 1
         $parsed.Prefix | Should -Be 'QGISCF'
         $parsed.Component | Should -Be 'DlpRule'
         $parsed.DeploymentId | Should -Be 'deploy-001'
@@ -790,22 +832,60 @@ Describe 'Deployment provenance stamps' {
         $parsed.Fields.LabelCode | Should -Be 'SENS_Fin'
     }
 
-    It 'replaces an existing marker instead of stacking duplicates' {
+    It 'still parses legacy long-form markers without a registry (dual-format)' {
+        $legacy = '[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=deploy-001;environment=nonprod]]'
+        $parsed = Get-DeploymentProvenanceStamp -Text "Human comment`n$legacy"
+
+        $parsed.Found | Should -BeTrue
+        $parsed.Resolved | Should -BeTrue
+        $parsed.Prefix | Should -Be 'QGISCF'
+        $parsed.Component | Should -Be 'DlpRule'
+        $parsed.TargetEnvironment | Should -Be 'nonprod'
+    }
+
+    It 'replaces an existing short marker instead of stacking duplicates' {
         $first = Add-DeploymentProvenanceStamp -Text 'Comment' -Prefix 'OLD' -Component 'DlpRule' -DeploymentId 'one'
         $second = Add-DeploymentProvenanceStamp -Text $first -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'two'
 
-        ([regex]::Matches($second, 'Compl8DLPDeploy:provenance')).Count | Should -Be 1
+        ([regex]::Matches($second, '\[\[Compl8:')).Count | Should -Be 1
         $second | Should -Match '^Comment'
         (Get-DeploymentProvenanceStamp -Text $second).Prefix | Should -Be 'QGISCF'
     }
 
-    It 'classifies ownership only when prefix and component match' {
+    It 'replaces a legacy long-form marker with the new short form' {
+        $legacy = '[[Compl8DLPDeploy:provenance:v1;prefix=OLD;component=DlpRule;deploymentId=one]]'
+        $combined = Add-DeploymentProvenanceStamp -Text "Comment`n$legacy" -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'two'
+
+        $combined | Should -Not -Match 'provenance'
+        ([regex]::Matches($combined, '\[\[Compl8:')).Count | Should -Be 1
+        (Get-DeploymentProvenanceStamp -Text $combined).Prefix | Should -Be 'QGISCF'
+    }
+
+    It 'classifies ownership only when prefix and component match (resolved via registry)' {
         $comment = Add-DeploymentProvenanceStamp -Text 'Rule comment' -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001'
         $obj = [pscustomobject]@{ Name='R01'; Comment=$comment }
 
         (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'DlpRule').IsOwned | Should -BeTrue
         (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'OTHER' -Component 'DlpRule').IsOwned | Should -BeFalse
         (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'Label').IsOwned | Should -BeFalse
+    }
+
+    It 'fails safe: a short marker whose registry entry is missing is NOT owned' {
+        $comment = Add-DeploymentProvenanceStamp -Text 'Rule comment' -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001'
+        $obj = [pscustomobject]@{ Name='R01'; Comment=$comment }
+        # Simulate a fresh checkout where the gitignored registry is absent.
+        Remove-Item -LiteralPath $script:RegistryPath -Force
+
+        $result = Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'DlpRule'
+        $result.IsOwned | Should -BeFalse
+        $result.Reason | Should -Match 'registry'
+    }
+
+    It 'still recognises ownership from a legacy long-form marker without the registry' {
+        $legacy = '[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=one]]'
+        $obj = [pscustomobject]@{ Name='R01'; Comment="Rule`n$legacy" }
+
+        (Test-DeploymentProvenanceOwnership -InputObject $obj -Prefix 'QGISCF' -Component 'DlpRule').IsOwned | Should -BeTrue
     }
 }
 

@@ -2249,10 +2249,109 @@ function ConvertFrom-DeploymentProvenanceFieldValue {
     return [System.Uri]::UnescapeDataString($Value)
 }
 
+function Resolve-DeploymentProvenanceRegistryPath {
+    <#
+    .SYNOPSIS
+        Resolves the provenance registry file path: explicit override > env var > repo default.
+    #>
+    param([string]$RegistryPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($RegistryPath)) { return $RegistryPath }
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPL8_PROVENANCE_REGISTRY)) { return $env:COMPL8_PROVENANCE_REGISTRY }
+    return Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "reports") "provenance-registry.json"
+}
+
+function New-DeploymentProvenanceId {
+    <#
+    .SYNOPSIS
+        Deterministic 16-char hex id derived from the canonical provenance fields.
+        Identical inputs always yield the same id, so re-deploys are idempotent.
+    #>
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Fields)
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $Fields.GetEnumerator()) {
+        if ($null -eq $entry.Value -or [string]::IsNullOrWhiteSpace($entry.Value.ToString())) { continue }
+        $parts.Add(("{0}={1}" -f $entry.Key, $entry.Value.ToString())) | Out-Null
+    }
+    $canonical = ($parts -join ';')
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canonical))
+    } finally {
+        $sha.Dispose()
+    }
+    $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+    return $hex.Substring(0, 16)
+}
+
+function Read-DeploymentProvenanceRegistry {
+    <#
+    .SYNOPSIS
+        Loads the provenance registry as @{ version; entries=[ordered] }, tolerating missing/corrupt files.
+    #>
+    param([string]$RegistryPath)
+
+    $path = Resolve-DeploymentProvenanceRegistryPath -RegistryPath $RegistryPath
+    $empty = [ordered]@{ version = 1; entries = [ordered]@{} }
+    if (-not (Test-Path -LiteralPath $path)) { return $empty }
+
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $empty
+    }
+
+    $entries = [ordered]@{}
+    if ($obj.PSObject.Properties['entries'] -and $obj.entries) {
+        foreach ($p in $obj.entries.PSObject.Properties) { $entries[$p.Name] = $p.Value }
+    }
+    return [ordered]@{ version = if ($obj.PSObject.Properties['version'] -and $obj.version) { $obj.version } else { 1 }; entries = $entries }
+}
+
+function Set-DeploymentProvenanceRegistryEntry {
+    <#
+    .SYNOPSIS
+        Inserts or overwrites a single registry entry, creating the file/folder as needed.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Entry,
+        [string]$RegistryPath
+    )
+
+    $path = Resolve-DeploymentProvenanceRegistryPath -RegistryPath $RegistryPath
+    $registry = Read-DeploymentProvenanceRegistry -RegistryPath $path
+    $registry.entries[$Id] = $Entry
+
+    $dir = Split-Path -Parent $path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    ($registry | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+function Get-DeploymentProvenanceRegistryEntry {
+    <#
+    .SYNOPSIS
+        Returns the registry entry for a provenance id, or $null if absent.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [string]$RegistryPath
+    )
+
+    $registry = Read-DeploymentProvenanceRegistry -RegistryPath $RegistryPath
+    if ($registry.entries.Contains($Id)) { return $registry.entries[$Id] }
+    return $null
+}
+
 function New-DeploymentProvenanceStamp {
     <#
     .SYNOPSIS
-        Creates a compact ownership marker for Purview Comment/Description fields.
+        Creates a short opaque ownership marker ([[Compl8:<16hex>]]) for Purview Comment/Description
+        fields, recording the full field set in the local provenance registry.
     #>
     param(
         [Parameter(Mandatory)][string]$Prefix,
@@ -2281,23 +2380,69 @@ function New-DeploymentProvenanceStamp {
         $fields[$safeKey] = $Metadata[$key]
     }
 
-    $parts = New-Object System.Collections.Generic.List[string]
-    foreach ($entry in $fields.GetEnumerator()) {
-        if ($null -eq $entry.Value -or [string]::IsNullOrWhiteSpace($entry.Value.ToString())) { continue }
-        $parts.Add(("{0}={1}" -f $entry.Key, (ConvertTo-DeploymentProvenanceFieldValue -Value $entry.Value.ToString()))) | Out-Null
-    }
+    $id = New-DeploymentProvenanceId -Fields $fields
 
-    return "[[Compl8DLPDeploy:provenance:v1;$($parts -join ';')]]"
+    $entry = [ordered]@{
+        toolkit      = "Compl8DLPDeploy"
+        version      = 1
+        prefix       = $Prefix
+        component    = $Component
+        deploymentId = $fields.deploymentId
+        environment  = if ($fields.Contains('environment')) { $fields.environment } else { $null }
+        fields       = $fields
+    }
+    Set-DeploymentProvenanceRegistryEntry -Id $id -Entry $entry
+
+    return "[[Compl8:$id]]"
 }
 
 function Get-DeploymentProvenanceStamp {
     <#
     .SYNOPSIS
-        Reads a Compl8DLPDeploy provenance marker from text.
+        Reads a Compl8DLPDeploy provenance marker from text. Recognises both the short opaque
+        form ([[Compl8:<16hex>]], resolved via the registry) and the legacy long form
+        ([[Compl8DLPDeploy:provenance:v1;...]], parsed inline).
     #>
     param([string]$Text)
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+
+    # Short opaque form — full fields live in the local registry.
+    $shortMatch = [regex]::Match($Text, '\[\[Compl8:(?<id>[0-9a-f]{16})\]\]')
+    if ($shortMatch.Success) {
+        $id = $shortMatch.Groups["id"].Value
+        $entry = Get-DeploymentProvenanceRegistryEntry -Id $id
+        if ($null -eq $entry) {
+            return [pscustomobject]@{
+                Found             = $true
+                Resolved          = $false
+                Toolkit           = "Compl8DLPDeploy"
+                Version           = $null
+                Id                = $id
+                Prefix            = $null
+                Component         = $null
+                DeploymentId      = $null
+                TargetEnvironment = $null
+                Fields            = $null
+                Raw               = $shortMatch.Value
+            }
+        }
+        return [pscustomobject]@{
+            Found             = $true
+            Resolved          = $true
+            Toolkit           = if ($entry.toolkit) { $entry.toolkit } else { "Compl8DLPDeploy" }
+            Version           = if ($entry.version) { [int]$entry.version } else { 1 }
+            Id                = $id
+            Prefix            = $entry.prefix
+            Component         = $entry.component
+            DeploymentId      = $entry.deploymentId
+            TargetEnvironment = $entry.environment
+            Fields            = $entry.fields
+            Raw               = $shortMatch.Value
+        }
+    }
+
+    # Legacy long form — self-contained, no registry needed.
     $pattern = '\[\[Compl8DLPDeploy:provenance:v(?<version>\d+)(?<fields>(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*)\]\]'
     $match = [regex]::Match($Text, $pattern)
     if (-not $match.Success) { return $null }
@@ -2309,8 +2454,10 @@ function Get-DeploymentProvenanceStamp {
 
     return [pscustomobject]@{
         Found             = $true
+        Resolved          = $true
         Toolkit           = "Compl8DLPDeploy"
         Version           = [int]$match.Groups["version"].Value
+        Id                = $null
         Prefix            = $fields["prefix"]
         Component         = $fields["component"]
         DeploymentId      = $fields["deploymentId"]
@@ -2323,7 +2470,8 @@ function Get-DeploymentProvenanceStamp {
 function Add-DeploymentProvenanceStamp {
     <#
     .SYNOPSIS
-        Appends or replaces the provenance marker in a Comment/Description string.
+        Appends or replaces the provenance marker in a Comment/Description string. Strips any
+        existing marker (short or legacy long form) before appending the current short marker.
     #>
     param(
         [string]$Text,
@@ -2336,8 +2484,14 @@ function Add-DeploymentProvenanceStamp {
     )
 
     $stamp = New-DeploymentProvenanceStamp -Prefix $Prefix -Component $Component -DeploymentId $DeploymentId -TargetEnvironment $TargetEnvironment -Metadata $Metadata
-    $pattern = '\[\[Compl8DLPDeploy:provenance:v\d+(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*\]\]'
-    $cleanText = if ($Text) { ([regex]::Replace($Text, $pattern, "")).Trim() } else { "" }
+    $shortPattern = '\[\[Compl8:[0-9a-f]{16}\]\]'
+    $longPattern  = '\[\[Compl8DLPDeploy:provenance:v\d+(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*\]\]'
+    $cleanText = ""
+    if ($Text) {
+        $cleanText = [regex]::Replace($Text, $longPattern, "")
+        $cleanText = [regex]::Replace($cleanText, $shortPattern, "")
+        $cleanText = $cleanText.Trim()
+    }
     $combined = if ($cleanText) { "$cleanText`n$stamp" } else { $stamp }
 
     if ($MaxLength -gt 0 -and $combined.Length -gt $MaxLength -and $cleanText) {
@@ -2356,6 +2510,8 @@ function Test-DeploymentProvenanceOwnership {
     <#
     .SYNOPSIS
         Classifies an object as toolkit-owned only when a matching provenance marker exists.
+        A short marker whose registry entry cannot be resolved is treated as NOT owned
+        (fail-safe — never delete what cannot be confirmed).
     #>
     param(
         [Parameter(Mandatory)][object]$InputObject,
@@ -2373,6 +2529,9 @@ function Test-DeploymentProvenanceOwnership {
 
     if (-not $stamp) {
         return [pscustomobject]@{ IsOwned = $false; Stamp = $null; Reason = "no provenance marker" }
+    }
+    if ($stamp.PSObject.Properties['Resolved'] -and -not $stamp.Resolved) {
+        return [pscustomobject]@{ IsOwned = $false; Stamp = $stamp; Reason = "provenance id '$($stamp.Id)' not found in registry" }
     }
     if ($Prefix -and $stamp.Prefix -ne $Prefix) {
         return [pscustomobject]@{ IsOwned = $false; Stamp = $stamp; Reason = "provenance prefix '$($stamp.Prefix)' did not match '$Prefix'" }
@@ -3431,6 +3590,7 @@ Export-ModuleMember -Function @(
     'New-DeploymentProvenanceStamp'
     'Add-DeploymentProvenanceStamp'
     'Get-DeploymentProvenanceStamp'
+    'Get-DeploymentProvenanceRegistryEntry'
     'Test-DeploymentProvenanceOwnership'
     'Get-DeploymentTenantInfo'
     'New-DeploymentManifest'
