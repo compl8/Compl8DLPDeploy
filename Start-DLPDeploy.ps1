@@ -29,6 +29,10 @@ $_Config       = Merge-GlobalConfig -Defaults $_Defaults -GlobalJson $_SettingsJ
 $_Config       = Set-DeploymentConfigPrefix -Config $_Config -Prefix $Prefix
 $_Prefix       = $_Config.namingPrefix
 
+# Session flag: when set, deploy scripts receive -RegisterFingerprint so an unknown
+# TargetEnvironment bootstraps a warn-mode fingerprint entry from the connected tenant.
+$script:RegisterFingerprint = $false
+
 #region Box Drawing
 function Get-TerminalSize {
     try {
@@ -181,11 +185,96 @@ function Require-Connection {
     return $true
 }
 
+function Get-FingerprintConfig {
+    $path = Join-Path $ConfigPath "tenant-fingerprints.json"
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop)
+    } catch {
+        Write-Host "  Could not parse tenant-fingerprints.json: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+function Select-TargetEnvironment {
+    # Pick the deployment target from stored tenant fingerprints, or register a new
+    # tenant. Sets $script:TargetEnvironment and $script:RegisterFingerprint. Selecting an
+    # existing block-mode entry warns that the connected tenant must match; "New tenant"
+    # flags the next deploy to bootstrap a warn-mode entry from the live tenant.
+    $script:RegisterFingerprint = $false
+    $cfg = Get-FingerprintConfig
+    $entries = @()
+    if ($cfg -and $cfg.environments) { $entries = @($cfg.environments.PSObject.Properties) }
+
+    Write-Host ""
+    Write-Host "  --- Target Tenant Fingerprint ---" -ForegroundColor Cyan
+
+    if ($entries.Count -eq 0) {
+        Write-Host "  No stored fingerprints in config/tenant-fingerprints.json." -ForegroundColor Yellow
+        $key = Read-OptionalValue -Prompt "New environment key for this tenant" -Current $script:TargetEnvironment
+        if ($key) {
+            $script:TargetEnvironment = $key
+            $script:RegisterFingerprint = Read-YesNo "Register the connected tenant as '$key' (mode=warn) on first deploy?" -Default $true
+        }
+        return
+    }
+
+    $default = $cfg.defaultEnvironment
+    $i = 1
+    foreach ($e in $entries) {
+        $mode  = if ($e.Value.mode) { [string]$e.Value.mode } else { "warn" }
+        $tid   = if ($e.Value.tenantId) { [string]$e.Value.tenantId } else { "(no tenantId)" }
+        $isDef = if ($e.Name -eq $default) { " (default)" } else { "" }
+        $modeColor = if ($mode -eq "block") { "Red" } else { "Yellow" }
+        Write-Host ("    {0}. {1}{2}" -f $i, $e.Name, $isDef) -NoNewline -ForegroundColor White
+        Write-Host ("   [{0}] {1}" -f $mode, $tid) -ForegroundColor $modeColor
+        $i++
+    }
+    Write-Host "    N. New tenant -- register on first deploy [warn]" -ForegroundColor Green
+
+    $current = if ($script:TargetEnvironment) { $script:TargetEnvironment } elseif ($default) { "$default (default)" } else { "default" }
+    Write-Host ("  Select [1-{0}/N] (Enter = keep '{1}'): " -f $entries.Count, $current) -NoNewline
+    $pick = (Read-Host).Trim()
+
+    if ([string]::IsNullOrWhiteSpace($pick)) { return }
+
+    if ($pick -match '^[Nn]$') {
+        $key = Read-OptionalValue -Prompt "New environment key (e.g. acme-prod)" -Current ""
+        if (-not $key) {
+            Write-Host "  No key entered; keeping current target." -ForegroundColor Yellow
+            return
+        }
+        if (@($entries.Name) -contains $key) {
+            Write-Host "  '$key' already exists; selecting it instead of registering." -ForegroundColor Yellow
+            $script:TargetEnvironment = $key
+            return
+        }
+        $script:TargetEnvironment = $key
+        $script:RegisterFingerprint = $true
+        Write-Host "  '$key' will be registered (mode=warn) from the connected tenant on first deploy." -ForegroundColor Green
+        return
+    }
+
+    if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $entries.Count) {
+        $sel = $entries[[int]$pick - 1]
+        $script:TargetEnvironment = $sel.Name
+        $selMode = if ($sel.Value.mode) { [string]$sel.Value.mode } else { "warn" }
+        if ($selMode -eq "block") {
+            Write-Host "  '$($sel.Name)' is BLOCK mode -- the connected tenant must be $($sel.Value.tenantId) or the deploy is refused." -ForegroundColor Yellow
+        } else {
+            Write-Host "  Target set to '$($sel.Name)' [$selMode]." -ForegroundColor Green
+        }
+        return
+    }
+
+    Write-Host "  Invalid selection; keeping current target." -ForegroundColor Yellow
+}
+
 function Set-RolloutContext {
     Write-Host ""
     Write-Host "  --- Tenant / Rollout Context ---" -ForegroundColor Cyan
     $script:Tenant = Read-OptionalValue -Prompt "Tenant domain or GUID" -Current $script:Tenant
-    $script:TargetEnvironment = Read-OptionalValue -Prompt "Target environment profile key" -Current $script:TargetEnvironment
+    Select-TargetEnvironment
     $script:Prefix = Read-OptionalValue -Prompt "Deployment prefix override" -Current $script:Prefix
     $script:UPN = Read-OptionalValue -Prompt "Admin UPN" -Current $script:UPN
     $script:Delegated = Read-YesNo -Prompt "Use delegated admin connection?" -Default ([bool]$script:Delegated)
@@ -206,6 +295,7 @@ function Get-CommonDeploymentArgs {
     if ($script:TargetEnvironment) { $commonArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
     if ($script:Prefix) { $commonArgs += @("-Prefix", $script:Prefix) }
     if ($script:Delegated) { $commonArgs += "-Delegated" }
+    if ($script:RegisterFingerprint) { $commonArgs += "-RegisterFingerprint" }
     return $commonArgs
 }
 
@@ -600,6 +690,8 @@ function Invoke-DeployLabels {
     param([ref]$Connected)
     if (-not (Require-Connection $Connected)) { return }
 
+    Select-TargetEnvironment
+
     Write-Host ""
     Write-Host "  --- Deploy Labels ---" -ForegroundColor Cyan
     if (Read-YesNo "Check live TestPattern drift before deploying labels?" -Default $true) {
@@ -626,6 +718,8 @@ function Invoke-DeployLabels {
 function Invoke-DeployClassifiers {
     param([ref]$Connected)
     if (-not (Require-Connection $Connected)) { return }
+
+    Select-TargetEnvironment
 
     Write-Host ""
     Write-Host "  --- Deploy Classifiers ---" -ForegroundColor Cyan
@@ -714,6 +808,8 @@ function Invoke-DeployClassifiers {
 function Invoke-DeployDLPRules {
     param([ref]$Connected)
     if (-not (Require-Connection $Connected)) { return }
+
+    Select-TargetEnvironment
 
     Write-Host ""
     Write-Host "  --- Deploy DLP Rules ---" -ForegroundColor Cyan
