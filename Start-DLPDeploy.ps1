@@ -119,6 +119,7 @@ function Show-Menu {
     Write-BoxLine -Text (Fmt-Row " [9]  Remove Labels" " [C]  Connect / Reconnect") -InnerWidth $w -Color Cyan
     Write-BoxLine -Text (Fmt-Row " [10] Remove SIT Packages" "") -InnerWidth $w -Color Cyan
     Write-BoxSeparator -InnerWidth $w -Color Cyan
+    Write-BoxLine -Text " [S]  Config skew (tenant vs global)" -InnerWidth $w -Color Cyan
     Write-BoxLine -Text " [12] TestPattern drift check / update" -InnerWidth $w -Color Yellow
     Write-BoxLine -Text " [R]  Customer rollout wizard (full: drift -> readiness -> cleanup -> labels -> classifiers -> rules)" -InnerWidth $w -Color Green
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
@@ -2062,6 +2063,15 @@ function Invoke-TestPatternDriftMenu {
     [void](Invoke-TestPatternDriftDecision)
 }
 
+function Invoke-ConfigSkewReport {
+    $env = $script:TargetEnvironment
+    if (-not $env) {
+        $env = Read-OptionalValue -Prompt "Environment key to check (e.g. ecq)" -Current ''
+    }
+    if (-not $env) { Write-Host "  No environment selected." -ForegroundColor Yellow; return }
+    Invoke-ToolkitScript -ScriptName "Test-ConfigSkew.ps1" -ArgumentList @("-Environment", $env, "-NoExit")
+}
+
 #endregion
 
 #region Main Loop
@@ -2088,6 +2098,7 @@ while ($true) {
         "10" { Invoke-RemovePackages ([ref]$isConnected); Pause-AfterRun }
         "11" { Invoke-ValidateXML; Pause-AfterRun }
         "12" { Invoke-TestPatternDriftMenu; Pause-AfterRun }
+        "S"  { Invoke-ConfigSkewReport; Pause-AfterRun }
         "R"  { Invoke-CustomerRolloutWizard ([ref]$isConnected); Pause-AfterRun }
         "Q"  { Write-Host "  Bye." -ForegroundColor Gray; exit 0 }
         default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 1 }
