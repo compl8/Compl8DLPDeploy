@@ -29,12 +29,12 @@ param(
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$ConfigPath = Join-Path $ProjectRoot "config"
+$ModulePath = Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1"
+Import-Module $ModulePath -Force
+
+$ConfigPath = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
 $XmlDir = Join-Path $ProjectRoot "xml"
 $DeployDir = Join-Path $XmlDir "deploy"
-$ModulePath = Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1"
-
-Import-Module $ModulePath -Force
 
 $script:Errors = [System.Collections.Generic.List[string]]::new()
 $script:Warnings = [System.Collections.Generic.List[string]]::new()
