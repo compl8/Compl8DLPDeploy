@@ -97,3 +97,19 @@ Describe 'Compare-TenantConfigSkew' {
         Remove-Item $root -Recurse -Force
     }
 }
+
+Describe 'Test-ConfigSkew.ps1' {
+    It 'prints a skew line for a changed value and returns differences' {
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) ("skewscript-{0}" -f ([guid]::NewGuid().ToString('N')))
+        $cfg = Join-Path $root 'config'
+        $tenant = Join-Path $cfg 'tenants/ecq'
+        New-Item -ItemType Directory -Path $tenant -Force | Out-Null
+        '{"namingPrefix":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $cfg 'settings.json') -Encoding UTF8
+        '{"namingPrefix":"ECQ"}'    | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
+
+        $scriptPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts' 'Test-ConfigSkew.ps1'
+        $out = & $scriptPath -ProjectRoot $root -Environment 'ecq' -NoExit
+        ($out -join "`n") | Should -Match 'namingPrefix'
+        Remove-Item $root -Recurse -Force
+    }
+}
