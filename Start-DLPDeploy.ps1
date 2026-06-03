@@ -270,6 +270,68 @@ function Select-TargetEnvironment {
     Write-Host "  Invalid selection; keeping current target." -ForegroundColor Yellow
 }
 
+function Get-SampleDeploymentNames {
+    # Returns an ordered map of component -> sample generated object names, so the user
+    # can eyeball the actual naming (not just the bare prefix) before deploying.
+    param([hashtable]$Config)
+    $samples = [ordered]@{}
+
+    try {
+        $policyNames = @(Get-ExpectedDlpPolicyNameSet -Config $Config | Sort-Object)
+        if ($policyNames.Count -gt 0) {
+            $samples['DLP policy'] = @($policyNames | Select-Object -First 3)
+        }
+    } catch { }
+
+    $regPath = [System.IO.Path]::Combine($ProjectRoot, 'xml', 'deploy', 'deploy-registry.json')
+    if (Test-Path -LiteralPath $regPath) {
+        try {
+            $reg = Get-Content -Raw -LiteralPath $regPath | ConvertFrom-Json
+            $keys = @(@($reg.packages) | ForEach-Object { $_.key } | Where-Object { $_ } | Select-Object -First 3)
+            if ($keys.Count -gt 0) { $samples['Classifier package'] = $keys }
+        } catch { }
+    }
+
+    return $samples
+}
+
+function Confirm-DeploymentNaming {
+    # Show the resolved prefix/suffix + sample object names and confirm before deploying.
+    # Declining lets the user override the prefix in place (re-derives + re-previews) or abort.
+    while ($true) {
+        $cfg    = $script:_Config
+        $prefix = $cfg.namingPrefix
+        $suffix = $cfg.namingSuffix
+
+        Write-Host ""
+        Write-Host "  --- Deployment Naming ---" -ForegroundColor Cyan
+        Write-Host "    Prefix: $prefix" -NoNewline -ForegroundColor White
+        if ($suffix) { Write-Host "    Suffix: $suffix" -ForegroundColor White } else { Write-Host "" }
+
+        $samples = Get-SampleDeploymentNames -Config $cfg
+        if ($samples.Count -eq 0) {
+            Write-Host "    (no sample names available -- check config/policies.json and xml/deploy/deploy-registry.json)" -ForegroundColor DarkGray
+        } else {
+            foreach ($k in $samples.Keys) {
+                Write-Host "    Example $k names:" -ForegroundColor DarkGray
+                foreach ($n in $samples[$k]) { Write-Host "      - $n" -ForegroundColor Gray }
+            }
+        }
+        Write-Host ""
+
+        if (Read-YesNo "Proceed with this naming?" -Default $true) { return $true }
+
+        $newPrefix = Read-OptionalValue -Prompt "New prefix (Enter = abort deploy)" -Current ""
+        if (-not $newPrefix) {
+            Write-Host "  Deploy aborted at naming confirmation." -ForegroundColor Yellow
+            return $false
+        }
+        $script:Prefix  = $newPrefix
+        $script:_Config = Set-DeploymentConfigPrefix -Config $script:_Config -Prefix $newPrefix
+        $script:_Prefix = $script:_Config.namingPrefix
+    }
+}
+
 function Set-RolloutContext {
     Write-Host ""
     Write-Host "  --- Tenant / Rollout Context ---" -ForegroundColor Cyan
@@ -701,6 +763,7 @@ function Invoke-DeployLabels {
     $publish  = Read-YesNo "Publish labels after creation?"
     $noMark   = Read-YesNo "Skip visual markings?"
 
+    if (-not (Confirm-DeploymentNaming)) { return }
     $params = @(Get-CommonDeploymentArgs)
     if ($dryRun)  { $params += "-WhatIf" }
     if ($noMark)  { $params += "-NoMarking" }
@@ -747,6 +810,9 @@ function Invoke-DeployClassifiers {
 
     Write-Host "  Tier [small/medium/large] (Enter = all tiers): " -NoNewline
     $tier = (Read-Host).Trim().ToLower()
+    if ($operation -in @("1", "2", "3", "4")) {
+        if (-not (Confirm-DeploymentNaming)) { return }
+    }
     $commonArgs = @(Get-CommonDeploymentArgs)
     if ($operation -in @("1", "2", "3", "4") -and (Read-YesNo "Check live TestPattern drift before using classifier content?" -Default $true)) {
         if (-not (Invoke-TestPatternDriftDecision)) { return }
@@ -820,6 +886,7 @@ function Invoke-DeployDLPRules {
     $skipVal   = Read-YesNo "Skip SIT validation?"
     $skipVerif = Read-YesNo "Skip post-deploy verification?"
 
+    if (-not (Confirm-DeploymentNaming)) { return }
     $params = @(Get-CommonDeploymentArgs)
     if ($dryRun)    { $params += "-WhatIf" }
     if ($skipVal)   { $params += "-SkipValidation" }
