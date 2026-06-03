@@ -3061,6 +3061,48 @@ function Compare-JsonStructure {
     }
     return $diffs.ToArray()
 }
+
+function Compare-TenantConfigSkew {
+    <#
+    .SYNOPSIS
+        Compares each scoped config file in config/tenants/<env> against the global
+        config/. Returns an array of [pscustomobject]@{ file; path; kind; global;
+        tenant }. Files the tenant does not override are skipped. No tenant dir ->
+        empty (no skew).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Environment
+    )
+
+    $scoped = @('classifiers.json','policies.json','labels.json','tier-assignments.json','rule-overrides.json','tenant-sits.json','settings.json')
+    $globalDir = Join-Path $ProjectRoot 'config'
+    $tenantDir = Join-Path (Join-Path $globalDir 'tenants') $Environment
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    if (-not (Test-Path -LiteralPath $tenantDir -PathType Container)) { return @() }
+
+    foreach ($name in $scoped) {
+        $tPath = Join-Path $tenantDir $name
+        if (-not (Test-Path -LiteralPath $tPath -PathType Leaf)) { continue }
+        $gPath = Join-Path $globalDir $name
+        if (-not (Test-Path -LiteralPath $gPath -PathType Leaf)) {
+            $results.Add([pscustomobject]@{ file = $name; path = '(file)'; kind = 'added'; global = $null; tenant = '(tenant-only file)' })
+            continue
+        }
+        try {
+            $g = Get-Content -Raw -LiteralPath $gPath | ConvertFrom-Json
+            $t = Get-Content -Raw -LiteralPath $tPath | ConvertFrom-Json
+        } catch {
+            $results.Add([pscustomobject]@{ file = $name; path = '(parse error)'; kind = 'changed'; global = '?'; tenant = $_.Exception.Message })
+            continue
+        }
+        foreach ($d in @(Compare-JsonStructure -Left $g -Right $t)) {
+            $results.Add([pscustomobject]@{ file = $name; path = $d.path; kind = $d.kind; global = $d.global; tenant = $d.tenant })
+        }
+    }
+    return $results.ToArray()
+}
 #endregion
 
 #region Classifier Helpers
@@ -3702,5 +3744,6 @@ Export-ModuleMember -Function @(
     'Get-EffectiveConfigDir'
     'Resolve-ConfigFile'
     'Compare-JsonStructure'
+    'Compare-TenantConfigSkew'
 )
 
