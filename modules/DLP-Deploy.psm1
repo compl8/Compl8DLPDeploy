@@ -3103,6 +3103,53 @@ function Compare-TenantConfigSkew {
     }
     return $results.ToArray()
 }
+
+function ConvertTo-ConfigValue {
+    <#
+    .SYNOPSIS
+        Interprets a typed string as a JSON-ish value: integer/double -> number,
+        true/false -> bool, null -> $null, {...}/[...] -> parsed JSON, else the
+        literal string.
+    #>
+    param([AllowNull()][string]$Raw)
+    if ($null -eq $Raw) { return $null }
+    $t = $Raw.Trim()
+    if ($t -eq 'null')  { return $null }
+    if ($t -eq 'true')  { return $true }
+    if ($t -eq 'false') { return $false }
+    $intVal = 0
+    if ([int]::TryParse($t, [ref]$intVal)) { return $intVal }
+    $dblVal = 0.0
+    if ([double]::TryParse($t, [ref]$dblVal)) { return $dblVal }
+    if ($t.StartsWith('{') -or $t.StartsWith('[')) {
+        try { return ($t | ConvertFrom-Json) } catch { return $Raw }
+    }
+    return $Raw
+}
+
+function Set-JsonValue {
+    <#
+    .SYNOPSIS
+        Sets a dotted-path key on a parsed-JSON PSCustomObject (mutates and returns
+        it). Creates intermediate objects as needed. Existing siblings are preserved.
+    #>
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Path,
+        $Value
+    )
+    $parts = $Path -split '\.'
+    $cur = $InputObject
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        $p = $parts[$i]
+        if (-not $cur.PSObject.Properties[$p] -or -not ($cur.$p -is [System.Management.Automation.PSCustomObject])) {
+            $cur | Add-Member -NotePropertyName $p -NotePropertyValue ([pscustomobject]@{}) -Force
+        }
+        $cur = $cur.$p
+    }
+    $cur | Add-Member -NotePropertyName $parts[-1] -NotePropertyValue $Value -Force
+    return $InputObject
+}
 #endregion
 
 #region Classifier Helpers
@@ -3745,5 +3792,7 @@ Export-ModuleMember -Function @(
     'Resolve-ConfigFile'
     'Compare-JsonStructure'
     'Compare-TenantConfigSkew'
+    'ConvertTo-ConfigValue'
+    'Set-JsonValue'
 )
 
