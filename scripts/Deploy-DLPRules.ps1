@@ -39,7 +39,7 @@ if ($DeploymentSessionPath) {
     $script:DeploymentSession = Read-DeploymentPackageManifest -SessionPath $DeploymentSessionPath
 }
 
-$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Join-Path $ProjectRoot "config" }
+$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment }
 $script:DRStartedAt = (Get-Date).ToString('o')
 
 $ErrorActionPreference = "Stop"
