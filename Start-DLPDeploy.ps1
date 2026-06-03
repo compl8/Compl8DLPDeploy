@@ -295,6 +295,25 @@ function Get-SampleDeploymentNames {
     return $samples
 }
 
+function Confirm-ConfigSkew {
+    # Show config skew (tenant vs global) for the selected environment and confirm.
+    # No env or no tenant overrides -> no skew -> silent pass (zero friction).
+    if (-not $script:TargetEnvironment) { return $true }
+    $skew = @(Compare-TenantConfigSkew -ProjectRoot $ProjectRoot -Environment $script:TargetEnvironment)
+    if ($skew.Count -eq 0) { return $true }
+
+    Write-Host ""
+    Write-Host "  --- Config Skew ($($script:TargetEnvironment) vs global) ---" -ForegroundColor Cyan
+    foreach ($d in $skew) {
+        $g = if ($null -eq $d.global) { '(absent)' } else { [string]$d.global }
+        $t = if ($null -eq $d.tenant) { '(absent)' } else { [string]$d.tenant }
+        Write-Host ("    {0}: {1} [{2}]  global='{3}'  tenant='{4}'" -f $d.file, $d.path, $d.kind, $g, $t) -ForegroundColor Yellow
+    }
+    Write-Host ("    {0} difference(s) from global." -f $skew.Count) -ForegroundColor Yellow
+    Write-Host ""
+    return (Read-YesNo "Proceed with this tenant config as-is?" -Default $false)
+}
+
 function Confirm-DeploymentNaming {
     # Show the resolved prefix/suffix + sample object names and confirm before deploying.
     # Declining lets the user override the prefix in place (re-derives + re-previews) or abort.
@@ -754,6 +773,8 @@ function Invoke-DeployLabels {
 
     Select-TargetEnvironment
 
+    if (-not (Confirm-ConfigSkew)) { return }
+
     Write-Host ""
     Write-Host "  --- Deploy Labels ---" -ForegroundColor Cyan
     if (Read-YesNo "Check live TestPattern drift before deploying labels?" -Default $true) {
@@ -783,6 +804,8 @@ function Invoke-DeployClassifiers {
     if (-not (Require-Connection $Connected)) { return }
 
     Select-TargetEnvironment
+
+    if (-not (Confirm-ConfigSkew)) { return }
 
     Write-Host ""
     Write-Host "  --- Deploy Classifiers ---" -ForegroundColor Cyan
@@ -876,6 +899,8 @@ function Invoke-DeployDLPRules {
     if (-not (Require-Connection $Connected)) { return }
 
     Select-TargetEnvironment
+
+    if (-not (Confirm-ConfigSkew)) { return }
 
     Write-Host ""
     Write-Host "  --- Deploy DLP Rules ---" -ForegroundColor Cyan
