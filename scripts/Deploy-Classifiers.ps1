@@ -85,13 +85,13 @@ if ($DeploymentSessionPath) {
     $script:DeploymentSession = Read-DeploymentPackageManifest -SessionPath $DeploymentSessionPath
 }
 
-$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Join-Path $ProjectRoot "config" }
+# Import shared module
+Import-Module (Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1") -Force
+
+$ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment }
 $XmlDir     = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/xml' }    else { Join-Path $ProjectRoot "xml" }
 $script:DeploymentSessionStartedAt = (Get-Date).ToString('o')
 $BackupDir   = Join-Path (Join-Path $ProjectRoot "backups") "classifiers"
-
-# Import shared module
-Import-Module (Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1") -Force
 
 #region Config
 $Defaults  = Get-ModuleDefaults
