@@ -18,6 +18,8 @@ docs/superpowers/
 config/*.bak
 config/tenant-sits.json
 config/last-classifier-upload.json
+# Per-tenant config directories are local-only (like tenant-fingerprints.json)
+config/tenants/
 research/
 backups/
 changepacks/
