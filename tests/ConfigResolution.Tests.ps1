@@ -90,3 +90,26 @@ Describe 'New-TenantConfig.ps1' {
         Remove-Item $root -Recurse -Force
     }
 }
+
+Describe 'Seeded tenant resolves to tenant config' {
+    It 'New-TenantConfig + Get-EffectiveConfigDir round-trips' {
+        $root = New-TempRoot
+        $cfg = Join-Path $root 'config'
+        foreach ($f in @('classifiers.json','policies.json','labels.json','tier-assignments.json','rule-overrides.json','tenant-sits.json')) {
+            '{}' | Set-Content -LiteralPath (Join-Path $cfg $f) -Encoding UTF8
+        }
+        $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts' 'New-TenantConfig.ps1'
+        & $script -ProjectRoot $root -Environment 'ecq' | Out-Null
+
+        # Tenant-specific edit
+        '{"namingPrefix":"ECQ"}' | Set-Content -LiteralPath (Join-Path $cfg 'tenants/ecq/settings.json') -Encoding UTF8
+
+        $dir = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'ecq'
+        $dir | Should -Be (Join-Path $cfg 'tenants/ecq')
+        (Get-Content -Raw (Join-Path $dir 'settings.json') | ConvertFrom-Json).namingPrefix | Should -Be 'ECQ'
+
+        # A different env with no tenant dir still resolves to global
+        (Get-EffectiveConfigDir -ProjectRoot $root -Environment 'qfd') | Should -Be $cfg
+        Remove-Item $root -Recurse -Force
+    }
+}
