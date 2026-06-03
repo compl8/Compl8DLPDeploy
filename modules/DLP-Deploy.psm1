@@ -3150,6 +3150,51 @@ function Set-JsonValue {
     $cur | Add-Member -NotePropertyName $parts[-1] -NotePropertyValue $Value -Force
     return $InputObject
 }
+
+function Set-ConfigValue {
+    <#
+    .SYNOPSIS
+        Reads <ConfigDir>/<File>, sets the dotted Path to Value, writes it back as
+        pretty JSON. Creates the file as an empty object if missing.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ConfigDir,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$Path,
+        $Value
+    )
+    $fp = Join-Path $ConfigDir $File
+    $obj = if (Test-Path -LiteralPath $fp -PathType Leaf) {
+        Get-Content -Raw -LiteralPath $fp | ConvertFrom-Json
+    } else { [pscustomobject]@{} }
+    $obj = Set-JsonValue -InputObject $obj -Path $Path -Value $Value
+    ($obj | ConvertTo-Json -Depth 25) | Set-Content -LiteralPath $fp -Encoding UTF8
+    return $fp
+}
+
+function Copy-GlobalConfigToTenant {
+    <#
+    .SYNOPSIS
+        Pulls a single global config file into config/tenants/<env> (overwrite).
+        The tenant dir must already exist (seed it with New-TenantConfig first).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$Environment,
+        [Parameter(Mandatory)][string]$File
+    )
+    $globalDir = Join-Path $ProjectRoot 'config'
+    $tenantDir = Join-Path (Join-Path $globalDir 'tenants') $Environment
+    if (-not (Test-Path -LiteralPath $tenantDir -PathType Container)) {
+        throw "Tenant config not found: $tenantDir. Seed it first with scripts/New-TenantConfig.ps1 -Environment $Environment."
+    }
+    $src = Join-Path $globalDir $File
+    if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
+        throw "Global config file not found: $src"
+    }
+    Copy-Item -LiteralPath $src -Destination (Join-Path $tenantDir $File) -Force
+    return (Join-Path $tenantDir $File)
+}
 #endregion
 
 #region Classifier Helpers
@@ -3794,5 +3839,7 @@ Export-ModuleMember -Function @(
     'Compare-TenantConfigSkew'
     'ConvertTo-ConfigValue'
     'Set-JsonValue'
+    'Set-ConfigValue'
+    'Copy-GlobalConfigToTenant'
 )
 
