@@ -474,8 +474,13 @@ function Invoke-TestPatternDriftDecision {
         Write-Host "  !! TESTPATTERN DRIFT DETECTED !!" -ForegroundColor Red
         Write-Host "  The live TestPattern catalogue or bundle output differs from the local expectations." -ForegroundColor Yellow
         Write-Host "  Choose how to proceed:" -ForegroundColor White
-        Write-Host "    A. Update from TestPattern" -ForegroundColor Green
-        Write-Host "    B. Continue with current local content" -ForegroundColor Yellow
+        Write-Host "    A. Update from TestPattern " -NoNewline -ForegroundColor Green
+        Write-Host "[regenerates local files]" -ForegroundColor DarkGray
+        Write-Host "       Pull the latest catalogue/bundle into local config + XML," -ForegroundColor DarkGray
+        Write-Host "       then re-check. Review the git diff before deploying." -ForegroundColor DarkGray
+        Write-Host "    B. Continue with current local content " -NoNewline -ForegroundColor Yellow
+        Write-Host "[ignores drift]" -ForegroundColor DarkGray
+        Write-Host "       Proceed using what's on disk now, accepting the difference." -ForegroundColor DarkGray
         Write-Host "    C. Exit this workflow" -ForegroundColor Red
 
         while ($true) {
@@ -624,16 +629,29 @@ function Invoke-DeployClassifiers {
 
     Write-Host ""
     Write-Host "  --- Deploy Classifiers ---" -ForegroundColor Cyan
-    Write-Host "    1. Guided tenant impact manager" -ForegroundColor White
-    Write-Host "    2. Generate refit plan" -ForegroundColor Green
-    Write-Host "    3. Apply refit plan (WhatIf)" -ForegroundColor Green
-    Write-Host "    4. Direct upload to confirmed greenfield tenant" -ForegroundColor Yellow
-    Write-Host "    5. Validate local XML only" -ForegroundColor White
+    Write-Host "    1. Guided deploy " -NoNewline -ForegroundColor White
+    Write-Host "[writes to tenant]" -ForegroundColor Red
+    Write-Host "       Compare -> backup -> prompt -> upload. Safest path when the" -ForegroundColor DarkGray
+    Write-Host "       tenant may already have custom packages." -ForegroundColor DarkGray
+    Write-Host "    2. Generate refit plan " -NoNewline -ForegroundColor Green
+    Write-Host "[read-only]" -ForegroundColor DarkGray
+    Write-Host "       Plan how your packages fit into EXISTING tenant packages." -ForegroundColor DarkGray
+    Write-Host "       Writes a plan file; deploys nothing." -ForegroundColor DarkGray
+    Write-Host "    3. Apply refit plan " -NoNewline -ForegroundColor Green
+    Write-Host "[WhatIf preview]" -ForegroundColor DarkGray
+    Write-Host "       Preview applying a plan from option 2. Makes no changes." -ForegroundColor DarkGray
+    Write-Host "    4. Direct upload " -NoNewline -ForegroundColor Yellow
+    Write-Host "[writes to tenant]" -ForegroundColor Red
+    Write-Host "       GREENFIELD/empty tenants only -- no merge logic. Refuses" -ForegroundColor DarkGray
+    Write-Host "       unless you confirm the tenant is empty." -ForegroundColor DarkGray
+    Write-Host "    5. Validate local XML " -NoNewline -ForegroundColor White
+    Write-Host "[offline]" -ForegroundColor DarkGray
+    Write-Host "       Structural check of local XML. No tenant connection." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Select: " -NoNewline
     $operation = (Read-Host).Trim()
 
-    Write-Host "  Tier [narrow/wide/full] (Enter = all tiers): " -NoNewline
+    Write-Host "  Tier [small/medium/large] (Enter = all tiers): " -NoNewline
     $tier = (Read-Host).Trim().ToLower()
     $commonArgs = @(Get-CommonDeploymentArgs)
     if ($operation -in @("1", "2", "3", "4") -and (Read-YesNo "Check live TestPattern drift before using classifier content?" -Default $true)) {
@@ -643,13 +661,13 @@ function Invoke-DeployClassifiers {
     switch ($operation) {
         "1" {
             $params = @("-Action", "Interactive") + $commonArgs
-            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            if ($tier -in @("small", "medium", "large")) { $params += @("-Tier", $tier) }
             Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
             return
         }
         "2" {
             $params = @("-Action", "RefitPlan") + $commonArgs
-            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            if ($tier -in @("small", "medium", "large")) { $params += @("-Tier", $tier) }
             Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
             Show-RefitPlanEvidence -PlanPath (Get-LatestRefitPlanPath)
             return
@@ -674,7 +692,7 @@ function Invoke-DeployClassifiers {
             }
             $skip = Read-YesNo "Skip pre-flight checks?"
             $params = @("-Action", "Upload", "-Greenfield") + $commonArgs
-            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            if ($tier -in @("small", "medium", "large")) { $params += @("-Tier", $tier) }
             if ($dryRun)  { $params += "-WhatIf" }
             if ($skip)    { $params += "-SkipPreFlight" }
             Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
@@ -682,7 +700,7 @@ function Invoke-DeployClassifiers {
         }
         "5" {
             $params = @("-Action", "Validate")
-            if ($tier -in @("narrow", "wide", "full", "small", "medium", "large")) { $params += @("-Tier", $tier) }
+            if ($tier -in @("small", "medium", "large")) { $params += @("-Tier", $tier) }
             Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $params
             return
         }
@@ -719,8 +737,13 @@ function Invoke-ChangePack {
 
     Write-Host ""
     Write-Host "  --- Batch Operations ---" -ForegroundColor Cyan
-    Write-Host "    1. Generate change pack (diff tenant vs config)" -ForegroundColor Cyan
-    Write-Host "    2. Apply change pack (from CSV)" -ForegroundColor Cyan
+    Write-Host "    1. Generate change pack " -NoNewline -ForegroundColor Cyan
+    Write-Host "[read-only]" -ForegroundColor DarkGray
+    Write-Host "       Diff tenant vs local config; writes a CSV of the changes." -ForegroundColor DarkGray
+    Write-Host "       No tenant changes -- review the CSV before applying." -ForegroundColor DarkGray
+    Write-Host "    2. Apply change pack " -NoNewline -ForegroundColor Cyan
+    Write-Host "[writes to tenant]" -ForegroundColor Red
+    Write-Host "       Apply the edits from a change-pack CSV back to the tenant." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Select: " -NoNewline
     $subChoice = (Read-Host).Trim()
