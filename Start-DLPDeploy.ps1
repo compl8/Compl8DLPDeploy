@@ -120,6 +120,7 @@ function Show-Menu {
     Write-BoxLine -Text (Fmt-Row " [10] Remove SIT Packages" "") -InnerWidth $w -Color Cyan
     Write-BoxSeparator -InnerWidth $w -Color Cyan
     Write-BoxLine -Text " [S]  Config skew (tenant vs global)" -InnerWidth $w -Color Cyan
+    Write-BoxLine -Text " [E]  Edit config (global / tenant)" -InnerWidth $w -Color Cyan
     Write-BoxLine -Text " [12] TestPattern drift check / update" -InnerWidth $w -Color Yellow
     Write-BoxLine -Text " [R]  Customer rollout wizard (full: drift -> readiness -> cleanup -> labels -> classifiers -> rules)" -InnerWidth $w -Color Green
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
@@ -2072,6 +2073,65 @@ function Invoke-ConfigSkewReport {
     Invoke-ToolkitScript -ScriptName "Test-ConfigSkew.ps1" -ArgumentList @("-Environment", $env, "-NoExit")
 }
 
+function Invoke-ConfigEdit {
+    Write-Host ""
+    Write-Host "  --- Edit Config (global / tenant) ---" -ForegroundColor Cyan
+    Write-Host "    1. Set a value" -ForegroundColor White
+    Write-Host "    2. Pull a global file into a tenant" -ForegroundColor White
+    Write-Host "  Select: " -NoNewline
+    $choice = (Read-Host).Trim()
+
+    $scopedFiles = @('classifiers.json','policies.json','labels.json','tier-assignments.json','rule-overrides.json','tenant-sits.json','settings.json')
+
+    if ($choice -eq '1') {
+        Write-Host "  Config file [$($scopedFiles -join ', ')]: " -NoNewline
+        $file = (Read-Host).Trim()
+        if ($file -notin $scopedFiles) { Write-Host "  Not a scoped config file." -ForegroundColor Red; return }
+        $keyPath = Read-OptionalValue -Prompt "Key path (dotted, e.g. namingPrefix or SENS_X.tier)" -Current ''
+        if (-not $keyPath) { Write-Host "  No key path." -ForegroundColor Yellow; return }
+        $rawVal = Read-OptionalValue -Prompt "New value (number/true/false/null/JSON/text)" -Current ''
+        $value = ConvertTo-ConfigValue -Raw $rawVal
+
+        Write-Host "  Apply to: (G)lobal or (T)enant? " -NoNewline
+        $scope = (Read-Host).Trim().ToUpper()
+        if ($scope -eq 'G') {
+            $dir = Join-Path $ProjectRoot 'config'
+            $written = Set-ConfigValue -ConfigDir $dir -File $file -Path $keyPath -Value $value
+            Write-Host "  Wrote GLOBAL: $written" -ForegroundColor Green
+        } elseif ($scope -eq 'T') {
+            $env = Read-OptionalValue -Prompt "Tenant environment key" -Current $script:TargetEnvironment
+            if (-not $env) { Write-Host "  No environment." -ForegroundColor Yellow; return }
+            $tenantDir = Join-Path (Join-Path $ProjectRoot 'config/tenants') $env
+            if (-not (Test-Path -LiteralPath $tenantDir -PathType Container)) {
+                if (-not (Read-YesNo "Tenant '$env' has no config yet. Seed a full copy from global now?" -Default $true)) { return }
+                Invoke-ToolkitScript -ScriptName "New-TenantConfig.ps1" -ArgumentList @("-Environment", $env)
+            }
+            $written = Set-ConfigValue -ConfigDir $tenantDir -File $file -Path $keyPath -Value $value
+            Write-Host "  Wrote TENANT '$env': $written" -ForegroundColor Green
+        } else {
+            Write-Host "  Cancelled." -ForegroundColor Yellow
+        }
+        return
+    }
+
+    if ($choice -eq '2') {
+        $env = Read-OptionalValue -Prompt "Tenant environment key" -Current $script:TargetEnvironment
+        if (-not $env) { Write-Host "  No environment." -ForegroundColor Yellow; return }
+        Write-Host "  Global file to pull [$($scopedFiles -join ', ')]: " -NoNewline
+        $file = (Read-Host).Trim()
+        if ($file -notin $scopedFiles) { Write-Host "  Not a scoped config file." -ForegroundColor Red; return }
+        try {
+            $written = Copy-GlobalConfigToTenant -ProjectRoot $ProjectRoot -Environment $env -File $file
+            Write-Host "  Pulled global -> $written" -ForegroundColor Green
+        } catch {
+            Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+        }
+        return
+    }
+
+    Write-Host "  Invalid selection." -ForegroundColor Yellow
+}
+
 #endregion
 
 #region Main Loop
@@ -2099,6 +2159,7 @@ while ($true) {
         "11" { Invoke-ValidateXML; Pause-AfterRun }
         "12" { Invoke-TestPatternDriftMenu; Pause-AfterRun }
         "S"  { Invoke-ConfigSkewReport; Pause-AfterRun }
+        "E"  { Invoke-ConfigEdit; Pause-AfterRun }
         "R"  { Invoke-CustomerRolloutWizard ([ref]$isConnected); Pause-AfterRun }
         "Q"  { Write-Host "  Bye." -ForegroundColor Gray; exit 0 }
         default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 1 }
