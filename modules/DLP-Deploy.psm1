@@ -2982,6 +2982,43 @@ function Test-DeploymentTenantFingerprint {
 }
 #endregion
 
+#region Config Resolution
+function Get-EffectiveConfigDir {
+    <#
+    .SYNOPSIS
+        Returns the effective config directory for an environment: the per-tenant
+        directory config/tenants/<env> when it exists, otherwise the global config/.
+        Empty/whitespace environment -> global. Zero-regression default.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$Environment
+    )
+    $globalDir = Join-Path $ProjectRoot 'config'
+    if ([string]::IsNullOrWhiteSpace($Environment)) { return $globalDir }
+    $tenantDir = Join-Path (Join-Path $globalDir 'tenants') $Environment
+    if (Test-Path -LiteralPath $tenantDir -PathType Container) { return $tenantDir }
+    return $globalDir
+}
+
+function Resolve-ConfigFile {
+    <#
+    .SYNOPSIS
+        Returns the path to a named config file for an environment, preferring the
+        tenant copy and falling back to the global file per-file.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$Environment,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $effective = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $Environment
+    $candidate = Join-Path $effective $Name
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    return (Join-Path (Join-Path $ProjectRoot 'config') $Name)
+}
+#endregion
+
 #region Classifier Helpers
 function Split-ClassifierChunks {
     <#
@@ -3618,5 +3655,7 @@ Export-ModuleMember -Function @(
     'Get-DlpDictionaryInventory'
     'ConvertFrom-DlpDictionaryTermProperty'
     'Assert-PackageDictionaryReferencesExist'
+    'Get-EffectiveConfigDir'
+    'Resolve-ConfigFile'
 )
 
