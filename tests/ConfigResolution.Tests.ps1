@@ -57,3 +57,36 @@ Describe 'Resolve-ConfigFile' {
         Remove-Item $root -Recurse -Force
     }
 }
+
+Describe 'New-TenantConfig.ps1' {
+    BeforeAll {
+        $script:NewTenantScript = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts' 'New-TenantConfig.ps1'
+    }
+
+    It 'seeds a full copy of the scoped global files' {
+        $root = New-TempRoot
+        $cfg = Join-Path $root 'config'
+        foreach ($f in @('classifiers.json','policies.json','labels.json','tier-assignments.json','rule-overrides.json','tenant-sits.json')) {
+            '{}' | Set-Content -LiteralPath (Join-Path $cfg $f) -Encoding UTF8
+        }
+        '{}' | Set-Content -LiteralPath (Join-Path $cfg 'tenant-fingerprints.json') -Encoding UTF8
+        '{}' | Set-Content -LiteralPath (Join-Path $cfg 'last-classifier-upload.json') -Encoding UTF8
+
+        & $script:NewTenantScript -ProjectRoot $root -Environment 'ecq' | Out-Null
+
+        $tenant = Join-Path $cfg 'tenants/ecq'
+        (Test-Path (Join-Path $tenant 'classifiers.json')) | Should -BeTrue
+        (Test-Path (Join-Path $tenant 'settings.json'))    | Should -BeTrue
+        (Test-Path (Join-Path $tenant 'tenant-fingerprints.json'))   | Should -BeFalse
+        (Test-Path (Join-Path $tenant 'last-classifier-upload.json')) | Should -BeFalse
+        Remove-Item $root -Recurse -Force
+    }
+
+    It 'refuses to overwrite an existing tenant dir without -Force' {
+        $root = New-TempRoot
+        $tenant = Join-Path $root 'config/tenants/ecq'
+        New-Item -ItemType Directory -Path $tenant -Force | Out-Null
+        { & $script:NewTenantScript -ProjectRoot $root -Environment 'ecq' -ErrorAction Stop } | Should -Throw
+        Remove-Item $root -Recurse -Force
+    }
+}
