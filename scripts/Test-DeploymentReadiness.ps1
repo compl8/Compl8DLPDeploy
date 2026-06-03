@@ -33,6 +33,8 @@ $ModulePath = Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1"
 Import-Module $ModulePath -Force
 
 $ConfigPath = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
+# Non-scoped config (the legacy package registry) is always global -- never per-tenant.
+$GlobalConfigPath = Join-Path $ProjectRoot "config"
 $XmlDir = Join-Path $ProjectRoot "xml"
 $DeployDir = Join-Path $XmlDir "deploy"
 
@@ -702,7 +704,7 @@ $labelsJson = Read-JsonFile -Path (Join-Path $ConfigPath "labels.json") -Descrip
 $policiesJson = Read-JsonFile -Path (Join-Path $ConfigPath "policies.json") -Description "policy definitions" -Required
 $classifiersJson = Read-JsonFile -Path (Join-Path $ConfigPath "classifiers.json") -Description "classifier definitions" -Required
 $deployRegistryPath = Join-Path $DeployDir "deploy-registry.json"
-$legacyRegistryPath = Join-Path $ConfigPath "classifiers-registry.json"
+$legacyRegistryPath = Join-Path $GlobalConfigPath "classifiers-registry.json"
 $registryPath = if (Test-Path -LiteralPath $deployRegistryPath) { $deployRegistryPath } else { $legacyRegistryPath }
 $registryJson = Read-JsonFile -Path $registryPath -Description "package registry" -Required
 $overridesJson = Read-JsonFile -Path (Join-Path $ConfigPath "rule-overrides.json") -Description "rule overrides" -Required

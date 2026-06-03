@@ -89,6 +89,9 @@ if ($DeploymentSessionPath) {
 Import-Module (Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1") -Force
 
 $ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment }
+# Non-scoped config (legacy package registry, fingerprint registry, state) is always
+# global -- never per-tenant. Use $GlobalConfigPath for those, not the resolved $ConfigPath.
+$GlobalConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Join-Path $ProjectRoot "config" }
 $XmlDir     = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/xml' }    else { Join-Path $ProjectRoot "xml" }
 $script:DeploymentSessionStartedAt = (Get-Date).ToString('o')
 $BackupDir   = Join-Path (Join-Path $ProjectRoot "backups") "classifiers"
@@ -104,7 +107,7 @@ $Config    = Set-DeploymentConfigPrefix -Config $Config -Prefix $Prefix
 # the older registry shape is still accepted for migrated repos.
 $DeployDir = Join-Path $XmlDir "deploy"
 $deployRegistryPath = Join-Path $DeployDir "deploy-registry.json"
-$legacyRegistryPath = Join-Path $ConfigPath "classifiers-registry.json"
+$legacyRegistryPath = Join-Path $GlobalConfigPath "classifiers-registry.json"
 $registryPath = if (Test-Path -LiteralPath $deployRegistryPath) { $deployRegistryPath } else { $legacyRegistryPath }
 $registryDescription = if ($registryPath -eq $deployRegistryPath) { "deploy registry" } else { "classifier registry" }
 $registryJson = Import-JsonConfig -FilePath $registryPath -Description $registryDescription
@@ -4789,8 +4792,16 @@ $script:DeploymentManifest = if ($Action -ne "Validate") {
     $null
 }
 if ($script:DeploymentManifest) {
-    foreach ($artifact in @("settings.json", "classifiers-registry.json", "classifiers.json", "labels.json", "policies.json", "tenant-fingerprints.json")) {
+    # Scoped config snapshot comes from the resolved (possibly per-tenant) dir...
+    foreach ($artifact in @("settings.json", "classifiers.json", "labels.json", "policies.json")) {
         $path = Join-Path $ConfigPath $artifact
+        if (Test-Path -LiteralPath $path) {
+            $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $path -Role "config" -ProjectRoot $ProjectRoot
+        }
+    }
+    # ...non-scoped config (legacy registry, fingerprint registry) is always global.
+    foreach ($artifact in @("classifiers-registry.json", "tenant-fingerprints.json")) {
+        $path = Join-Path $GlobalConfigPath $artifact
         if (Test-Path -LiteralPath $path) {
             $script:DeploymentManifest.artifacts += Get-DeploymentFileArtifact -Path $path -Role "config" -ProjectRoot $ProjectRoot
         }
