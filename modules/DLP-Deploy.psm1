@@ -3017,6 +3017,50 @@ function Resolve-ConfigFile {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     return (Join-Path (Join-Path $ProjectRoot 'config') $Name)
 }
+
+function Compare-JsonStructure {
+    <#
+    .SYNOPSIS
+        Recursively compares two parsed-JSON values (Left=global, Right=tenant).
+        Returns an array of [pscustomobject]@{ path; kind; global; tenant } where
+        kind is 'added' (present in tenant, not global), 'removed' (present in
+        global, not tenant), or 'changed' (scalar/array value differs). Objects
+        recurse by key; arrays and scalars are compared by normalized JSON.
+    #>
+    param($Left, $Right, [string]$Path = '')
+
+    $diffs = [System.Collections.Generic.List[object]]::new()
+    $leftIsObj  = $Left  -is [System.Management.Automation.PSCustomObject]
+    $rightIsObj = $Right -is [System.Management.Automation.PSCustomObject]
+
+    if ($leftIsObj -and $rightIsObj) {
+        $leftKeys  = @($Left.PSObject.Properties.Name)
+        $rightKeys = @($Right.PSObject.Properties.Name)
+        $allKeys   = @($leftKeys + $rightKeys | Select-Object -Unique)
+        foreach ($k in $allKeys) {
+            $childPath = if ($Path) { "$Path.$k" } else { $k }
+            $inLeft  = $leftKeys  -contains $k
+            $inRight = $rightKeys -contains $k
+            if ($inLeft -and -not $inRight) {
+                $diffs.Add([pscustomobject]@{ path = $childPath; kind = 'removed'; global = $Left.$k; tenant = $null })
+            } elseif ($inRight -and -not $inLeft) {
+                $diffs.Add([pscustomobject]@{ path = $childPath; kind = 'added'; global = $null; tenant = $Right.$k })
+            } else {
+                foreach ($child in @(Compare-JsonStructure -Left $Left.$k -Right $Right.$k -Path $childPath)) {
+                    $diffs.Add($child)
+                }
+            }
+        }
+        return $diffs.ToArray()
+    }
+
+    $ljson = $Left  | ConvertTo-Json -Depth 25 -Compress
+    $rjson = $Right | ConvertTo-Json -Depth 25 -Compress
+    if ($ljson -ne $rjson) {
+        $diffs.Add([pscustomobject]@{ path = $Path; kind = 'changed'; global = $Left; tenant = $Right })
+    }
+    return $diffs.ToArray()
+}
 #endregion
 
 #region Classifier Helpers
@@ -3657,5 +3701,6 @@ Export-ModuleMember -Function @(
     'Assert-PackageDictionaryReferencesExist'
     'Get-EffectiveConfigDir'
     'Resolve-ConfigFile'
+    'Compare-JsonStructure'
 )
 
