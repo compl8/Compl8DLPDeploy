@@ -28,11 +28,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$ConfigPath = Join-Path $ProjectRoot "config"
+# Non-scoped state (last-classifier-upload.json) is always global; scoped config
+# (settings, namingPrefix) resolves per-tenant below, after the module is loaded.
+$GlobalConfigPath = Join-Path $ProjectRoot "config"
 $DeployDir = Join-Path $ProjectRoot "xml" "deploy"
 
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
+$ConfigPath = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
 $Defaults = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
@@ -159,7 +162,7 @@ if (-not $xmlFiles -or $xmlFiles.Count -eq 0) {
     & (Join-Path $PSScriptRoot "Deploy-Classifiers.ps1") @classifierArgs
 
     if (-not $WhatIf) {
-        @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $xmlFiles.Count } | ConvertTo-Json | Out-File (Join-Path $ConfigPath "last-classifier-upload.json") -Encoding utf8
+        @{ timestamp = (Get-Date).ToUniversalTime().ToString("o"); packages = $xmlFiles.Count } | ConvertTo-Json | Out-File (Join-Path $GlobalConfigPath "last-classifier-upload.json") -Encoding utf8
     }
 }
 Write-Host ""

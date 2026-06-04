@@ -942,6 +942,10 @@ function Invoke-ChangePack {
         if (-not (Invoke-TestPatternDriftDecision)) { return }
     }
 
+    # Pick the tenant config context so the change pack diffs/applies against the
+    # same per-tenant config the deploy scripts use (not silently global).
+    if ($subChoice -in @("1", "2")) { Select-TargetEnvironment }
+
     switch ($subChoice) {
         "1" {
             # Generate change pack
@@ -957,6 +961,7 @@ function Invoke-ChangePack {
 
             $params = @("-Components", $compParam)
             if ($dryRun) { $params += "-WhatIf" }
+            if ($script:TargetEnvironment) { $params += @("-TargetEnvironment", $script:TargetEnvironment) }
 
             Invoke-ToolkitScript -ScriptName "Generate-ChangePack.ps1" -ArgumentList $params
         }
@@ -995,6 +1000,7 @@ function Invoke-ChangePack {
 
             $params = @("-CsvPath", $csvPath)
             if ($dryRun) { $params += "-WhatIf" }
+            if ($script:TargetEnvironment) { $params += @("-TargetEnvironment", $script:TargetEnvironment) }
 
             Invoke-ToolkitScript -ScriptName "Invoke-ChangePack.ps1" -ArgumentList $params
         }

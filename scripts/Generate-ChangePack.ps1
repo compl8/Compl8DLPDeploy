@@ -19,14 +19,19 @@ param(
     [string[]]$Components = @("All"),
     [string]$OutputPath,
     [switch]$Connect,
-    [string]$UPN
+    [string]$UPN,
+    [string]$TargetEnvironment
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$ConfigPath  = Join-Path $ProjectRoot "config"
+# Non-scoped config (the legacy package registry) is always global; scoped config
+# (settings/labels/classifiers/policies) resolves per-tenant below.
+$GlobalConfigPath = Join-Path $ProjectRoot "config"
 $XmlDir      = Join-Path $ProjectRoot "xml"
 
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
+
+$ConfigPath  = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
 
 $ErrorActionPreference = "Stop"
 
@@ -80,7 +85,7 @@ if ($doRules) {
 $registryJson = $null
 if ($doClassifiers) {
     $deployRegistryPath = Join-Path (Join-Path $XmlDir "deploy") "deploy-registry.json"
-    $legacyRegistryPath = Join-Path $ConfigPath "classifiers-registry.json"
+    $legacyRegistryPath = Join-Path $GlobalConfigPath "classifiers-registry.json"
     $registryPath = if (Test-Path -LiteralPath $deployRegistryPath) { $deployRegistryPath } else { $legacyRegistryPath }
     $registryJson = Import-JsonConfig -FilePath $registryPath -Description "classifier registry"
 }

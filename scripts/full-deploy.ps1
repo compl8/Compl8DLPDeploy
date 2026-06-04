@@ -45,7 +45,10 @@ $ProjectRoot = Split-Path $PSScriptRoot -Parent
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
 # ── Load Config ───────────────────────────────────────────────────────────────
-$ConfigPath  = Join-Path $ProjectRoot "config"
+# Scoped config (settings, namingPrefix) resolves per-tenant so the orchestrator's
+# prefix/dictionary/cleanup decisions match the per-tenant child deploys. Non-scoped
+# state (last-classifier-upload.json) is written to the global config dir directly.
+$ConfigPath  = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
 $Defaults    = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
 $Config      = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $settingsJson
