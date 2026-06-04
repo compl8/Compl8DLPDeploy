@@ -24,13 +24,15 @@ param(
     [string]$TargetEnvironment,
     [string]$Prefix,
     [switch]$RegisterFingerprint,
-    [string]$DeploymentSessionPath
+    [string]$DeploymentSessionPath,
+    [switch]$AllowDirectRun
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
 # Import shared modules
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
+Assert-OrchestrationGate -ScriptName 'Deploy-DLPRules.ps1' -AllowDirectRun:$AllowDirectRun -SessionPath $DeploymentSessionPath
 
 $script:DeploymentSession = $null
 if ($DeploymentSessionPath) {

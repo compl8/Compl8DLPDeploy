@@ -35,6 +35,11 @@ $DeployDir = Join-Path $ProjectRoot "xml" "deploy"
 
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
+# This process is the orchestrator: it runs the drift / config-skew gates itself, so
+# child leaf scripts (Deploy-Labels/Classifiers/DLPRules) invoked via & below must not
+# re-trip Assert-OrchestrationGate. Same-process & inherits this env var.
+$env:COMPL8_ORCHESTRATED = '1'
+
 $ConfigPath = Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment
 $Defaults = Get-ModuleDefaults
 $settingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"

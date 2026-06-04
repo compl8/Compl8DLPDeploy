@@ -58,7 +58,9 @@ Invoke-Check -Name "TestPattern drift fixtures" -ScriptBlock {
 }
 
 Invoke-Check -Name "Classifier XML validation" -ScriptBlock {
-    & (Join-Path $ProjectRoot "scripts\Deploy-Classifiers.ps1") -Action Validate
+    # Offline validation with no orchestrator: acknowledge the direct run so the
+    # orchestration gate doesn't abort CI (Validate does not mutate the tenant).
+    & (Join-Path $ProjectRoot "scripts\Deploy-Classifiers.ps1") -Action Validate -AllowDirectRun
 }
 
 if (-not $SkipPester) {

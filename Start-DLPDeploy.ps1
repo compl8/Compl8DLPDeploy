@@ -22,6 +22,11 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 # Import shared module for connection helpers
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
 
+# The interactive console is the orchestrator for everything it launches: leaf scripts
+# invoked via Invoke-ToolkitScript (same-process &) must not re-trip the orchestration
+# gate. This flag scopes to the console process and its children.
+$env:COMPL8_ORCHESTRATED = '1'
+
 # Load config for naming prefix
 $_Defaults     = Get-ModuleDefaults
 $_SettingsJson = Import-JsonConfig -FilePath (Join-Path $ConfigPath "settings.json") -Description "deployment settings"
