@@ -29,8 +29,7 @@ param(
     [string]$DlpPolicy,
 
     [switch]$Connect,
-    [string]$UPN,
-    [switch]$AllowDirectRun
+    [string]$UPN
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,7 +37,6 @@ $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
 # Import shared module
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
-Assert-OrchestrationGate -ScriptName 'Remove-OrphanedPolicies.ps1' -AllowDirectRun:$AllowDirectRun -SessionPath $null
 
 $Defaults = Get-ModuleDefaults
 $interCallDelaySec = $Defaults.interCallDelaySec

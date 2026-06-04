@@ -26,8 +26,7 @@ param(
     [switch]$Delegated,
     [string]$TargetEnvironment,
     [string]$Prefix,
-    [switch]$RegisterFingerprint,
-    [switch]$AllowDirectRun
+    [switch]$RegisterFingerprint
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -35,7 +34,6 @@ $ConfigPath  = Join-Path $ProjectRoot "config"
 
 # Import shared module
 Import-Module (Join-Path $ProjectRoot "modules" "DLP-Deploy.psm1") -Force
-Assert-OrchestrationGate -ScriptName 'Deploy-AutoLabeling.ps1' -AllowDirectRun:$AllowDirectRun -SessionPath $null
 
 $ErrorActionPreference = "Stop"
 

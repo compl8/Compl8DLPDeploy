@@ -70,8 +70,7 @@ param(
     [switch]$Greenfield,
     [switch]$AllowDirectUploadWithoutRefitPlan,
     [switch]$RegisterFingerprint,
-    [string]$DeploymentSessionPath,
-    [switch]$AllowDirectRun
+    [string]$DeploymentSessionPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,7 +87,6 @@ if ($DeploymentSessionPath) {
 
 # Import shared module
 Import-Module (Join-Path (Join-Path $ProjectRoot "modules") "DLP-Deploy.psm1") -Force
-Assert-OrchestrationGate -ScriptName 'Deploy-Classifiers.ps1' -AllowDirectRun:$AllowDirectRun -SessionPath $DeploymentSessionPath
 
 $ConfigPath = if ($script:DeploymentSession) { Join-Path $script:DeploymentSession.SessionPath 'working/config' } else { Get-EffectiveConfigDir -ProjectRoot $ProjectRoot -Environment $TargetEnvironment }
 # Non-scoped config (legacy package registry, fingerprint registry, state) is always

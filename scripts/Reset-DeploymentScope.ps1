@@ -35,8 +35,7 @@ param(
     [switch]$Force,
     [switch]$RegisterFingerprint,
     [switch]$AllowBreakingExternalClassifierReferences,
-    [int]$InterCallDelaySec = -1,
-    [switch]$AllowDirectRun
+    [int]$InterCallDelaySec = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,7 +54,6 @@ if (-not $ClassifierRegistryPath) {
 }
 
 Import-Module (Join-Path $ProjectRoot "modules\DLP-Deploy.psm1") -Force
-Assert-OrchestrationGate -ScriptName 'Reset-DeploymentScope.ps1' -AllowDirectRun:$AllowDirectRun -SessionPath $null
 
 function Connect-DeploymentResetSession {
     try {
