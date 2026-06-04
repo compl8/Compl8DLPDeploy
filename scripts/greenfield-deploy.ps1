@@ -134,6 +134,7 @@ Write-Host "=== Phase 2: Labels ===" -ForegroundColor Cyan
 $labelArgs = @{ PublishTo = $PublishTo }
 if ($Prefix) { $labelArgs["Prefix"] = $Prefix }
 if ($WhatIf) { $labelArgs["WhatIf"] = $true }
+if ($TargetEnvironment) { $labelArgs["TargetEnvironment"] = $TargetEnvironment }
 & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") @labelArgs
 Write-Host ""
 

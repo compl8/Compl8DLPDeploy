@@ -149,6 +149,7 @@ if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
     $labelArgs = @{ PublishTo = $PublishTo }
     if ($Prefix) { $labelArgs["Prefix"] = $Prefix }
     if ($WhatIf) { $labelArgs["WhatIf"] = $true }
+    if ($TargetEnvironment) { $labelArgs["TargetEnvironment"] = $TargetEnvironment }
     & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") @labelArgs
     Write-Host ""
 }
