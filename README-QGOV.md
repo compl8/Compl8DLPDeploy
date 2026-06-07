@@ -29,7 +29,7 @@ Run all commands from the root directory (where this file is).
 Creates 10 keyword dictionaries on the tenant, including Australian Forenames (10,961 terms) and Australian Surnames (23,065 terms).
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Dictionaries
 ```
 
 ### 2. Deploy SIT classifier packages
@@ -37,7 +37,7 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries
 Uploads all 9 XML packages. If packages already exist on the tenant, they are updated in-place (requires a version bump in the XML).
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Classifiers
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Classifiers
 ```
 
 ### 3. Wait for propagation
@@ -47,7 +47,7 @@ Custom SITs take **4-24 hours** to propagate in Purview's DLP engine. Do not pro
 ### 4. Deploy DLP rules
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase DLPRules
 ```
 
 ### 5. Deploy labels (if needed)
@@ -55,7 +55,7 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase DLPRules
 Only required if sensitivity labels haven't been deployed yet. `-PublishTo` specifies who receives the label policy.
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels -PublishTo "DL-InfoSec@agency.gov.au"
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Labels -PublishTo "DL-InfoSec@agency.gov.au"
 ```
 
 ### All-in-one
@@ -63,7 +63,7 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels -PublishT
 Deploys everything in sequence (labels + dictionaries + classifiers + rules). Requires `-PublishTo`.
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -PublishTo "DL-InfoSec@agency.gov.au"
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -PublishTo "DL-InfoSec@agency.gov.au"
 ```
 
 ### Dry run
@@ -71,7 +71,7 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -PublishTo "DL-InfoSec@
 Append `-WhatIf` to any command to preview changes without modifying the tenant.
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries -WhatIf
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Dictionaries -WhatIf
 ```
 
 ## Cleanup
@@ -79,8 +79,8 @@ pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Dictionaries -Wh
 Remove the deployment from the tenant:
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup              # everything
-pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels   # keep labels
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Cleanup              # everything
+pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Cleanup -SkipLabels   # keep labels
 ```
 
 ## What's Deployed

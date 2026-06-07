@@ -1,7 +1,7 @@
 #Requires -Modules Pester
 
 # Guards the per-tenant config feature end to end at the orchestrator layer:
-# full-deploy.ps1 and greenfield-deploy.ps1 must forward -TargetEnvironment to
+# Invoke-FullDeployment.ps1 and Invoke-GreenfieldDeployment.ps1 must forward -TargetEnvironment to
 # EVERY child deploy phase (Labels, Classifiers, DLPRules). If any phase is
 # skipped, that phase silently resolves global config while the others resolve
 # the per-tenant dir -- a split deployment. (Regression: Labels phase was missing
@@ -45,8 +45,8 @@ BeforeAll {
 
 Describe 'Orchestrator forwards -TargetEnvironment to every deploy phase' {
     $orchestrators = @(
-        @{ Name = 'full-deploy.ps1' }
-        @{ Name = 'greenfield-deploy.ps1' }
+        @{ Name = 'Invoke-FullDeployment.ps1' }
+        @{ Name = 'Invoke-GreenfieldDeployment.ps1' }
     )
 
     It '<Name> splat-invokes all three deploy scripts and forwards TargetEnvironment to each' -ForEach $orchestrators {

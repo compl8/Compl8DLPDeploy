@@ -20,8 +20,8 @@ $GuardedLeafScripts = @(
 )
 
 $OrchestratorScripts = @(
-    'scripts/full-deploy.ps1'
-    'scripts/greenfield-deploy.ps1'
+    'scripts/Invoke-FullDeployment.ps1'
+    'scripts/Invoke-GreenfieldDeployment.ps1'
     'Start-DLPDeploy.ps1'
 )
 

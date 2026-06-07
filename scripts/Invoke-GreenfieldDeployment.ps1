@@ -1,13 +1,13 @@
 #==============================================================================
-# greenfield-deploy.ps1
+# Invoke-GreenfieldDeployment.ps1
 # Clean greenfield deployment: dictionaries, labels, SIT packages, DLP rules.
 # Single session, single command. Wipes existing config first.
 #
 # Usage:
-#   pwsh -File scripts/greenfield-deploy.ps1 -Tenant tenant.onmicrosoft.com -TargetEnvironment tenant-profile
-#   pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com
-#   pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@agency.gov.au -Tier small
-#   pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@agency.gov.au -SkipCleanup
+#   pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -Tenant tenant.onmicrosoft.com -TargetEnvironment tenant-profile
+#   pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -UPN admin@yourtenant.onmicrosoft.com
+#   pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -UPN admin@agency.gov.au -Tier small
+#   pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -UPN admin@agency.gov.au -SkipCleanup
 #==============================================================================
 
 param(

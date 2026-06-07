@@ -20,8 +20,8 @@ $TenantAwareScripts = @(
     'scripts/Deploy-Classifiers.ps1'
     'scripts/Deploy-DLPRules.ps1'
     'scripts/Test-DeploymentReadiness.ps1'
-    'scripts/full-deploy.ps1'
-    'scripts/greenfield-deploy.ps1'
+    'scripts/Invoke-FullDeployment.ps1'
+    'scripts/Invoke-GreenfieldDeployment.ps1'
     'scripts/Generate-ChangePack.ps1'
     'scripts/Invoke-ChangePack.ps1'
 )

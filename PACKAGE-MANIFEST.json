@@ -6,8 +6,8 @@
   "createdDate": "2026-05-21",
   "defaultOutputName": "Compl8DLPDeploy-2026-05-21-refit-rollout.zip",
   "entrypoints": [
-    "scripts/full-deploy.ps1",
-    "scripts/greenfield-deploy.ps1",
+    "scripts/Invoke-FullDeployment.ps1",
+    "scripts/Invoke-GreenfieldDeployment.ps1",
     "scripts/Deploy-Classifiers.ps1",
     "scripts/Deploy-DLPRules.ps1",
     "scripts/Deploy-Labels.ps1",
@@ -111,7 +111,7 @@
     }
   ],
   "customerRollout": {
-    "singleSessionClassifierWhatIf": "pwsh -File scripts/full-deploy.ps1 -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix> -Phase Classifiers -Greenfield -WhatIf",
+    "singleSessionClassifierWhatIf": "pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix> -Phase Classifiers -Greenfield -WhatIf",
     "refitPlan": "pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix>",
     "refitApplyWhatIf": "pwsh -File scripts/Deploy-Classifiers.ps1 -Action ApplyRefitPlan -RefitPlanPath <refit-plan.json> -Connect -Tenant <tenant-domain-or-guid> -TargetEnvironment <tenant-profile> -Prefix <prefix> -WhatIf -ApproveRefitPlan"
   },

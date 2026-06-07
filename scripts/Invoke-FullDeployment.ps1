@@ -1,5 +1,5 @@
 #==============================================================================
-# full-deploy.ps1
+# Invoke-FullDeployment.ps1
 # Orchestrates DLP deployment in phases:
 #   Phase 1:   Labels (immediate)
 #   Phase 1.5: Keyword dictionaries (create-or-update, returns GUID map)
@@ -10,14 +10,14 @@
 # checks whether custom SITs have propagated and warns if too recent.
 #
 # Usage:
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -TargetEnvironment tenant-profile
-#   pwsh -File scripts/full-deploy.ps1 -UPN admin@tenant.com -Phase Labels        # Labels only
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Dictionaries
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Classifiers -TargetEnvironment tenant-profile
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase DLPRules -TargetEnvironment tenant-profile
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -TargetEnvironment tenant-profile
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -SkipLabels  # Teardown, keep labels
-#   pwsh -File scripts/full-deploy.ps1 -Tenant tenant.onmicrosoft.com -SkipLabels  # Nuke & redeploy, keep labels
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -TargetEnvironment tenant-profile
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -UPN admin@tenant.com -Phase Labels        # Labels only
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -Phase Dictionaries
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -Phase Classifiers -TargetEnvironment tenant-profile
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -Phase DLPRules -TargetEnvironment tenant-profile
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -TargetEnvironment tenant-profile
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -Phase Cleanup -SkipLabels  # Teardown, keep labels
+#   pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant tenant.onmicrosoft.com -SkipLabels  # Nuke & redeploy, keep labels
 #==============================================================================
 
 param(
@@ -207,7 +207,7 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
             Write-Host "  Run Phase 3 (DLPRules) separately after propagation:" -ForegroundColor Yellow
             $ruleCommandTarget = if ($Tenant) { "-Tenant $Tenant" } else { "-UPN $UPN" }
             $ruleCommandProfile = if ($TargetEnvironment) { " -TargetEnvironment $TargetEnvironment" } else { "" }
-            Write-Host "    .\scripts\full-deploy.ps1 $ruleCommandTarget -Phase DLPRules$ruleCommandProfile" -ForegroundColor Gray
+            Write-Host "    .\scripts\Invoke-FullDeployment.ps1 $ruleCommandTarget -Phase DLPRules$ruleCommandProfile" -ForegroundColor Gray
             Write-Host ""
 
             # Record upload timestamp for propagation check

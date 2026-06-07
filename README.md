@@ -63,7 +63,7 @@ Both options produce the same `classifiers.json` format consumed by the deployme
   config/classifiers.json + config/labels.json + config/policies.json
          │
          ▼
-  greenfield-deploy.ps1  (or full-deploy.ps1)
+  Invoke-GreenfieldDeployment.ps1  (or Invoke-FullDeployment.ps1)
     Creates keyword dictionaries, deploys          ──► Purview tenant
     labels, uploads packages, creates
     DLP policies and rules
@@ -73,7 +73,7 @@ Both options produce the same `classifiers.json` format consumed by the deployme
 
 This release adds a stricter classifier deployment model:
 
-- Customer rollouts should use `full-deploy.ps1` or `greenfield-deploy.ps1` so one SCC/IPPS connection is reused through the chain.
+- Customer rollouts should use `Invoke-FullDeployment.ps1` or `Invoke-GreenfieldDeployment.ps1` so one SCC/IPPS connection is reused through the chain.
 - Use `-Tenant <domain-or-guid>` plus `-TargetEnvironment <profile-key>` to pin the connected tenant to an expected fingerprint.
 - Use `-Prefix <code>` to override `namingPrefix` and `sitPrefix` for the run without editing `config/settings.json`.
 - Existing tenants with custom non-Microsoft classifier packages are blocked from direct upload unless a reviewed `RefitPlan` is supplied or an explicit greenfield/override switch is used.
@@ -113,7 +113,7 @@ python scripts/Build-FromXLS.py --tier medium
 python scripts/build-deploy-packages.py --tier medium --max-terms 5
 
 # 4. Deploy everything (PublishTo is mandatory — specify a named group or user)
-pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@yourtenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -UPN admin@yourtenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Option B: From Existing Tenant
@@ -134,7 +134,7 @@ python scripts/Build-ClassifierSchema.py --auto
 python scripts/Build-ClassifierSchema.py --apply
 
 # 5. Deploy (PublishTo is mandatory — specify a named group or user)
-pwsh -File scripts/greenfield-deploy.ps1 -UPN admin@target-tenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/Invoke-GreenfieldDeployment.ps1 -UPN admin@target-tenant.onmicrosoft.com -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Phased Deployment
@@ -187,23 +187,23 @@ The TUI wizard (`Start-DLPDeploy.ps1` option `R`) drives steps 2-4 end-to-end wi
 
 ```powershell
 # Phase 1: Labels only (PublishTo required)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Labels -PublishTo "DL-InfoSec@agency.gov"
 
 # Phase 1.5: Keyword dictionaries (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Dictionaries
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Dictionaries
 
 # Phase 2: SIT classifier packages (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Classifiers -Greenfield
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Classifiers -Greenfield
 
 # Phase 3: DLP rules — wait 4-24h after Phase 2 for SIT propagation (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase DLPRules
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase DLPRules
 
 # Cleanup everything (no PublishTo needed)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup -SkipLabels  # keep labels
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -Phase Cleanup -SkipLabels  # keep labels
 
 # Dry run (all phases, PublishTo required)
-pwsh -File scripts/full-deploy.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -WhatIf -PublishTo "DL-InfoSec@agency.gov"
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant customer.gov.au -TargetEnvironment customer-profile -Prefix CUST -WhatIf -PublishTo "DL-InfoSec@agency.gov"
 ```
 
 ### Classifier Safety Workflow
@@ -231,7 +231,7 @@ pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -UPN admin@
 For customer rollouts, prefer a single connected chain so the SCC/IPPS login is only requested once and the same tenant fingerprint is carried through each phase:
 
 ```powershell
-pwsh -File scripts/full-deploy.ps1 -Tenant ecq.qld.gov.au -TargetEnvironment ecq-qld-gov-au -Prefix ECQ -Phase Classifiers -Greenfield -WhatIf
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant ecq.qld.gov.au -TargetEnvironment ecq-qld-gov-au -Prefix ECQ -Phase Classifiers -Greenfield -WhatIf
 ```
 
 If the tenant already has custom classifier packages, do not use `-Greenfield` unless the tenant is confirmed clean for this deployment. Generate a refit plan instead:
@@ -323,8 +323,8 @@ Optionally add a label definition sheet (default name: `QGISCFDLM`) for cross-va
 
 | Script | Purpose |
 |--------|---------|
-| `greenfield-deploy.ps1` | Single-command deployment: dictionaries, labels, packages, rules |
-| `full-deploy.ps1` | Phased deployment with propagation checks and dictionary support |
+| `Invoke-GreenfieldDeployment.ps1` | Single-command deployment: dictionaries, labels, packages, rules |
+| `Invoke-FullDeployment.ps1` | Phased deployment with propagation checks and dictionary support |
 | `Deploy-Labels.ps1` | Deploy sensitivity labels and label policy (requires named `-PublishTo` target; `-ApproveOpenPublish` needed for `"All"`) |
 | `Deploy-DLPRules.ps1` | Deploy DLP policies and rules across workloads (auto-splits >125 SITs) |
 | `Deploy-Classifiers.ps1` | Guided classifier bundle manager with validation, impact, capacity, prune, canary, upload, remove, and rollback actions |
@@ -472,7 +472,7 @@ The manifest currently includes 10 dictionaries, notably:
 
 These are referenced in SIT XML as `{{DICT_AU_FORENAMES}}` and `{{DICT_AU_SURNAMES}}` placeholders, resolved to tenant dictionary GUIDs during the Classifiers phase. Package 08 includes a **Legal Full Name** SIT that uses these dictionaries as corroborative evidence — a tunable alternative to the Microsoft built-in "All Full Names" classifier.
 
-Both `greenfield-deploy.ps1` and `full-deploy.ps1` automatically:
+Both `Invoke-GreenfieldDeployment.ps1` and `Invoke-FullDeployment.ps1` automatically:
 1. Fetch the dictionary manifest from testpattern.dev
 2. Create or update keyword dictionaries in the tenant (idempotent)
 3. Patch `{{DICT_*}}` placeholders in SIT packages with tenant-specific GUIDs
@@ -501,7 +501,7 @@ To deploy for a different classification framework:
 4. Edit `config/policies.json` with your workload and policy settings
 5. Run `python scripts/Build-FromXLS.py` to generate `classifiers.json`
 6. Run `python scripts/build-deploy-packages.py` to build packages (if using testpattern.dev)
-7. Deploy with `greenfield-deploy.ps1 -PublishTo "group@domain"` or `full-deploy.ps1 -PublishTo "group@domain"`
+7. Deploy with `Invoke-GreenfieldDeployment.ps1 -PublishTo "group@domain"` or `Invoke-FullDeployment.ps1 -PublishTo "group@domain"`
 
 **Without a spreadsheet (tenant import):**
 
@@ -511,7 +511,7 @@ To deploy for a different classification framework:
 4. Edit `config/policies.json` with your workload and policy settings
 5. Generate mapping: `python scripts/Build-ClassifierSchema.py --auto`
 6. Review/edit `config/classifier-mapping.csv`, then: `python scripts/Build-ClassifierSchema.py --apply`
-7. Deploy with `greenfield-deploy.ps1 -PublishTo "group@domain"` or `full-deploy.ps1 -PublishTo "group@domain"`
+7. Deploy with `Invoke-GreenfieldDeployment.ps1 -PublishTo "group@domain"` or `Invoke-FullDeployment.ps1 -PublishTo "group@domain"`
 
 The deployment scripts read everything from config — no code changes needed.
 
