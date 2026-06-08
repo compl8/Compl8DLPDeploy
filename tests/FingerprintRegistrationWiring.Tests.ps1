@@ -11,6 +11,7 @@ $FingerprintAwareScripts = @(
     'scripts/Deploy-AutoLabeling.ps1'
     'scripts/Invoke-FullDeployment.ps1'
     'scripts/Invoke-GreenfieldDeployment.ps1'
+    'scripts/Reset-DeploymentScope.ps1'
 )
 
 Describe 'Fingerprint registration param wiring' {
