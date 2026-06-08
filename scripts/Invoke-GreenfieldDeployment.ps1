@@ -23,7 +23,9 @@ param(
     [switch]$SkipCleanup,
     [switch]$AllowBreakingClassifierReferences,
     [switch]$WhatIf,
-    [switch]$RegisterFingerprint
+    [switch]$RegisterFingerprint,
+    [string]$FingerprintMode = 'warn',
+    [string]$ExpectedTenantId
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,7 +76,7 @@ $connectTarget = if ($Tenant) { $Tenant } else { $UPN }
 
 # ── Tenant fingerprint guard ───────────────────────────────────────────────────
 # Refuse to operate against a tenant that does not match the pinned fingerprint.
-$fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
+$fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint -RegisterMode $FingerprintMode -ExpectedTenantId $ExpectedTenantId
 Write-Host "=== Tenant Fingerprint ===" -ForegroundColor Cyan
 foreach ($m in @($fingerprint.messages)) {
     Write-Host "  $m" -ForegroundColor $(if ($fingerprint.passed) { "Green" } else { "Red" })
