@@ -70,6 +70,8 @@ param(
     [switch]$Greenfield,
     [switch]$AllowDirectUploadWithoutRefitPlan,
     [switch]$RegisterFingerprint,
+    [string]$FingerprintMode = 'warn',
+    [string]$ExpectedTenantId,
     [string]$DeploymentSessionPath,
     [switch]$AllowDirectRun
 )
@@ -173,6 +175,8 @@ function Invoke-ReadinessGate {
     if ($Delegated)             { $params.Delegated           = $true }
     if ($Prefix)                { $params.Prefix              = $Prefix }
     if ($RegisterFingerprint)   { $params.RegisterFingerprint = $true }
+    $params.FingerprintMode     = $FingerprintMode
+    if ($ExpectedTenantId)      { $params.ExpectedTenantId   = $ExpectedTenantId }
 
     $result = @(& $readinessScript @params)
     if ($result.Count -eq 0 -or $result[-1] -ne $true) {
@@ -195,7 +199,7 @@ function Test-DLPSessionAvailable {
 }
 
 function Invoke-TenantFingerprintGate {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint -RegisterMode $FingerprintMode -ExpectedTenantId $ExpectedTenantId
     if ($script:DeploymentManifest) {
         $script:DeploymentManifest.tenantFingerprint = $fingerprint
     }

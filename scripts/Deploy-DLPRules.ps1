@@ -24,6 +24,8 @@ param(
     [string]$TargetEnvironment,
     [string]$Prefix,
     [switch]$RegisterFingerprint,
+    [string]$FingerprintMode = 'warn',
+    [string]$ExpectedTenantId,
     [string]$DeploymentSessionPath,
     [switch]$AllowDirectRun
 )
@@ -47,7 +49,7 @@ $script:DRStartedAt = (Get-Date).ToString('o')
 $ErrorActionPreference = "Stop"
 
 function Invoke-TenantFingerprintGate {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint -RegisterMode $FingerprintMode -ExpectedTenantId $ExpectedTenantId
 
     Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
     Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray

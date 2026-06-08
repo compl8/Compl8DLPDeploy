@@ -27,6 +27,8 @@ param(
     [string]$TargetEnvironment,
     [string]$Prefix,
     [switch]$RegisterFingerprint,
+    [string]$FingerprintMode = 'warn',
+    [string]$ExpectedTenantId,
     [switch]$AllowDirectRun
 )
 
@@ -40,7 +42,7 @@ Assert-OrchestrationGate -ScriptName 'Deploy-AutoLabeling.ps1' -AllowDirectRun:$
 $ErrorActionPreference = "Stop"
 
 function Invoke-TenantFingerprintGate {
-    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint
+    $fingerprint = Test-DeploymentTenantFingerprint -ProjectRoot $ProjectRoot -TargetEnvironment $TargetEnvironment -RegisterIfMissing:$RegisterFingerprint -RegisterMode $FingerprintMode -ExpectedTenantId $ExpectedTenantId
 
     Write-Host "`n=== Tenant Fingerprint ===" -ForegroundColor Cyan
     Write-Host "  Environment: $($fingerprint.environment)" -ForegroundColor Gray
