@@ -3845,6 +3845,114 @@ function Test-SITRulePackageXml {
 #endregion
 
 # Export all public functions
+#region Tenant Snapshot
+function Write-TenantConfigSnapshot {
+    <#
+    .SYNOPSIS
+        Writes a read-only "old config" snapshot bundle: deployed classifier package XML,
+        named live-data sections (DLP, labels, dictionaries, SIT inventory, ... ), and copies
+        of the redeployable deploy config. Pure file I/O — the caller fetches the live data.
+    .PARAMETER Packages
+        Deployed classifier rule packages (objects with SerializedClassificationRuleCollection
+        bytes). Each is written to classifiers/<name>_<id>.xml.
+    .PARAMETER LiveSections
+        Ordered name -> object[] map. Each entry is written to live/<name>.json as a JSON array
+        (so labels carry their IRM/encryption fields, rules carry conditions, etc.). Extensible:
+        add a section (e.g. protection-templates) without changing this function.
+    .PARAMETER FileCopies
+        Array of @{ Source = <abs path>; Dest = <relative path under the snapshot> }. Missing
+        sources are skipped. Use for the deploy config json, xml/deploy/*.xml, and registries.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$DestinationRoot,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Environment,
+        [Parameter(Mandatory)][string]$Timestamp,
+        [object[]]$Packages = @(),
+        [System.Collections.IDictionary]$LiveSections = @{},
+        [object]$TenantInfo,
+        [object[]]$FileCopies = @()
+    )
+
+    $envSafe = if ([string]::IsNullOrWhiteSpace($Environment)) { 'default' } else { ($Environment -replace '[^a-zA-Z0-9\-_.]', '_') }
+    $snapshotDir = Join-Path $DestinationRoot ("{0}-{1}" -f $envSafe, $Timestamp)
+    $classDir = Join-Path $snapshotDir 'classifiers'
+    $liveDir  = Join-Path $snapshotDir 'live'
+    foreach ($d in @($snapshotDir, $classDir, $liveDir)) {
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    # Deployed classifier package XML (full rebuild-grade definition).
+    $classifiers = @()
+    foreach ($pkg in @($Packages)) {
+        if (-not $pkg) { continue }
+        $bytes = $pkg.SerializedClassificationRuleCollection
+        $name = if ($pkg.Name) { [string]$pkg.Name } elseif ($pkg.Identity) { [string]$pkg.Identity } else { 'package' }
+        $identity = if ($pkg.Identity) { [string]$pkg.Identity } else { $name }
+        if (-not $bytes) {
+            $classifiers += [ordered]@{ name = $name; identity = $identity; file = $null; captured = $false; reason = 'no SerializedClassificationRuleCollection' }
+            continue
+        }
+        $safeName = ($name -replace '[^a-zA-Z0-9\-]', '_')
+        $safeId   = ($identity -replace '[^a-zA-Z0-9\-]', '')
+        $file = Join-Path $classDir ("{0}_{1}.xml" -f $safeName, $safeId)
+        [System.IO.File]::WriteAllBytes($file, [byte[]]$bytes)
+        $classifiers += [ordered]@{ name = $name; identity = $identity; file = (Split-Path $file -Leaf); captured = $true; sizeBytes = ([byte[]]$bytes).Length }
+    }
+
+    # Named live-data sections -> live/<name>.json (always a JSON array via -AsArray-equivalent).
+    $sectionCounts = [ordered]@{}
+    foreach ($key in @($LiveSections.Keys)) {
+        $items = @($LiveSections[$key])
+        $json = if ($items.Count -eq 0) { '[]' } else { $items | ConvertTo-Json -Depth 25 -AsArray }
+        Set-Content -LiteralPath (Join-Path $liveDir ("{0}.json" -f $key)) -Value $json -Encoding UTF8
+        $sectionCounts[$key] = $items.Count
+    }
+
+    # Copy redeployable config / source artifacts.
+    $copied = @()
+    foreach ($entry in @($FileCopies)) {
+        if (-not $entry) { continue }
+        $source = [string]$entry.Source
+        $dest   = [string]$entry.Dest
+        if ([string]::IsNullOrWhiteSpace($source) -or [string]::IsNullOrWhiteSpace($dest)) { continue }
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        $destPath = Join-Path $snapshotDir $dest
+        $destParent = Split-Path $destPath -Parent
+        if ($destParent -and -not (Test-Path -LiteralPath $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
+        Copy-Item -LiteralPath $source -Destination $destPath -Force
+        $copied += $dest
+    }
+
+    $tid   = if ($TenantInfo) { $TenantInfo.tenantId } else { $null }
+    $tname = if ($TenantInfo) { $TenantInfo.name } else { $null }
+    $capturedCount = @($classifiers | Where-Object { $_.captured }).Count
+    $manifest = [ordered]@{
+        generatedUtc = $Timestamp
+        environment  = $Environment
+        tenant       = [ordered]@{ name = $tname; tenantId = $tid }
+        counts       = [ordered]@{
+            classifierPackages  = @($Packages).Count
+            classifiersCaptured = $capturedCount
+            filesCopied         = @($copied).Count
+        }
+        sections     = $sectionCounts
+        classifiers  = @($classifiers)
+        configFiles  = @($copied)
+        note = 'Read-only snapshot. classifiers/*.xml are deployed RulePack XML; live/*.json are raw live dumps (labels include IRM/encryption fields); config/* are the redeployable deploy config and source packages.'
+    }
+    $manifestPath = Join-Path $snapshotDir 'snapshot-manifest.json'
+    Set-Content -LiteralPath $manifestPath -Value ($manifest | ConvertTo-Json -Depth 25) -Encoding UTF8
+
+    return [pscustomobject]@{
+        SnapshotPath    = $snapshotDir
+        ManifestPath    = $manifestPath
+        ClassifierCount = $capturedCount
+        FileCount       = @($copied).Count
+        Sections        = $sectionCounts
+    }
+}
+#endregion
+
 Export-ModuleMember -Function @(
     'Get-ModuleDefaults'
     'Connect-DLPSession'
@@ -3919,5 +4027,6 @@ Export-ModuleMember -Function @(
     'Set-JsonValue'
     'Set-ConfigValue'
     'Copy-GlobalConfigToTenant'
+    'Write-TenantConfigSnapshot'
 )
 
