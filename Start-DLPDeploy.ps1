@@ -1571,363 +1571,104 @@ function Invoke-CleanupLabels {
     Write-Host "  Done." -ForegroundColor Green
 }
 
-function Invoke-RemovePackages {
-    param([ref]$Connected)
+function Invoke-GuidedClassifierRemoval {
+    # Gated classifier removal per CLASSIFIER-REMOVAL-RUNBOOK.md. Thin driver over the gated
+    # scripts; all hard gates (refit-plan, reference guard) live in Deploy-Classifiers.ps1.
+    param(
+        [ref]$Connected,
+        [switch]$SnapshotAlreadyRun
+    )
     if (-not (Require-Connection $Connected)) { return }
 
     Write-Host ""
-    Write-Host "  --- Remove SIT Packages ---" -ForegroundColor Cyan
+    Write-Host "  === Guided Classifier Removal (gated) ===" -ForegroundColor Cyan
+    Write-Host "  Snapshot -> plan -> clear references -> dry-run -> gated remove -> verify." -ForegroundColor DarkGray
 
-    # Step 1: Fetch deployed packages from tenant
-    Write-Host "  Fetching deployed packages..." -ForegroundColor Gray
-    $deployed = @()
-    try {
-        $deployed = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction Stop)
-    } catch {
-        Write-Host "  Failed to retrieve packages: $($_.Exception.Message)" -ForegroundColor Red
-        return
-    }
+    if (-not $script:TargetEnvironment) { Select-TargetEnvironment }
+    $commonArgs = @(Get-CommonDeploymentArgs)
 
-    # Filter out Microsoft built-in packages (null/empty Identity)
-    $deployed = @($deployed | Where-Object { $_.Identity })
-
-    if ($deployed.Count -eq 0) {
-        Write-Host "  No custom SIT rule packages found in tenant." -ForegroundColor Yellow
-        return
-    }
-
-    # Step 2: Parse display names and entity counts from package XML
-    $packageInfo = @()
-    foreach ($d in $deployed) {
-        $displayName = $d.Identity
-        $entityCount = 0
-        if ($d.SerializedClassificationRuleCollection) {
-            try {
-                $bytes = $d.SerializedClassificationRuleCollection
-                $xmlContent = [System.Text.Encoding]::Unicode.GetString($bytes)
-                $xml = [xml]$xmlContent
-                # Human name is in RulePack > Details > LocalizedDetails > Name
-                $rulePack = $xml.RulePackage.RulePack
-                if ($rulePack) {
-                    $details = $rulePack.Details
-                    if ($details) {
-                        $localized = $details.LocalizedDetails
-                        if ($localized -and $localized.Name) {
-                            $displayName = $localized.Name
-                        }
-                    }
-                }
-                $rules = $xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" }
-                if ($rules) {
-                    $entities = @($rules.ChildNodes | Where-Object { $_.LocalName -eq "Entity" })
-                    $entityCount = $entities.Count
-                }
-            } catch { }
-        }
-        $packageInfo += @{ Package = $d; DisplayName = $displayName; EntityCount = $entityCount }
-    }
-
-    # Show numbered list and selection loop
-    $pick = $null
-    while ($true) {
-        Write-Host ""
-        Write-Host "  Deployed packages:" -ForegroundColor Cyan
-        $i = 1
-        foreach ($info in $packageInfo) {
-            Write-Host "    $i. $($info.DisplayName)  ($($info.EntityCount) SITs)" -ForegroundColor White
-            $i++
-        }
-        Write-Host "    S. See classifiers in a package" -ForegroundColor DarkGray
-        Write-Host "    A. All packages" -ForegroundColor DarkGray
-        Write-Host "    Q. Back to menu" -ForegroundColor DarkGray
-        Write-Host ""
-        Write-Host "  Select package(s) to remove (number, comma-separated, S, A, or Q): " -NoNewline
-        $pick = (Read-Host).Trim()
-
-        if (-not $pick -or $pick.ToUpper() -eq "Q") {
-            Write-Host "  Returning to menu." -ForegroundColor Yellow
-            return
-        }
-        if ($pick.ToUpper() -eq "S") {
-            Show-PackageSITs -PackageInfo $packageInfo
-            continue
-        }
-        break
-    }
-
-    # Resolve selection
-    $selectedPackages = @()
-    if ($pick.ToUpper() -eq "A") {
-        $selectedPackages = $deployed
-    } else {
-        foreach ($token in ($pick -split ',')) {
-            $token = $token.Trim()
-            if ($token -match '^\d+$') {
-                $idx = [int]$token
-                if ($idx -ge 1 -and $idx -le $deployed.Count) {
-                    $selectedPackages += $deployed[$idx - 1]
-                } else {
-                    Write-Host "  Invalid number: $token (1-$($deployed.Count))" -ForegroundColor Red
-                    return
-                }
-            } else {
-                Write-Host "  Invalid input: '$token'" -ForegroundColor Red
-                return
-            }
-        }
-    }
-
-    if ($selectedPackages.Count -eq 0) {
-        Write-Host "  No packages selected." -ForegroundColor Yellow
-        return
-    }
-
-    # Step 3: Load config for cross-referencing
-    $configPath = Join-Path $ProjectRoot "config"
-    $classifiersJsonPath = Join-Path $configPath "classifiers.json"
-    $labelsJsonPath      = Join-Path $configPath "labels.json"
-
-    $classifiersJson = $null
-    $labelsJson      = $null
-    if (Test-Path $classifiersJsonPath) {
-        $classifiersJson = Get-Content -Path $classifiersJsonPath -Raw | ConvertFrom-Json
-    }
-    if (Test-Path $labelsJsonPath) {
-        $labelsJson = Get-Content -Path $labelsJsonPath -Raw | ConvertFrom-Json
-    }
-
-    # Build label code → display name lookup
-    $labelDisplayNames = @{}
-    if ($labelsJson) {
-        foreach ($lbl in $labelsJson) {
-            if ($lbl.code) {
-                $labelDisplayNames[$lbl.code] = if ($lbl.displayName) { $lbl.displayName } else { $lbl.name }
-            }
-        }
-    }
-
-    # Build SIT GUID → label codes lookup from classifiers.json
-    $sitToLabels = @{}
-    if ($classifiersJson) {
-        foreach ($prop in $classifiersJson.PSObject.Properties) {
-            $labelCode = $prop.Name
-            foreach ($item in $prop.Value) {
-                $guid = $item.id.ToLower()
-                if (-not $sitToLabels.ContainsKey($guid)) {
-                    $sitToLabels[$guid] = @()
-                }
-                $sitToLabels[$guid] += $labelCode
-            }
-        }
-    }
-
-    # Step 4: Impact analysis for each selected package
-    $hasImpact = $false
-
-    foreach ($pkg in $selectedPackages) {
-        # Resolve display name
-        $pkgDisplayName = $pkg.Identity
-        foreach ($info in $packageInfo) {
-            if ($info.Package -eq $pkg) { $pkgDisplayName = $info.DisplayName; break }
-        }
-        Write-Host ""
-        Write-Host "  ============================================" -ForegroundColor Cyan
-        Write-Host "  Package: $pkgDisplayName" -ForegroundColor White
-        Write-Host "  ============================================" -ForegroundColor Cyan
-
-        # Parse deployed XML for entity GUIDs
-        $entityGuids = @()
-        $entityNames = @{}
-        if ($pkg.SerializedClassificationRuleCollection) {
-            try {
-                $bytes = $pkg.SerializedClassificationRuleCollection
-                $xmlContent = [System.Text.Encoding]::Unicode.GetString($bytes)
-                $xml = [xml]$xmlContent
-                $rules = $xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" }
-                if ($rules) {
-                    # Build name map from LocalizedStrings
-                    $nameMap = @{}
-                    $localizedStrings = $rules.ChildNodes | Where-Object { $_.LocalName -eq "LocalizedStrings" }
-                    if ($localizedStrings) {
-                        foreach ($resource in @($localizedStrings.ChildNodes)) {
-                            if ($resource.LocalName -eq "Resource") {
-                                $nameNode = $resource.ChildNodes | Where-Object { $_.LocalName -eq "Name" } | Select-Object -First 1
-                                if ($nameNode) { $nameMap[$resource.idRef] = $nameNode.InnerText }
-                            }
-                        }
-                    }
-                    $entities = @($rules.ChildNodes | Where-Object { $_.LocalName -eq "Entity" })
-                    foreach ($e in $entities) {
-                        $entityGuids += $e.id.ToLower()
-                        $entityNames[$e.id.ToLower()] = if ($nameMap.ContainsKey($e.id)) { $nameMap[$e.id] } else { $e.id }
-                    }
-                }
-            } catch {
-                Write-Host "    Could not parse package XML: $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-        }
-
-        Write-Host "    SITs in package: $($entityGuids.Count)" -ForegroundColor Gray
-
-        if ($entityGuids.Count -eq 0) {
-            Write-Host "    (no SIT entities found — skipping dependency check)" -ForegroundColor Yellow
-            continue
-        }
-
-        # 4a: Check DLP rule dependencies
-        Write-Host ""
-        Write-Host "    Checking DLP rule dependencies..." -ForegroundColor Cyan
-        $dlpDeps = @()
-        try {
-            $allRules = @(Get-DlpComplianceRule -ErrorAction Stop)
-            foreach ($rule in $allRules) {
-                $ruleContent = ""
-                if ($rule.ContentContainsSensitiveInformation) {
-                    try { $ruleContent += ($rule.ContentContainsSensitiveInformation | ConvertTo-Json -Depth 10 -Compress) } catch { }
-                }
-                if ($rule.AdvancedRule) {
-                    $ruleContent += $rule.AdvancedRule
-                }
-                if (-not $ruleContent) { continue }
-
-                $matchedSits = @()
-                foreach ($guid in $entityGuids) {
-                    if ($ruleContent -match [regex]::Escape($guid)) {
-                        $matchedSits += $guid
-                    }
-                }
-                if ($matchedSits.Count -gt 0) {
-                    $dlpDeps += @{
-                        RuleName     = $rule.Name
-                        PolicyName   = $rule.ParentPolicyName
-                        MatchedGuids = $matchedSits
-                    }
-                }
-            }
-        } catch {
-            Write-Host "    Could not check DLP rules: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
-
-        if ($dlpDeps.Count -gt 0) {
-            $hasImpact = $true
-            Write-Host "    DLP RULES AFFECTED: $($dlpDeps.Count)" -ForegroundColor Red
-            foreach ($dep in $dlpDeps) {
-                Write-Host "      Rule:   $($dep.RuleName)" -ForegroundColor Yellow
-                Write-Host "      Policy: $($dep.PolicyName)" -ForegroundColor DarkGray
-                $sitList = ($dep.MatchedGuids | ForEach-Object { if ($entityNames.ContainsKey($_)) { $entityNames[$_] } else { $_ } }) -join ", "
-                Write-Host "      SITs:   $sitList" -ForegroundColor DarkGray
-            }
+    # Step 0.5 - snapshot (skip when the caller already captured one this session)
+    if (-not $SnapshotAlreadyRun) {
+        if (Read-YesNo "Step 0.5: capture a read-only tenant snapshot first (STRONGLY recommended)?" -Default $true) {
+            $snapArgs = @()
+            if ($script:TargetEnvironment) { $snapArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
+            Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
         } else {
-            Write-Host "    DLP rules: none affected" -ForegroundColor Green
-        }
-
-        # 4b: Check classifier/label references
-        Write-Host ""
-        Write-Host "    Checking classifier/label references..." -ForegroundColor Cyan
-        $affectedLabels = @{}
-        foreach ($guid in $entityGuids) {
-            if ($sitToLabels.ContainsKey($guid)) {
-                foreach ($lc in $sitToLabels[$guid]) {
-                    if (-not $affectedLabels.ContainsKey($lc)) {
-                        $affectedLabels[$lc] = @()
-                    }
-                    $sitName = if ($entityNames.ContainsKey($guid)) { $entityNames[$guid] } else { $guid }
-                    $affectedLabels[$lc] += $sitName
-                }
-            }
-        }
-
-        if ($affectedLabels.Count -gt 0) {
-            $hasImpact = $true
-            Write-Host "    LABEL CLASSIFIERS AFFECTED: $($affectedLabels.Count) label(s)" -ForegroundColor Red
-            foreach ($lc in ($affectedLabels.Keys | Sort-Object)) {
-                $displayName = if ($labelDisplayNames.ContainsKey($lc)) { $labelDisplayNames[$lc] } else { $lc }
-                $sitCount = $affectedLabels[$lc].Count
-                Write-Host "      $lc ($displayName) — $sitCount SIT(s) referenced:" -ForegroundColor Yellow
-                foreach ($sitName in ($affectedLabels[$lc] | Sort-Object -Unique)) {
-                    Write-Host "        - $sitName" -ForegroundColor DarkGray
-                }
-            }
-        } else {
-            Write-Host "    Classifier labels: none affected" -ForegroundColor Green
-        }
-
-        # 4c: Check for word list / keyword references in XML
-        Write-Host ""
-        Write-Host "    Checking keyword/word list references..." -ForegroundColor Cyan
-        $keywordCount = 0
-        if ($pkg.SerializedClassificationRuleCollection) {
-            try {
-                $bytes = $pkg.SerializedClassificationRuleCollection
-                $xmlContent = [System.Text.Encoding]::Unicode.GetString($bytes)
-                $xml = [xml]$xmlContent
-                $rules = $xml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq "Rules" }
-                if ($rules) {
-                    $keywords = @($rules.ChildNodes | Where-Object { $_.LocalName -eq "Keyword" })
-                    $keywordCount = $keywords.Count
-                }
-            } catch { }
-        }
-        if ($keywordCount -gt 0) {
-            Write-Host "    Keyword lists in package: $keywordCount" -ForegroundColor Gray
-            Write-Host "    (these will be removed with the package)" -ForegroundColor Yellow
-        } else {
-            Write-Host "    Keyword lists: none" -ForegroundColor Green
-        }
-    }
-
-    # Step 5: Final confirmation
-    Write-Host ""
-    if ($hasImpact) {
-        Write-Host "  !! DEPENDENCIES DETECTED !!" -ForegroundColor Red
-        Write-Host "  Removing these packages may break the DLP rules and label" -ForegroundColor Red
-        Write-Host "  classifier assignments listed above." -ForegroundColor Red
-        Write-Host ""
-    }
-
-    # Show what will be removed using display names from packageInfo
-    Write-Host ""
-    Write-Host "  Packages to remove:" -ForegroundColor White
-    foreach ($sel in $selectedPackages) {
-        $displayName = $sel.Identity
-        foreach ($info in $packageInfo) {
-            if ($info.Package -eq $sel) { $displayName = $info.DisplayName; break }
-        }
-        Write-Host "    - $displayName" -ForegroundColor Gray
-    }
-    Write-Host ""
-    if (-not (Read-YesNo "Proceed with removal?")) {
-        Write-Host "  Aborted." -ForegroundColor Yellow
-        return
-    }
-
-    $dryRun = Read-YesNo "Dry run (WhatIf)?" -Default $true
-    $delay = $_Config.interCallDelaySec
-    $index = 0
-
-    foreach ($sel in $selectedPackages) {
-        $displayName = $sel.Identity
-        foreach ($info in $packageInfo) {
-            if ($info.Package -eq $sel) { $displayName = $info.DisplayName; break }
-        }
-
-        if ($index -gt 0 -and -not $dryRun) { Start-Sleep -Seconds $delay }
-        $index++
-
-        if ($dryRun) {
-            Write-Host "  WhatIf: Would remove $displayName ($($sel.Identity))" -ForegroundColor Yellow
-        } else {
-            try {
-                Remove-DlpSensitiveInformationTypeRulePackage -Identity $sel.Identity -Confirm:$false -ErrorAction Stop
-                Write-Host "  Removed: $displayName" -ForegroundColor Green
-            } catch {
-                Write-Host "  Failed to remove $displayName`: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  Proceeding WITHOUT a snapshot." -ForegroundColor Yellow
+            if (-not (Read-YesNo "Delete with NO backup?" -Default $false)) {
+                Write-Host "  Aborted." -ForegroundColor Yellow; return
             }
         }
     }
+
+    # Step 0 - inventory
+    Write-Host "`n  Step 0: deployed classifier packages" -ForegroundColor Cyan
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "List") + $commonArgs)
 
     Write-Host ""
-    Write-Host "  Done." -ForegroundColor Green
+    Write-Host "  Enter registry package key(s) to RETIRE, comma-separated (e.g. QGISCF-medium-08):" -ForegroundColor White
+    Write-Host "  (Only packages in deploy-registry.json are removable here; unregistered tenant packages are not.)" -ForegroundColor DarkGray
+    $pkgInput = (Read-Host "  Packages").Trim()
+    if ([string]::IsNullOrWhiteSpace($pkgInput)) { Write-Host "  No packages entered; aborting." -ForegroundColor Yellow; return }
+    $packageNames = @($pkgInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($packageNames.Count -eq 0) { Write-Host "  No valid package keys entered; aborting." -ForegroundColor Yellow; return }
+
+    if (Read-YesNo "Show dependency impact across deployed packages?" -Default $true) {
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact") + $commonArgs)
+    }
+
+    # Step 1 - retire plan
+    Write-Host "`n  Step 1: generating retire plan..." -ForegroundColor Cyan
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "RefitPlan") + $commonArgs)
+    $planPath = Read-RefitPlanPath
+    if (-not $planPath -or -not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+        Write-Host "  No valid refit plan; aborting removal." -ForegroundColor Red; return
+    }
+    Show-RefitPlanEvidence -PlanPath $planPath
+    Write-Host "  Confirm each target package is classified RetireCandidate (or Reusable*Slot)" -ForegroundColor Yellow
+    Write-Host "  in the plan above, and review any referencing DLP rules it lists." -ForegroundColor Yellow
+
+    # Step 2 - clear references (pause + re-check loop)
+    $override = $false
+    if (Read-YesNo "Do any DLP rules still reference the classifiers being removed?" -Default $true) {
+        while ($true) {
+            Write-Host ""
+            Write-Host "  Clear them first: drop the SIT(s) from config/classifiers.json and redeploy rules" -ForegroundColor Yellow
+            Write-Host "  (menu [R]/[4] or Deploy-DLPRules), or remove the rules. Then return here." -ForegroundColor Yellow
+            $ans = (Read-Host "  Press Enter to re-check once rules are updated (or type SKIP to override)").Trim()
+            if ($ans.ToUpper() -eq 'SKIP') {
+                Write-Host "  OVERRIDE will delete despite live references, leaving rules pointing at a deleted SIT." -ForegroundColor Red
+                if ((Read-Host "  Type OVERRIDE to confirm, anything else to keep clearing").Trim() -ceq 'OVERRIDE') { $override = $true; break }
+                continue
+            }
+            Write-Host "  Re-checking references..." -ForegroundColor Cyan
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact") + $commonArgs)
+            if (Read-YesNo "Did the impact check show ZERO referencing rules for your targets now?" -Default $false) { break }
+        }
+    }
+
+    # Step 3 - dry-run (per package; Invoke-ToolkitScript binds one value per -Param)
+    Write-Host "`n  Step 3: removal dry-run (WhatIf)..." -ForegroundColor Cyan
+    foreach ($pkg in $packageNames) {
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Remove", "-PackageNames", $pkg, "-WhatIf") + $commonArgs)
+    }
+
+    # Step 4 - gated removal
+    Write-Host ""
+    Write-Host "  Step 4: execute the gated removal of: $($packageNames -join ', ')" -ForegroundColor Cyan
+    if ((Read-Host "  Type REMOVE (uppercase) to delete, anything else to abort").Trim() -cne 'REMOVE') {
+        Write-Host "  Aborted. Nothing deleted." -ForegroundColor Yellow; return
+    }
+    foreach ($pkg in $packageNames) {
+        $removeArgs = @("-Action", "Remove", "-PackageNames", $pkg, "-RefitPlanPath", $planPath, "-ApproveRefitPlan")
+        if ($override) { $removeArgs += "-AllowBreakingClassifierReferences" }
+        $removeArgs += $commonArgs
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $removeArgs
+    }
+
+    # Step 5 - verify
+    Write-Host "`n  Step 5: verify..." -ForegroundColor Cyan
+    Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "List") + $commonArgs)
 }
 
 function Invoke-CustomerRolloutWizard {
@@ -2189,7 +1930,7 @@ while ($true) {
         "7"  { Invoke-EstimateCapacity ([ref]$isConnected); Pause-AfterRun }
         "8"  { Invoke-CleanupDLPRules ([ref]$isConnected); Pause-AfterRun }
         "9"  { Invoke-CleanupLabels ([ref]$isConnected); Pause-AfterRun }
-        "10" { Invoke-RemovePackages ([ref]$isConnected); Pause-AfterRun }
+        "10" { Invoke-GuidedClassifierRemoval -Connected ([ref]$isConnected); Pause-AfterRun }
         "11" { Invoke-ValidateXML; Pause-AfterRun }
         "12" { Invoke-TestPatternDriftMenu; Pause-AfterRun }
         "S"  { Invoke-ConfigSkewReport; Pause-AfterRun }
