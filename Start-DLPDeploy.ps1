@@ -37,6 +37,8 @@ $_Prefix       = $_Config.namingPrefix
 # Session flag: when set, deploy scripts receive -RegisterFingerprint so an unknown
 # TargetEnvironment bootstraps a warn-mode fingerprint entry from the connected tenant.
 $script:RegisterFingerprint = $false
+$script:FingerprintMode   = 'warn'
+$script:ExpectedTenantId  = $null
 
 #region Box Drawing
 function Get-TerminalSize {
@@ -209,6 +211,21 @@ function Select-TargetEnvironment {
     # existing block-mode entry warns that the connected tenant must match; "New tenant"
     # flags the next deploy to bootstrap a warn-mode entry from the live tenant.
     $script:RegisterFingerprint = $false
+    $script:FingerprintMode  = 'warn'
+    $script:ExpectedTenantId = $null
+
+    function Read-RegistrationDetails {
+        $modeAns = (Read-Host "  Mode for this tenant [warn/block] (Enter = warn)").Trim().ToLowerInvariant()
+        $script:FingerprintMode = if ($modeAns -eq 'block') { 'block' } else { 'warn' }
+        while ($true) {
+            $guid = (Read-Host "  Expected tenant GUID (Enter = capture from connected tenant on first deploy)").Trim()
+            if ([string]::IsNullOrWhiteSpace($guid)) { $script:ExpectedTenantId = $null; break }
+            $g = [guid]::Empty
+            if ([guid]::TryParse($guid, [ref]$g)) { $script:ExpectedTenantId = $guid; break }
+            Write-Host "  '$guid' is not a valid GUID; try again or press Enter to skip." -ForegroundColor Yellow
+        }
+    }
+
     $cfg = Get-FingerprintConfig
     $entries = @()
     if ($cfg -and $cfg.environments) { $entries = @($cfg.environments.PSObject.Properties) }
@@ -221,7 +238,8 @@ function Select-TargetEnvironment {
         $key = Read-OptionalValue -Prompt "New environment key for this tenant" -Current $script:TargetEnvironment
         if ($key) {
             $script:TargetEnvironment = $key
-            $script:RegisterFingerprint = Read-YesNo "Register the connected tenant as '$key' (mode=warn) on first deploy?" -Default $true
+            $script:RegisterFingerprint = Read-YesNo "Register the connected tenant as '$key' on first deploy?" -Default $true
+            if ($script:RegisterFingerprint) { Read-RegistrationDetails }
         }
         return
     }
@@ -237,7 +255,7 @@ function Select-TargetEnvironment {
         Write-Host ("   [{0}] {1}" -f $mode, $tid) -ForegroundColor $modeColor
         $i++
     }
-    Write-Host "    N. New tenant -- register on first deploy [warn]" -ForegroundColor Green
+    Write-Host "    N. New tenant -- register from connected tenant on first deploy" -ForegroundColor Green
 
     $current = if ($script:TargetEnvironment) { $script:TargetEnvironment } elseif ($default) { "$default (default)" } else { "default" }
     Write-Host ("  Select [1-{0}/N] (Enter = keep '{1}'): " -f $entries.Count, $current) -NoNewline
@@ -258,7 +276,8 @@ function Select-TargetEnvironment {
         }
         $script:TargetEnvironment = $key
         $script:RegisterFingerprint = $true
-        Write-Host "  '$key' will be registered (mode=warn) from the connected tenant on first deploy." -ForegroundColor Green
+        Read-RegistrationDetails
+        Write-Host "  '$key' will be registered (mode=$script:FingerprintMode) on first deploy." -ForegroundColor Green
         return
     }
 
@@ -384,6 +403,10 @@ function Get-CommonDeploymentArgs {
     if ($script:Prefix) { $commonArgs += @("-Prefix", $script:Prefix) }
     if ($script:Delegated) { $commonArgs += "-Delegated" }
     if ($script:RegisterFingerprint) { $commonArgs += "-RegisterFingerprint" }
+    if ($script:RegisterFingerprint) {
+        $commonArgs += @("-FingerprintMode", $script:FingerprintMode)
+        if ($script:ExpectedTenantId) { $commonArgs += @("-ExpectedTenantId", $script:ExpectedTenantId) }
+    }
     return $commonArgs
 }
 
