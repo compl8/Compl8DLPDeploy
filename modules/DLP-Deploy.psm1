@@ -2833,15 +2833,23 @@ function Test-DeploymentTenantFingerprint {
     .PARAMETER TargetEnvironment
         Environment key under the config file's environments object.
     .PARAMETER RegisterIfMissing
-        When set, an unknown $TargetEnvironment that returns a connected tenant is
-        appended to tenant-fingerprints.json (mode=warn) instead of failing the check.
-        First-deploy bootstrap path for a new tenant.
+        When set, an unknown $TargetEnvironment is registered in tenant-fingerprints.json
+        and then compared against the connected tenant. First-deploy bootstrap for a new tenant.
+    .PARAMETER RegisterMode
+        Mode (warn|block) written for a newly-registered entry. Default warn. Ignored if the
+        entry already exists.
+    .PARAMETER ExpectedTenantId
+        Operator-asserted tenant GUID for a newly-registered entry. When supplied it is written
+        verbatim (never overwritten by the connected tenant) and validated against the live
+        tenant under RegisterMode. Ignored if the entry already exists.
     #>
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
         [string]$TargetEnvironment,
         [string]$FingerprintPath,
-        [switch]$RegisterIfMissing
+        [switch]$RegisterIfMissing,
+        [string]$RegisterMode = 'warn',
+        [string]$ExpectedTenantId
     )
 
     if (-not $FingerprintPath) {
@@ -2861,6 +2869,26 @@ function Test-DeploymentTenantFingerprint {
         actual      = $actual
         messages    = @()
         mismatches  = @()
+    }
+
+    # Validate operator-supplied registration inputs eagerly so bad input never reaches a
+    # file write. Non-default values only — absent/empty preserves legacy behavior.
+    $RegisterMode = if ([string]::IsNullOrWhiteSpace($RegisterMode)) { 'warn' } else { $RegisterMode.ToLowerInvariant() }
+    if ($RegisterMode -notin @('warn', 'block')) {
+        $result.passed = $false
+        $result.mode = 'block'
+        $result.messages += "Invalid -RegisterMode '$RegisterMode'; expected 'warn' or 'block'."
+        return [PSCustomObject]$result
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedTenantId)) {
+        $parsedGuid = [guid]::Empty
+        if (-not [guid]::TryParse($ExpectedTenantId, [ref]$parsedGuid)) {
+            $result.passed = $false
+            $result.mode = 'block'
+            $result.messages += "Invalid -ExpectedTenantId '$ExpectedTenantId'; expected a tenant GUID."
+            return [PSCustomObject]$result
+        }
+        $ExpectedTenantId = $parsedGuid.ToString()
     }
 
     if (-not (Test-Path -LiteralPath $FingerprintPath)) {
@@ -2892,43 +2920,46 @@ function Test-DeploymentTenantFingerprint {
             @($config.environments.PSObject.Properties.Name) -join ', '
         } else { '(none)' }
 
-        # Bootstrap path: register a new fingerprint entry from the live tenant identity.
+        if (-not $RegisterIfMissing) {
+            $result.messages += "No fingerprint entry for environment '$TargetEnvironment'. Available: $availableEnvs. Re-run with -RegisterFingerprint to bootstrap a new entry (optionally -ExpectedTenantId <guid> -FingerprintMode block to assert the target up front)."
+            return [PSCustomObject]$result
+        }
+
+        # Asserted GUID is authoritative; otherwise capture the connected tenant identity.
         $actualTenantId = $actual.tenantId
         if (-not $actualTenantId) { $actualTenantId = $actual.guid }
         if (-not $actualTenantId) { $actualTenantId = $actual.id }
 
-        if ($RegisterIfMissing -and -not [string]::IsNullOrWhiteSpace($actualTenantId)) {
-            $newEntry = [ordered]@{ mode = 'warn'; tenantId = $actualTenantId.ToString() }
-            if ($actual.name) { $newEntry.name = $actual.name.ToString() }
-
-            if (-not $config.environments) {
-                $config | Add-Member -NotePropertyName 'environments' -NotePropertyValue ([pscustomobject]@{}) -Force
-            }
-            $config.environments | Add-Member -NotePropertyName $TargetEnvironment -NotePropertyValue ([pscustomobject]$newEntry) -Force
-
-            try {
-                $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $FingerprintPath -Encoding UTF8
-                $result.configured = $true
-                $result.matched    = $true
-                $result.mode       = 'warn'
-                foreach ($k in $newEntry.Keys) { $result.expected[$k] = $newEntry[$k] }
-                $result.messages += "Registered new fingerprint entry '$TargetEnvironment' (tenantId=$actualTenantId, mode=warn) at $($result.configPath)."
-                return [PSCustomObject]$result
-            } catch {
-                $result.passed = $false
-                $result.mode   = 'block'
-                $result.messages += "Failed to register fingerprint entry '$TargetEnvironment': $($_.Exception.Message)"
-                return [PSCustomObject]$result
-            }
+        $tenantIdToWrite = if (-not [string]::IsNullOrWhiteSpace($ExpectedTenantId)) { $ExpectedTenantId } else { $actualTenantId }
+        if ([string]::IsNullOrWhiteSpace($tenantIdToWrite)) {
+            $result.messages += "No fingerprint entry for environment '$TargetEnvironment'. Available: $availableEnvs. Live tenant identity unavailable and no -ExpectedTenantId supplied; cannot register."
+            return [PSCustomObject]$result
         }
 
-        $hint = if ($RegisterIfMissing) {
-            " Live tenant identity unavailable; cannot auto-register."
-        } else {
-            " Re-run with -RegisterFingerprint to bootstrap a new entry from the connected tenant."
+        $newEntry = [ordered]@{ mode = $RegisterMode; tenantId = $tenantIdToWrite.ToString() }
+        # Only record the connected tenant name when we captured it (not when the GUID was asserted blind).
+        if ($actual.name -and [string]::IsNullOrWhiteSpace($ExpectedTenantId)) { $newEntry.name = $actual.name.ToString() }
+
+        if (-not $config.environments) {
+            $config | Add-Member -NotePropertyName 'environments' -NotePropertyValue ([pscustomobject]@{}) -Force
         }
-        $result.messages += "No fingerprint entry for environment '$TargetEnvironment'. Available: $availableEnvs.$hint"
-        return [PSCustomObject]$result
+        $config.environments | Add-Member -NotePropertyName $TargetEnvironment -NotePropertyValue ([pscustomobject]$newEntry) -Force
+
+        try {
+            $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $FingerprintPath -Encoding UTF8
+        } catch {
+            $result.passed = $false
+            $result.mode   = 'block'
+            $result.messages += "Failed to register fingerprint entry '$TargetEnvironment': $($_.Exception.Message)"
+            return [PSCustomObject]$result
+        }
+
+        $idSource = if (-not [string]::IsNullOrWhiteSpace($ExpectedTenantId)) { 'operator-asserted' } else { 'captured from connected tenant' }
+        $result.messages += "Registered new fingerprint entry '$TargetEnvironment' (tenantId=$tenantIdToWrite, mode=$RegisterMode, $idSource) at $($result.configPath)."
+
+        # Fall through to the standard comparison so the chosen mode is honored against the
+        # connected tenant: block + mismatch refuses, warn + mismatch warns, auto-capture matches.
+        $envProp = $config.environments.PSObject.Properties | Where-Object { $_.Name -eq $TargetEnvironment } | Select-Object -First 1
     }
 
     $expectedConfig = $envProp.Value

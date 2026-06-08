@@ -1132,3 +1132,129 @@ Describe 'Test-DeploymentTenantFingerprint -RegisterIfMissing' {
         $writtenConfig.environments.PSObject.Properties.Name | Should -Not -Contain 'unregistered'
     }
 }
+
+Describe 'Test-DeploymentTenantFingerprint registration mode + asserted GUID' {
+    BeforeAll {
+        $script:FpRoot2 = Join-Path ([System.IO.Path]::GetTempPath()) "dlp-fp2-$([guid]::NewGuid().Guid)"
+        New-Item -ItemType Directory -Path (Join-Path $script:FpRoot2 'config') -Force | Out-Null
+    }
+    AfterAll {
+        if (Test-Path $script:FpRoot2) { Remove-Item $script:FpRoot2 -Recurse -Force }
+    }
+
+    BeforeEach {
+        $script:FpFile2 = Join-Path $script:FpRoot2 'config/tenant-fingerprints.json'
+        @{ defaultEnvironment = 'existing'
+           environments = @{ existing = @{ mode = 'block'; tenantId = '11111111-1111-1111-1111-111111111111' } }
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:FpFile2 -Encoding UTF8
+
+        # Connected tenant = the "bbbb" tenant for every test in this block.
+        Mock -CommandName Get-DeploymentTenantInfo -ModuleName DLP-Deploy -MockWith {
+            [ordered]@{ name='Connected'; id='bbbb-bbbb'; guid='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+                        tenantId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; organizationId='Connected'
+                        userPrincipalName='admin@b.example'; connectionUri=$null; source='test'; status='Connected' }
+        }
+    }
+
+    It 'asserted GUID + block + mismatch refuses and writes the asserted GUID (not the connected one)' {
+        $asserted = '99999999-9999-9999-9999-999999999999'
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'block' -ExpectedTenantId $asserted
+
+        $result.configured | Should -Be $true
+        $result.mode       | Should -Be 'block'
+        $result.passed     | Should -Be $false
+        $result.matched    | Should -Be $false
+
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.newenv.tenantId | Should -Be $asserted
+        $written.environments.newenv.mode     | Should -Be 'block'
+    }
+
+    It 'asserted GUID + warn + mismatch warns but proceeds' {
+        $asserted = '99999999-9999-9999-9999-999999999999'
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'warn' -ExpectedTenantId $asserted
+
+        $result.passed  | Should -Be $true
+        $result.matched | Should -Be $false
+        $result.mode    | Should -Be 'warn'
+    }
+
+    It 'asserted GUID matching the connected tenant passes under block' {
+        $asserted = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'block' -ExpectedTenantId $asserted
+
+        $result.passed  | Should -Be $true
+        $result.matched | Should -Be $true
+        $result.mode    | Should -Be 'block'
+    }
+
+    It 'no asserted GUID + block captures the connected tenant and locks it (passes by construction)' {
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'block'
+
+        $result.passed  | Should -Be $true
+        $result.matched | Should -Be $true
+        $result.mode    | Should -Be 'block'
+
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.newenv.tenantId | Should -Be 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $written.environments.newenv.mode     | Should -Be 'block'
+    }
+
+    It 'rejects an invalid -ExpectedTenantId and writes nothing' {
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -ExpectedTenantId 'not-a-guid'
+
+        $result.passed | Should -Be $false
+        ($result.messages -join ' ') | Should -BeLike '*ExpectedTenantId*'
+
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.PSObject.Properties.Name | Should -Not -Contain 'newenv'
+    }
+
+    It 'rejects an invalid -RegisterMode and writes nothing' {
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'audit'
+
+        $result.passed | Should -Be $false
+        ($result.messages -join ' ') | Should -BeLike '*RegisterMode*'
+
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.PSObject.Properties.Name | Should -Not -Contain 'newenv'
+    }
+
+    It 'ignores registration params when the environment entry already exists' {
+        # 'existing' is block + tenantId 1111...; connected is bbbb (mismatch) -> must fail on the
+        # STORED entry, and the supplied warn/GUID must NOT change the outcome or the file.
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'existing' `
+            -RegisterIfMissing -RegisterMode 'warn' -ExpectedTenantId 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+
+        $result.mode   | Should -Be 'block'
+        $result.passed | Should -Be $false
+
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.existing.tenantId | Should -Be '11111111-1111-1111-1111-111111111111'
+        $written.environments.existing.mode     | Should -Be 'block'
+    }
+
+    It 'defaults to warn auto-capture when no new params are supplied (back-compat)' {
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing
+
+        $result.passed  | Should -Be $true
+        $result.mode    | Should -Be 'warn'
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.newenv.mode | Should -Be 'warn'
+    }
+
+    It 'normalizes a brace-wrapped asserted GUID to canonical form when writing' {
+        $result = Test-DeploymentTenantFingerprint -ProjectRoot $script:FpRoot2 -TargetEnvironment 'newenv' `
+            -RegisterIfMissing -RegisterMode 'warn' -ExpectedTenantId '{99999999-9999-9999-9999-999999999999}'
+        $result.passed | Should -Be $true
+        $written = Get-Content -Raw -LiteralPath $script:FpFile2 | ConvertFrom-Json
+        $written.environments.newenv.tenantId | Should -Be '99999999-9999-9999-9999-999999999999'
+    }
+}
