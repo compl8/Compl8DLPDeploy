@@ -1592,7 +1592,14 @@ function Invoke-GuidedClassifierRemoval {
         if (Read-YesNo "Step 0.5: capture a read-only tenant snapshot first (STRONGLY recommended)?" -Default $true) {
             $snapArgs = @()
             if ($script:TargetEnvironment) { $snapArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
-            Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
+            try {
+                Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
+            } catch {
+                Write-Host "  Snapshot FAILED: $($_.Exception.Message)" -ForegroundColor Red
+                if (-not (Read-YesNo "Continue the removal WITHOUT a verified snapshot?" -Default $false)) {
+                    Write-Host "  Aborted." -ForegroundColor Yellow; return
+                }
+            }
         } else {
             Write-Host "  Proceeding WITHOUT a snapshot." -ForegroundColor Yellow
             if (-not (Read-YesNo "Delete with NO backup?" -Default $false)) {
@@ -1614,7 +1621,9 @@ function Invoke-GuidedClassifierRemoval {
     if ($packageNames.Count -eq 0) { Write-Host "  No valid package keys entered; aborting." -ForegroundColor Yellow; return }
 
     if (Read-YesNo "Show dependency impact across deployed packages?" -Default $true) {
-        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact") + $commonArgs)
+        foreach ($pkg in $packageNames) {
+            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact", "-ImpactMode", "Remove", "-PackageNames", $pkg) + $commonArgs)
+        }
     }
 
     # Step 1 - retire plan
@@ -1642,7 +1651,9 @@ function Invoke-GuidedClassifierRemoval {
                 continue
             }
             Write-Host "  Re-checking references..." -ForegroundColor Cyan
-            Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact") + $commonArgs)
+            foreach ($pkg in $packageNames) {
+                Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "Impact", "-ImpactMode", "Remove", "-PackageNames", $pkg) + $commonArgs)
+            }
             if (Read-YesNo "Did the impact check show ZERO referencing rules for your targets now?" -Default $false) { break }
         }
     }
@@ -1726,8 +1737,15 @@ function Invoke-CustomerRolloutWizard {
     if (Read-YesNo "Capture a tenant snapshot now (recommended before a replace)?" -Default $true) {
         $snapArgs = @()
         if ($script:TargetEnvironment) { $snapArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
-        Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
-        $rolloutSnapshotRan = $true
+        try {
+            Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
+            $rolloutSnapshotRan = $true
+        } catch {
+            Write-Host "  Snapshot FAILED: $($_.Exception.Message)" -ForegroundColor Red
+            if (-not (Read-YesNo "Continue the rollout WITHOUT a verified snapshot?" -Default $false)) {
+                Write-Host "  Rollout aborted." -ForegroundColor Yellow; return
+            }
+        }
     }
 
     # 2. Readiness gate (unconditional; OVERRIDE typed-confirm to bypass)
