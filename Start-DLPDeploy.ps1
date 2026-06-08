@@ -1719,6 +1719,17 @@ function Invoke-CustomerRolloutWizard {
         }
     }
 
+    # 0. Pre-destructive snapshot (rebuild-grade "old config" backup)
+    $rolloutSnapshotRan = $false
+    Write-Host ""
+    Write-Host "  Phase 0: Tenant snapshot (read-only backup before any change)" -ForegroundColor Cyan
+    if (Read-YesNo "Capture a tenant snapshot now (recommended before a replace)?" -Default $true) {
+        $snapArgs = @()
+        if ($script:TargetEnvironment) { $snapArgs += @("-TargetEnvironment", $script:TargetEnvironment) }
+        Invoke-ToolkitScript -ScriptName "Export-TenantSnapshot.ps1" -ArgumentList $snapArgs
+        $rolloutSnapshotRan = $true
+    }
+
     # 2. Readiness gate (unconditional; OVERRIDE typed-confirm to bypass)
     Write-Host ""
     Write-Host "  Phase 2/6: Pre-deployment readiness" -ForegroundColor Cyan
@@ -1738,17 +1749,42 @@ function Invoke-CustomerRolloutWizard {
         Write-Host "  Readiness override accepted." -ForegroundColor Yellow
     }
 
-    # 3. Cleanup (optional)
+    # 1.5 Fit & coverage preview (read-only): will the new classifier set fit, and do rules cover it?
+    Write-Host ""
+    Write-Host "  Phase 1.5: Fit & coverage preview (read-only)" -ForegroundColor Cyan
+    if (Read-YesNo "Preview classifier capacity/fit and DLP rule coverage before deploying?" -Default $true) {
+        Write-Host "  -- Classifier capacity / fit (slots, package size, dictionary budget) --" -ForegroundColor DarkCyan
+        Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList (@("-Action", "CapacityPlan") + $commonArgs)
+        Write-Host "  -- DLP rule coverage (any SITs referenced by config but missing from tenant) --" -ForegroundColor DarkCyan
+        Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList (@("-WhatIf") + $commonArgs)
+        if (-not (Read-YesNo "Preview looks acceptable - continue the rollout?" -Default $true)) {
+            Write-Host "  Rollout aborted after preview." -ForegroundColor Yellow
+            return
+        }
+    }
+
+    # 3. Cleanup (optional) — broad scoped reset OR surgical gated package removal
     Write-Host ""
     Write-Host "  Phase 3/6: Cleanup of prior toolkit-owned objects (optional)" -ForegroundColor Cyan
-    if (Read-YesNo "Run cleanup of any existing toolkit-stamped DLP policies/rules and classifier packages?" -Default $false) {
-        Write-Host "  Cleanup is destructive. Type the word CLEANUP (uppercase) to confirm: " -NoNewline -ForegroundColor Yellow
-        $confirm = (Read-Host).Trim()
-        if ($confirm -cne 'CLEANUP') {
-            Write-Host "  Cleanup skipped." -ForegroundColor Yellow
-        } else {
-            $cleanupArgs = @("-Action", "Execute", "-Force") + $commonArgs
-            Invoke-ToolkitScript -ScriptName "Reset-DeploymentScope.ps1" -ArgumentList $cleanupArgs
+    Write-Host "    B. Broad scoped reset (Reset-DeploymentScope)" -ForegroundColor White
+    Write-Host "    S. Surgical gated removal of specific classifier packages" -ForegroundColor White
+    Write-Host "    N. No cleanup" -ForegroundColor Gray
+    $cleanupChoice = (Read-Host "  Select [B/S/N]").Trim().ToUpper()
+    switch ($cleanupChoice) {
+        "B" {
+            Write-Host "  Broad reset is destructive. Type the word CLEANUP (uppercase) to confirm: " -NoNewline -ForegroundColor Yellow
+            if ((Read-Host).Trim() -ceq 'CLEANUP') {
+                $cleanupArgs = @("-Action", "Execute", "-Force") + $commonArgs
+                Invoke-ToolkitScript -ScriptName "Reset-DeploymentScope.ps1" -ArgumentList $cleanupArgs
+            } else {
+                Write-Host "  Cleanup skipped." -ForegroundColor Yellow
+            }
+        }
+        "S" {
+            Invoke-GuidedClassifierRemoval -Connected $Connected -SnapshotAlreadyRun:$rolloutSnapshotRan
+        }
+        default {
+            Write-Host "  No cleanup." -ForegroundColor Gray
         }
     }
 
@@ -1770,6 +1806,7 @@ function Invoke-CustomerRolloutWizard {
     # 5. Classifiers (Greenfield Upload OR ApplyRefitPlan)
     Write-Host ""
     Write-Host "  Phase 5/6: Classifiers" -ForegroundColor Cyan
+    $classifiersApplied = $false
     Write-Host "    A. Greenfield Upload (clean tenant with no custom classifier packages)" -ForegroundColor White
     Write-Host "    B. Refit Plan + Apply (tenant has existing custom packages)" -ForegroundColor White
     Write-Host "    S. Skip classifiers phase" -ForegroundColor Gray
@@ -1782,6 +1819,7 @@ function Invoke-CustomerRolloutWizard {
             if (Read-YesNo "WhatIf looked good — apply Greenfield Upload for real?" -Default $false) {
                 $applyArgs = @("-Action", "Upload", "-Greenfield") + $commonArgs
                 Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+                $classifiersApplied = $true
             }
         }
         "B" {
@@ -1797,6 +1835,7 @@ function Invoke-CustomerRolloutWizard {
                 if (Read-YesNo "WhatIf looked good — apply refit plan for real?" -Default $false) {
                     $applyArgs = @("-Action", "ApplyRefitPlan", "-RefitPlanPath", $planPath, "-ApproveRefitPlan") + $commonArgs
                     Invoke-ToolkitScript -ScriptName "Deploy-Classifiers.ps1" -ArgumentList $applyArgs
+                    $classifiersApplied = $true
                 }
             }
         }
@@ -1805,6 +1844,17 @@ function Invoke-CustomerRolloutWizard {
         }
         default {
             Write-Host "  Unrecognised selection; skipping classifiers phase." -ForegroundColor Yellow
+        }
+    }
+
+    # Propagation checkpoint: custom SITs take 4-24h to become visible to the DLP engine.
+    if ($classifiersApplied) {
+        Write-Host ""
+        Write-Host "  Custom SITs were just uploaded. They take 4-24h to propagate before DLP rules" -ForegroundColor Yellow
+        Write-Host "  that reference them will match. Deploying rules now may warn about not-yet-visible SITs." -ForegroundColor Yellow
+        if (-not (Read-YesNo "Continue to DLP rules now (No = stop here and run rules in a later session)?" -Default $false)) {
+            Write-Host "  Stopping before DLP rules. Re-run the wizard (or menu [7]) after propagation." -ForegroundColor Cyan
+            return
         }
     }
 

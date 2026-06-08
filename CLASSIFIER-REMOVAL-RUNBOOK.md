@@ -12,6 +12,10 @@ All commands assume a single connected session. Concrete example tenant in this 
 `compl8.dev` (its fingerprint = the `nonprod` profile, `block`-pinned). Substitute
 `<TENANT>`, `<ENV>`, `<PREFIX>`, `<PKG>` for your case.
 
+> **Runnable from the TUI.** This whole gated sequence is available via `Start-DLPDeploy.ps1`
+> option **`[10]` Remove SIT Packages** (guided), and within the **rollout wizard (`R`)**
+> cleanup phase ("Surgical gated removal"). The CLI commands below are what those flows run.
+
 ---
 
 ## Why you can't just delete a referenced classifier
