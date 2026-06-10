@@ -5492,6 +5492,7 @@ function Invoke-Estimate {
     $customPkgs = @($deployed | Where-Object { $_.Publisher -ne "Microsoft Corporation" -and $_.Name -notmatch "^Microsoft" })
     if ($customPkgs.Count -gt 0) {
         Write-Host "`n  Per-Package Limits (custom packages):" -ForegroundColor White
+        $limits = Get-DeploymentLimits
         foreach ($d in $customPkgs) {
             $info = Get-DeployedPackageInfo -DeployedPackage $d
             Write-Host "    $($d.Name):" -ForegroundColor White
@@ -5503,7 +5504,7 @@ function Invoke-Estimate {
             }
             if ($info.RawBytes) {
                 $sizeKB = [math]::Round($info.RawBytes.Length / 1KB, 1)
-                $sizePct = [math]::Round(($info.RawBytes.Length / (Get-DeploymentLimits).MaxRulePackageBytes) * 100)
+                $sizePct = [math]::Round(($info.RawBytes.Length / $limits.MaxRulePackageBytes) * 100)
                 $szColor = if ($sizePct -ge 90) { "Red" } elseif ($sizePct -ge 70) { "Yellow" } else { "Green" }
                 Write-Host ("      Size:     {0}KB/150KB ({1}%)" -f $sizeKB, $sizePct) -ForegroundColor $szColor
             }

@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path $PSScriptRoot '..' 'modules' 'Compl8.Model') -Force
-if ($MaxPackageSizeBytes -le 0) {
+if (-not $PSBoundParameters.ContainsKey('MaxPackageSizeBytes')) {
     $MaxPackageSizeBytes = (Get-DeploymentLimits).PreferredRulePackageBytes  # 148 KB margin
 }
 
