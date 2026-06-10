@@ -2548,9 +2548,9 @@ function Write-ClassifierPackagerInput {
         limits        = [ordered]@{
             maxTenantRulePackages        = 10
             maxEntitiesPerRulePackage    = 50
-            maxNewPackageBytes           = 153600
+            maxNewPackageBytes           = (Get-DeploymentLimits).MaxRulePackageBytes
             maxSetPackageBytes           = 788480
-            preferredPackageBytes        = 153600
+            preferredPackageBytes        = (Get-DeploymentLimits).MaxRulePackageBytes
             customSensitiveInfoTypeLimit = 500
         }
         requirements  = [ordered]@{
@@ -3179,7 +3179,7 @@ function Convert-ClassifierRefitPlanForJson {
             maxTenantRulePackages = 10
             maxEntitiesPerRulePackage = 50
             maxSetPackageBytes = 788480
-            preferredNewPackageBytes = 153600
+            preferredNewPackageBytes = (Get-DeploymentLimits).MaxRulePackageBytes
         }
         safeguards = [ordered]@{
             refitFirst = $true
@@ -5503,7 +5503,7 @@ function Invoke-Estimate {
             }
             if ($info.RawBytes) {
                 $sizeKB = [math]::Round($info.RawBytes.Length / 1KB, 1)
-                $sizePct = [math]::Round(($info.RawBytes.Length / 153600) * 100)
+                $sizePct = [math]::Round(($info.RawBytes.Length / (Get-DeploymentLimits).MaxRulePackageBytes) * 100)
                 $szColor = if ($sizePct -ge 90) { "Red" } elseif ($sizePct -ge 70) { "Yellow" } else { "Green" }
                 Write-Host ("      Size:     {0}KB/150KB ({1}%)" -f $sizeKB, $sizePct) -ForegroundColor $szColor
             }

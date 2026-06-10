@@ -15,13 +15,18 @@ param(
     [string]$DictionaryManifestUrl = "https://testpattern.dev/api/export/dictionary-manifest",
     [string]$DictionaryScope = "",
     [string[]]$LiveSlug = @(),
-    [int]$MaxPackageSizeBytes = (148 * 1024),
+    [int]$MaxPackageSizeBytes = 0,
     [switch]$FailOnLocalNameDrift,
     [switch]$FailOnWarnings,
     [switch]$NoExit
 )
 
 $ErrorActionPreference = "Stop"
+
+Import-Module (Join-Path $PSScriptRoot '..' 'modules' 'Compl8.Model') -Force
+if ($MaxPackageSizeBytes -le 0) {
+    $MaxPackageSizeBytes = (Get-DeploymentLimits).PreferredRulePackageBytes  # 148 KB margin
+}
 
 if (-not $ProjectRoot) {
     $ProjectRoot = Split-Path $PSScriptRoot -Parent

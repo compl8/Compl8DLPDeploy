@@ -3769,7 +3769,7 @@ function Test-SITRulePackageXml {
     #>
     param(
         [Parameter(Mandatory)][string]$FilePath,
-        [int]$MaxFileSizeBytes = 153600  # 150KB
+        [int]$MaxFileSizeBytes = (Get-DeploymentLimits).MaxRulePackageBytes
     )
 
     $result = [PSCustomObject]@{
