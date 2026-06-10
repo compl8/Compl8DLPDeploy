@@ -6,7 +6,16 @@
     Description       = 'Compl8 pure model layer: limits, naming templates, rule-package parsing, reference graph. No tenant calls.'
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
+        'Assert-PurviewObjectNameSafety'
+        'ConvertTo-DeploymentNameTemplates'
+        'Expand-DeploymentNameTemplate'
         'Get-DeploymentLimits'
+        'Get-DeploymentObjectName'
+        'Get-PolicyName'
+        'Get-PurviewUnsafeNameCharacterSummary'
+        'Get-RuleName'
+        'Remove-DeploymentNamePrefix'
+        'Test-PurviewObjectNameSafety'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
