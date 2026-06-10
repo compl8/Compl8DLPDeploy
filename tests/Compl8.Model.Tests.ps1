@@ -125,3 +125,12 @@ Describe 'Compl8.Model standalone exports (naming)' {
         $result | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
     }
 }
+
+Describe 'Layer scaffolds' {
+    It 'all four layer modules import cleanly' {
+        $root = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules'
+        foreach ($layer in 'Compl8.Model', 'Compl8.Tenant', 'Compl8.Content', 'Compl8.Engine') {
+            { Import-Module (Join-Path $root $layer) -Force -ErrorAction Stop } | Should -Not -Throw
+        }
+    }
+}
