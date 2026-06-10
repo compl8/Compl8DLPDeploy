@@ -15,6 +15,7 @@
         'Get-DeploymentGraphRulePackageInfo'
         'Get-DeploymentLimits'
         'Get-DeploymentObjectName'
+        'Get-DeploymentObjectProperty'
         'Get-DeploymentReferenceGraph'
         'Get-DictionaryGuidReferences'
         'Get-DlpRuleClassifierReferenceText'

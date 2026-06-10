@@ -29,4 +29,8 @@ Describe 'Compl8.Tenant standalone exports' {
         (Get-Command -Name Get-DeploymentReferenceGraph -ErrorAction SilentlyContinue) |
             Should -Not -BeNullOrEmpty
     }
+    It 'resolves Get-DeploymentObjectProperty through its Compl8.Model dependency' {
+        (Get-Command -Name Get-DeploymentObjectProperty -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
 }
