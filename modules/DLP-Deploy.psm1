@@ -4,6 +4,23 @@
 # Import with: Import-Module .\modules\DLP-Deploy.psm1 -Force
 #==============================================================================
 
+# ---------------------------------------------------------------------------
+# Layered-architecture facade (Stages 1-2 of
+# docs/superpowers/specs/2026-06-10-config-mgmt-architecture-design.md).
+# Moved functions are canonically defined one-per-file under
+# modules/Compl8.Model and modules/Compl8.Tenant and dot-sourced here so every
+# existing `Import-Module ...DLP-Deploy.psm1` site — and every Pester mock
+# scoped `-ModuleName DLP-Deploy` — keeps working unchanged during migration.
+# ---------------------------------------------------------------------------
+foreach ($compl8Layer in @('Compl8.Model', 'Compl8.Tenant')) {
+    $compl8LayerPublic = Join-Path $PSScriptRoot $compl8Layer 'Public'
+    if (Test-Path -LiteralPath $compl8LayerPublic) {
+        foreach ($compl8Fn in (Get-ChildItem -Path $compl8LayerPublic -Filter '*.ps1' -File | Sort-Object Name)) {
+            . $compl8Fn.FullName
+        }
+    }
+}
+
 #region Module Defaults
 function Get-ModuleDefaults {
     return @{
@@ -3998,6 +4015,7 @@ Export-ModuleMember -Function @(
     'Complete-DeploymentManifest'
     'Save-DeploymentManifest'
     'Get-DeploymentFileArtifact'
+    'Get-DeploymentLimits'
     'Test-DeploymentTenantFingerprint'
     'Convert-DlpSerializedRulePackageToText'
     'Get-DlpRulePackageEntityIds'

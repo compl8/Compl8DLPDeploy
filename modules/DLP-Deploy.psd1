@@ -34,6 +34,7 @@
         'Get-LiveDLPSession'
         'Get-NormalizedDictionaryTerms'
         'Get-DeploymentFileArtifact'
+        'Get-DeploymentLimits'
         'Get-DeploymentProvenanceStamp'
         'Get-DeploymentReferenceGraph'
         'Get-DeploymentTenantInfo'
