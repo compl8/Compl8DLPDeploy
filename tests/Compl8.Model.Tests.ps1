@@ -31,6 +31,68 @@ Describe 'DLP-Deploy facade' {
     }
 }
 
+Describe 'Compl8.Model standalone exports (parsing/graph)' {
+    BeforeAll {
+        Remove-Module DLP-Deploy -ErrorAction SilentlyContinue
+        $script:ModelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'Compl8.Model'
+        Import-Module $script:ModelDir -Force
+    }
+    It 'exports the parser and graph functions without loading DLP-Deploy' {
+        $names = @(
+            'Convert-DlpSerializedRulePackageToText', 'Get-DlpRulePackageEntityIds',
+            'Get-DlpRulePolicyNames', 'Get-DlpRuleClassifierReferenceText',
+            'New-DeploymentGraphNodeId', 'Get-DeploymentGraphObjectValue',
+            'Get-DeploymentGraphRulePackageInfo', 'Get-DeploymentReferenceGraph',
+            'ConvertTo-DeploymentRelativePath', 'Get-DictionaryGuidReferences',
+            'Test-SITRulePackageXml'
+        )
+        foreach ($n in $names) {
+            (Get-Command -Name $n -Module Compl8.Model -ErrorAction SilentlyContinue) |
+                Should -Not -BeNullOrEmpty -Because "$n should be exported by Compl8.Model"
+        }
+    }
+    It 'extracts entity ids from a minimal rule package standalone' {
+        $xml = @'
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="aaaaaaaa-1111-2222-3333-444444444444">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Publisher id="bbbbbbbb-1111-2222-3333-444444444444"/>
+    <Details>
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>Test</PublisherName>
+        <Name>TestPkg</Name>
+        <Description>Test</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="33333333-3333-3333-3333-333333333333" patternsProximity="300" recommendedConfidence="85">
+      <Pattern confidenceLevel="85">
+        <IdMatch idRef="Pattern_test"/>
+      </Pattern>
+    </Entity>
+    <LocalizedStrings>
+      <Resource idRef="33333333-3333-3333-3333-333333333333">
+        <Name default="true" langcode="en-us">Test Entity</Name>
+        <Description default="true" langcode="en-us">Test entity description</Description>
+      </Resource>
+    </LocalizedStrings>
+  </Rules>
+</RulePackage>
+'@
+        $pkg = [pscustomobject]@{
+            Identity = 'test-pkg'
+            Publisher = 'Test'
+            Name = 'TestPkg'
+            SerializedClassificationRuleCollection = $xml
+        }
+        $r = Get-DlpRulePackageEntityIds -Packages @($pkg)
+        $r[0].Parsed | Should -BeTrue
+        $r[0].EntityIds | Should -Contain '33333333-3333-3333-3333-333333333333'
+        $r[0].RulePackId | Should -Be 'aaaaaaaa-1111-2222-3333-444444444444'
+    }
+}
+
 Describe 'Compl8.Model standalone exports (naming)' {
     BeforeAll {
         # Reload Compl8.Model in a clean state; the DLP-Deploy facade Describe above

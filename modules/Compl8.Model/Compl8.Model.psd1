@@ -7,15 +7,26 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Assert-PurviewObjectNameSafety'
+        'Convert-DlpSerializedRulePackageToText'
         'ConvertTo-DeploymentNameTemplates'
+        'ConvertTo-DeploymentRelativePath'
         'Expand-DeploymentNameTemplate'
+        'Get-DeploymentGraphObjectValue'
+        'Get-DeploymentGraphRulePackageInfo'
         'Get-DeploymentLimits'
         'Get-DeploymentObjectName'
+        'Get-DeploymentReferenceGraph'
+        'Get-DictionaryGuidReferences'
+        'Get-DlpRuleClassifierReferenceText'
+        'Get-DlpRulePackageEntityIds'
+        'Get-DlpRulePolicyNames'
         'Get-PolicyName'
         'Get-PurviewUnsafeNameCharacterSummary'
         'Get-RuleName'
+        'New-DeploymentGraphNodeId'
         'Remove-DeploymentNamePrefix'
         'Test-PurviewObjectNameSafety'
+        'Test-SITRulePackageXml'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
