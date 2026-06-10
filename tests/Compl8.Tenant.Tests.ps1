@@ -25,6 +25,11 @@ Describe 'Compl8.Tenant standalone exports' {
         try { { Assert-OrchestrationGate -ScriptName 'X' } | Should -Not -Throw }
         finally { Remove-Item Env:\COMPL8_ORCHESTRATED -ErrorAction SilentlyContinue }
     }
+    It 'orchestration gate throws standalone on a raw non-interactive run' {
+        Remove-Item Env:\COMPL8_ORCHESTRATED -ErrorAction SilentlyContinue
+        Mock -ModuleName Compl8.Tenant Test-IsInteractive { $false }
+        { Assert-OrchestrationGate -ScriptName 'X' } | Should -Throw '*AllowDirectRun*'
+    }
     It 'loads its Compl8.Model dependency for the reference guard' {
         (Get-Command -Name Get-DeploymentReferenceGraph -ErrorAction SilentlyContinue) |
             Should -Not -BeNullOrEmpty
