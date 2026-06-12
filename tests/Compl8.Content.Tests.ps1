@@ -250,21 +250,99 @@ Describe 'Import-ContentOverlay' {
         { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*whitelist*'
     }
 
-    It 'rejects an override targeting a slug absent from the release' {
-        $dir = Copy-MiniOverlay 'ov-noslug'
-        Set-OverlayJson $dir { param($j) $j.override[0].slug = 'never-released' }
-        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*never-released*'
-    }
-
-    It 'rejects a disable targeting a slug absent from the release' {
-        $dir = Copy-MiniOverlay 'ov-nodisable'
-        Set-OverlayJson $dir { param($j) $j.disable[0].slug = 'never-released' }
-        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*never-released*'
+    It 'accepts override/disable targets absent from the release (orphan detection is merge''s job)' {
+        $dir = Copy-MiniOverlay 'ov-orphan-ok'
+        Set-OverlayJson $dir { param($j)
+            $j.override[0].slug = 'never-released'
+            $j.disable[0].slug = 'also-never-released' }
+        $o = Import-ContentOverlay -Path $dir -Release $script:Release
+        $o.Override[0].Slug | Should -Be 'never-released'
+        $o.Disable[0].Slug | Should -Be 'also-never-released'
     }
 
     It 'rejects an add whose definition file is missing' {
         $dir = Copy-MiniOverlay 'ov-nodef'
         Remove-Item -LiteralPath (Join-Path $dir 'add' 'custom-incident-ref.json') -Confirm:$false
         { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*definition*'
+    }
+}
+
+Describe 'Merge-DesiredContent' {
+    BeforeAll {
+        $script:Release = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+        $script:Overlay = Import-ContentOverlay -Path (Join-Path $script:FixtureRoot 'mini-overlay') -Release $script:Release
+        $script:EmptyOverlay = Import-ContentOverlay -Path (Join-Path $TestDrive 'no-overlay-here') -Release $script:Release
+
+        # Deep-copy the release and bump one item's sourceHash to simulate a release upgrade.
+        function Get-UpgradedRelease {
+            param([string[]]$ChangedSlugs, [string[]]$RemovedSlugs = @())
+            $copy = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+            foreach ($slug in $ChangedSlugs) {
+                $copy.Items[$slug].SourceHash = 'sha256:fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0'
+            }
+            foreach ($slug in $RemovedSlugs) { $copy.Items.Remove($slug) }
+            $copy
+        }
+    }
+
+    It 'case 1: unchanged release item with no customisation passes through as released' {
+        $m = Merge-DesiredContent -Release $script:Release -Overlay $script:EmptyOverlay
+        @($m.Items).Count | Should -Be 4
+        @($m.Conflicts).Count | Should -Be 0
+        $item = $m.Items | Where-Object Slug -EQ 'bail-note'
+        $item.Source | Should -Be 'release'
+        $item.AttrPatches.Count | Should -Be 0
+    }
+
+    It 'case 2: unchanged release item with override carries the attr patches, no conflict' {
+        $m = Merge-DesiredContent -Release $script:Release -Overlay $script:Overlay
+        $item = $m.Items | Where-Object Slug -EQ 'bail-note'
+        $item.AttrPatches['patternsProximity'] | Should -Be 200
+        $item.StaleOverride | Should -BeFalse
+        @($m.Conflicts | Where-Object Slug -EQ 'bail-note').Count | Should -Be 0
+    }
+
+    It 'case 3: disable excludes the item without conflict' {
+        $m = Merge-DesiredContent -Release $script:Release -Overlay $script:Overlay
+        @($m.Items | Where-Object Slug -EQ 'shared-b').Count | Should -Be 0
+        @($m.Conflicts | Where-Object Slug -EQ 'shared-b').Count | Should -Be 0
+    }
+
+    It 'case 4: release changed under an override -> conflict surfaced, override still applied flagged stale' {
+        $upgraded = Get-UpgradedRelease -ChangedSlugs @('bail-note')
+        $m = Merge-DesiredContent -Release $upgraded -Overlay $script:Overlay
+        $conflict = $m.Conflicts | Where-Object Slug -EQ 'bail-note'
+        $conflict.Kind | Should -Be 'override-base-changed'
+        $item = $m.Items | Where-Object Slug -EQ 'bail-note'
+        $item.AttrPatches['patternsProximity'] | Should -Be 200
+        $item.StaleOverride | Should -BeTrue
+    }
+
+    It 'case 5: release changed while disabled -> conflict surfaced, item stays excluded' {
+        $upgraded = Get-UpgradedRelease -ChangedSlugs @('shared-b')
+        $m = Merge-DesiredContent -Release $upgraded -Overlay $script:Overlay
+        ($m.Conflicts | Where-Object Slug -EQ 'shared-b').Kind | Should -Be 'disabled-item-changed'
+        @($m.Items | Where-Object Slug -EQ 'shared-b').Count | Should -Be 0
+    }
+
+    It 'case 6: customisations orphaned by item removal -> orphan conflicts' {
+        $upgraded = Get-UpgradedRelease -ChangedSlugs @() -RemovedSlugs @('bail-note', 'shared-b')
+        $m = Merge-DesiredContent -Release $upgraded -Overlay $script:Overlay
+        ($m.Conflicts | Where-Object Slug -EQ 'bail-note').Kind | Should -Be 'orphaned-override'
+        ($m.Conflicts | Where-Object Slug -EQ 'shared-b').Kind | Should -Be 'orphaned-disable'
+    }
+
+    It 'case 7: custom add lands as a desired item with source custom, after release items' {
+        $m = Merge-DesiredContent -Release $script:Release -Overlay $script:Overlay
+        $last = @($m.Items)[-1]
+        $last.Slug | Should -Be 'custom-incident-ref'
+        $last.Source | Should -Be 'custom'
+        $last.Definition.regex | Should -Not -BeNullOrEmpty
+    }
+
+    It 'is deterministic: identical inputs produce byte-identical serialised output' {
+        $a = Merge-DesiredContent -Release $script:Release -Overlay $script:Overlay
+        $b = Merge-DesiredContent -Release $script:Release -Overlay $script:Overlay
+        ($a | ConvertTo-Json -Depth 10) | Should -Be ($b | ConvertTo-Json -Depth 10)
     }
 }

@@ -11,6 +11,7 @@
         'Import-ContentOverlay'
         'Import-ContentRelease'
         'Initialize-EntityLedger'
+        'Merge-DesiredContent'
         'Update-EntityLedger'
     )
     CmdletsToExport   = @()

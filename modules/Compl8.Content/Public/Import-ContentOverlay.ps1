@@ -51,12 +51,13 @@ function Import-ContentOverlay {
         $adds += [pscustomobject]@{ Slug = $add.slug; Definition = $definition }
     }
 
+    # NOTE: override/disable targets are NOT required to exist in the release here — a release
+    # upgrade may have removed them, and that must surface as an upgrade conflict in
+    # Merge-DesiredContent, never as an import failure (arch design §4: conflicts are
+    # explicit, not silently resolved and not hard errors).
     $overrides = @()
     foreach ($override in @($overlay.override)) {
         if (-not $override) { continue }
-        if ($releaseSlugs -notcontains $override.slug) {
-            throw "Overlay override targets '$($override.slug)', which is not in the release."
-        }
         if (-not $override.baseSourceHash) {
             throw "Overlay override '$($override.slug)' is missing baseSourceHash (needed for upgrade-conflict detection)."
         }
@@ -83,10 +84,11 @@ function Import-ContentOverlay {
     $disables = @()
     foreach ($disable in @($overlay.disable)) {
         if (-not $disable) { continue }
-        if ($releaseSlugs -notcontains $disable.slug) {
-            throw "Overlay disable targets '$($disable.slug)', which is not in the release."
+        $disables += [pscustomobject]@{
+            Slug           = $disable.slug
+            Reason         = $disable.reason
+            BaseSourceHash = $disable.baseSourceHash
         }
-        $disables += [pscustomobject]@{ Slug = $disable.slug; Reason = $disable.reason }
     }
 
     [pscustomobject]@{

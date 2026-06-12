@@ -11,6 +11,10 @@
     }
   ],
   "disable": [
-    { "slug": "shared-b", "reason": "duplicate coverage with tenant-native SIT" }
+    {
+      "slug": "shared-b",
+      "reason": "duplicate coverage with tenant-native SIT",
+      "baseSourceHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
   ]
 }
