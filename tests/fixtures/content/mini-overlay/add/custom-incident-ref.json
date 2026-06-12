@@ -1,0 +1,10 @@
+{
+  "slug": "custom-incident-ref",
+  "name": "Incident Reference Number",
+  "description": "Detects agency incident reference numbers (operator-curated custom SIT).",
+  "confidence": "medium",
+  "proximity": 300,
+  "regex": "(?i)\\bINC-20\\d{2}-\\d{6}\\b",
+  "keywords": ["incident reference", "case number"],
+  "exclusions": ["training example"]
+}

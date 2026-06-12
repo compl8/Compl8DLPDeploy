@@ -187,3 +187,84 @@ Describe 'Entity ledger' {
         { Update-EntityLedger -Path $path -Disable 'no-such-slug' } | Should -Throw '*no-such-slug*'
     }
 }
+
+Describe 'Import-ContentOverlay' {
+    BeforeAll {
+        $script:Release = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+        $script:MiniOverlay = Join-Path $script:FixtureRoot 'mini-overlay'
+
+        function Copy-MiniOverlay {
+            param([string]$Name)
+            $dest = Join-Path $TestDrive $Name
+            Copy-Item -LiteralPath $script:MiniOverlay -Destination $dest -Recurse
+            $dest
+        }
+        function Set-OverlayJson {
+            param([string]$Dir, [scriptblock]$Mutate)
+            $p = Join-Path $Dir 'overlay.json'
+            $json = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+            & $Mutate $json
+            $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p
+        }
+    }
+
+    It 'loads add, override and disable from the mini overlay' {
+        $o = Import-ContentOverlay -Path $script:MiniOverlay -Release $script:Release
+        @($o.Add).Count | Should -Be 1
+        $o.Add[0].Slug | Should -Be 'custom-incident-ref'
+        $o.Add[0].Definition.regex | Should -Not -BeNullOrEmpty
+        @($o.Override).Count | Should -Be 1
+        $o.Override[0].Set.patternsProximity | Should -Be 200
+        @($o.Disable).Count | Should -Be 1
+        $o.Disable[0].Slug | Should -Be 'shared-b'
+    }
+
+    It 'treats a missing overlay.json as a valid empty overlay' {
+        $empty = Join-Path $TestDrive 'overlay-empty'
+        New-Item -ItemType Directory -Path $empty | Out-Null
+        $o = Import-ContentOverlay -Path $empty -Release $script:Release
+        @($o.Add).Count | Should -Be 0
+        @($o.Override).Count | Should -Be 0
+        @($o.Disable).Count | Should -Be 0
+    }
+
+    It 'rejects an add slug outside the custom- namespace' {
+        $dir = Copy-MiniOverlay 'ov-badns'
+        Set-OverlayJson $dir { param($j) $j.add[0].slug = 'not-custom' }
+        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*custom-*'
+    }
+
+    It 'rejects an add slug colliding with a release slug' {
+        # Defence in depth: craft a release that (illegally) contains a custom- slug.
+        $items = [ordered]@{}
+        $items['custom-incident-ref'] = [pscustomobject]@{ Slug = 'custom-incident-ref' }
+        $fakeRelease = [pscustomobject]@{ Items = $items }
+        { Import-ContentOverlay -Path $script:MiniOverlay -Release $fakeRelease } |
+            Should -Throw '*collides*'
+    }
+
+    It 'rejects override.set keys outside the whitelist' {
+        $dir = Copy-MiniOverlay 'ov-badkey'
+        Set-OverlayJson $dir { param($j)
+            $j.override[0].set = [pscustomobject]@{ regex = '(?i)\bhacked\b' } }
+        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*whitelist*'
+    }
+
+    It 'rejects an override targeting a slug absent from the release' {
+        $dir = Copy-MiniOverlay 'ov-noslug'
+        Set-OverlayJson $dir { param($j) $j.override[0].slug = 'never-released' }
+        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*never-released*'
+    }
+
+    It 'rejects a disable targeting a slug absent from the release' {
+        $dir = Copy-MiniOverlay 'ov-nodisable'
+        Set-OverlayJson $dir { param($j) $j.disable[0].slug = 'never-released' }
+        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*never-released*'
+    }
+
+    It 'rejects an add whose definition file is missing' {
+        $dir = Copy-MiniOverlay 'ov-nodef'
+        Remove-Item -LiteralPath (Join-Path $dir 'add' 'custom-incident-ref.json') -Confirm:$false
+        { Import-ContentOverlay -Path $dir -Release $script:Release } | Should -Throw '*definition*'
+    }
+}

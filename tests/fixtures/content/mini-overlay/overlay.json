@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "compl8.overlay/v1",
+  "add": [
+    { "slug": "custom-incident-ref", "definition": "add/custom-incident-ref.json" }
+  ],
+  "override": [
+    {
+      "slug": "bail-note",
+      "baseSourceHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "set": { "patternsProximity": 200 }
+    }
+  ],
+  "disable": [
+    { "slug": "shared-b", "reason": "duplicate coverage with tenant-native SIT" }
+  ]
+}

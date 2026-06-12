@@ -8,6 +8,7 @@
     FunctionsToExport = @(
         'Get-Compl8WorkspacePath'
         'Get-EntityLedger'
+        'Import-ContentOverlay'
         'Import-ContentRelease'
         'Initialize-EntityLedger'
         'Update-EntityLedger'
