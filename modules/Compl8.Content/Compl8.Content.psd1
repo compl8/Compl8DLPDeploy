@@ -7,7 +7,10 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Get-Compl8WorkspacePath'
+        'Get-EntityLedger'
         'Import-ContentRelease'
+        'Initialize-EntityLedger'
+        'Update-EntityLedger'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

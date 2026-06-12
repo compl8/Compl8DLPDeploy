@@ -104,3 +104,86 @@ Describe 'Import-ContentRelease' {
         { Import-ContentRelease -Path $dir } | Should -Throw '*DICT_DOES_NOT_EXIST*'
     }
 }
+
+Describe 'Entity ledger' {
+    BeforeAll {
+        $script:Release = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+    }
+
+    It 'seeds one active release entry per release item' {
+        $path = Join-Path $TestDrive 'ledger1.json'
+        $ledger = Initialize-EntityLedger -Release $script:Release -Path $path
+        @($ledger.Entries).Count | Should -Be 4
+        $e = $ledger.Entries | Where-Object slug -EQ 'bail-note'
+        $e.entityId | Should -Be '11111111-aaaa-4bbb-8ccc-000000000001'
+        $e.state | Should -Be 'active'
+        $e.source | Should -Be 'release'
+        Test-Path -LiteralPath $path | Should -BeTrue
+    }
+
+    It 'is idempotent: re-seeding never re-mints an existing binding' {
+        $path = Join-Path $TestDrive 'ledger2.json'
+        Initialize-EntityLedger -Release $script:Release -Path $path | Out-Null
+        # Simulate an adopted binding that differs from the release default GUID.
+        $raw = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        ($raw.entries | Where-Object slug -EQ 'shared-a').entityId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path
+        $ledger = Initialize-EntityLedger -Release $script:Release -Path $path
+        ($ledger.Entries | Where-Object slug -EQ 'shared-a').entityId |
+            Should -Be 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        @($ledger.Entries).Count | Should -Be 4
+    }
+
+    It 'warns about GUIDs absent from a provided inventory but still seeds them' {
+        $invPath = Join-Path $TestDrive 'inv.json'
+        ConvertTo-Json @(
+            @{ Name = 'Bail Note'; Id = '11111111-aaaa-4bbb-8ccc-000000000001'; Publisher = 'P' }
+        ) | Set-Content -LiteralPath $invPath
+        $path = Join-Path $TestDrive 'ledger3.json'
+        $ledger = Initialize-EntityLedger -Release $script:Release -Path $path -InventoryPath $invPath `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+        @($ledger.Entries).Count | Should -Be 4
+        @($warnings).Count | Should -Be 3
+    }
+
+    It 'mints a custom GUID once and returns the same GUID on re-add' {
+        $path = Join-Path $TestDrive 'ledger4.json'
+        Initialize-EntityLedger -Release $script:Release -Path $path | Out-Null
+        $first = Update-EntityLedger -Path $path -Add 'custom-foo'
+        $second = Update-EntityLedger -Path $path -Add 'custom-foo'
+        $first.entityId | Should -Match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        $second.entityId | Should -Be $first.entityId
+        $first.source | Should -Be 'custom'
+    }
+
+    It 'disable retains the entry; re-enable restores the same GUID' {
+        $path = Join-Path $TestDrive 'ledger5.json'
+        Initialize-EntityLedger -Release $script:Release -Path $path | Out-Null
+        $before = (Get-EntityLedger -Path $path).Entries | Where-Object slug -EQ 'name-dict'
+        Update-EntityLedger -Path $path -Disable 'name-dict' | Out-Null
+        $mid = (Get-EntityLedger -Path $path).Entries | Where-Object slug -EQ 'name-dict'
+        $mid.state | Should -Be 'disabled'
+        Update-EntityLedger -Path $path -Enable 'name-dict' | Out-Null
+        $after = (Get-EntityLedger -Path $path).Entries | Where-Object slug -EQ 'name-dict'
+        $after.state | Should -Be 'active'
+        $after.entityId | Should -Be $before.entityId
+    }
+
+    It 'Get-EntityLedger rejects a schemaVersion mismatch' {
+        $path = Join-Path $TestDrive 'ledger6.json'
+        '{"schemaVersion":"compl8.entity-ledger/v99","entries":[]}' | Set-Content -LiteralPath $path
+        { Get-EntityLedger -Path $path } | Should -Throw '*schemaVersion*'
+    }
+
+    It 'Update-EntityLedger rejects -Add without the custom- prefix' {
+        $path = Join-Path $TestDrive 'ledger7.json'
+        Initialize-EntityLedger -Release $script:Release -Path $path | Out-Null
+        { Update-EntityLedger -Path $path -Add 'not-custom' } | Should -Throw '*custom-*'
+    }
+
+    It 'Update-EntityLedger rejects disabling an unknown slug' {
+        $path = Join-Path $TestDrive 'ledger8.json'
+        Initialize-EntityLedger -Release $script:Release -Path $path | Out-Null
+        { Update-EntityLedger -Path $path -Disable 'no-such-slug' } | Should -Throw '*no-such-slug*'
+    }
+}
