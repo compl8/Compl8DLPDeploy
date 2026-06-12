@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "compl8.fragment/v1",
+  "slug": "name-dict",
+  "entityId": "22222222-aaaa-4bbb-8ccc-000000000002",
+  "sections": {
+    "entity": "<Entity id=\"22222222-aaaa-4bbb-8ccc-000000000002\" patternsProximity=\"300\" recommendedConfidence=\"75\" relaxProximity=\"false\">\n<Pattern confidenceLevel=\"75\">\n<IdMatch idRef=\"Pattern_name_dict_phrase_name-dict\" />\n<Match idRef=\"{{DICT_AU_FORENAMES}}\" />\n</Pattern>\n</Entity>",
+    "regexes": [
+      "<Regex id=\"Pattern_name_dict_phrase_name-dict\">(?i)\\b(?:full\\s+legal\\s+name|name\\s+of\\s+accused)\\b</Regex>"
+    ],
+    "keywords": [],
+    "filters": [],
+    "validators": [],
+    "resources": [
+      "<Resource idRef=\"22222222-aaaa-4bbb-8ccc-000000000002\">\n<Name default=\"true\" langcode=\"en-us\">TestPattern - Name With Dictionary</Name>\n<Description default=\"true\" langcode=\"en-us\">Detects legal names corroborated by the AU forenames dictionary.</Description>\n</Resource>"
+    ]
+  }
+}

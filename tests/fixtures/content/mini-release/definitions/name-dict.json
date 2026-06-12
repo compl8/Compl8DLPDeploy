@@ -1,0 +1,9 @@
+{
+  "slug": "name-dict",
+  "name": "Name With Dictionary",
+  "description": "Detects legal names corroborated by the AU forenames dictionary.",
+  "confidence": "medium",
+  "proximity": 300,
+  "regex": "(?i)\\b(?:full\\s+legal\\s+name|name\\s+of\\s+accused)\\b",
+  "dictionaryRefs": ["{{DICT_AU_FORENAMES}}"]
+}

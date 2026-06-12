@@ -5,7 +5,9 @@
     Author            = 'Compl8 DLP Deploy'
     Description       = 'Compl8 content layer: curated release + overlay merge + repack engine (Stage 3).'
     PowerShellVersion = '7.0'
-    FunctionsToExport = @()
+    FunctionsToExport = @(
+        'Get-Compl8WorkspacePath'
+    )
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()
