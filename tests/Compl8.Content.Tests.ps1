@@ -436,3 +436,95 @@ Describe 'Get-RulePackageAssignment' {
         $r.Packages[0].Name | Should -Be 'QGISCF-medium-07a'
     }
 }
+
+Describe 'ConvertTo-RulePackageXml' {
+    BeforeAll {
+        $script:Release = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+        $script:EmptyOverlay = Import-ContentOverlay -Path (Join-Path $TestDrive 'no-overlay') -Release $script:Release
+        $script:Merged = Merge-DesiredContent -Release $script:Release -Overlay $script:EmptyOverlay
+        $script:LedgerPath = Join-Path $TestDrive 'compose-ledger.json'
+        Initialize-EntityLedger -Release $script:Release -Path $script:LedgerPath | Out-Null
+        $script:Ledger = Get-EntityLedger -Path $script:LedgerPath
+
+        function Invoke-Compose {
+            param($Items = $script:Merged.Items, $Ledger = $script:Ledger)
+            ConvertTo-RulePackageXml -Name 'P-test-01' -Items $Items -Ledger $Ledger `
+                -Publisher 'Test Pub' -RulePackId 'deadbeef-dead-4eef-8eef-deadbeefdead'
+        }
+    }
+
+    It 'composes a package that passes Test-SITRulePackageXml' {
+        $r = Invoke-Compose
+        $out = Join-Path $TestDrive 'composed.xml'
+        [System.IO.File]::WriteAllBytes($out, $r.Bytes)
+        $v = Test-SITRulePackageXml -FilePath $out
+        $v.Errors | Should -BeNullOrEmpty
+        $v.Valid | Should -BeTrue
+        $r.EntityCount | Should -Be 4
+    }
+
+    It 'orders sections Entities, Regexes, Keywords, then LocalizedStrings' {
+        $t = (Invoke-Compose).Text
+        $lastEntity = $t.LastIndexOf('<Entity ')
+        $firstRegex = $t.IndexOf('<Regex ')
+        $firstKeyword = $t.IndexOf('<Keyword ')
+        $strings = $t.IndexOf('<LocalizedStrings>')
+        $lastEntity | Should -BeLessThan $firstRegex
+        $firstRegex | Should -BeLessThan $firstKeyword
+        $firstKeyword | Should -BeLessThan $strings
+    }
+
+    It 'emits a shared keyword definition exactly once (id dedup, first occurrence wins)' {
+        $t = (Invoke-Compose).Text
+        ([regex]::Matches($t, '<Keyword id="Keyword_shared_noise_filter"')).Count | Should -Be 1
+    }
+
+    It 'rebinds a ledger GUID in Entity id and Resource idRef, changing nothing else' {
+        $adopted = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        $original = '33333333-aaaa-4bbb-8ccc-000000000003'
+        $raw = Get-Content -LiteralPath $script:LedgerPath -Raw | ConvertFrom-Json
+        ($raw.entries | Where-Object slug -EQ 'shared-a').entityId = $adopted
+        $rebindPath = Join-Path $TestDrive 'rebind-ledger.json'
+        $raw | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $rebindPath
+
+        $identity = (Invoke-Compose).Text
+        $rebound = (Invoke-Compose -Ledger (Get-EntityLedger -Path $rebindPath)).Text
+
+        $rebound | Should -Match "<Entity id=`"$adopted`""
+        $rebound | Should -Match "<Resource idRef=`"$adopted`""
+        $rebound.Contains($original) | Should -BeFalse
+        # Undoing the rebind must reproduce the identity composition byte-for-byte.
+        $rebound.Replace($adopted, $original) | Should -Be $identity
+    }
+
+    It 'applies attr patches to the entity start tag only' {
+        $items = @($script:Merged.Items | ForEach-Object { $_ })
+        $patched = $items[0].PSObject.Copy()
+        $patched.AttrPatches = @{ patternsProximity = 200 }
+        $items[0] = $patched
+
+        $identity = (Invoke-Compose).Text
+        $t = (Invoke-Compose -Items $items).Text
+        $t | Should -Match '<Entity id="11111111-aaaa-4bbb-8ccc-000000000001" patternsProximity="200"'
+        $t.Replace('patternsProximity="200"', 'patternsProximity="300"') | Should -Be $identity
+    }
+
+    It 'honours the byte contract: no BOM, CRLF only, no comments, publisher and description patched' {
+        $r = Invoke-Compose
+        $r.Bytes[0] | Should -Be 60   # '<' — no BOM
+        $r.Text | Should -Match '<PublisherName>Test Pub</PublisherName>'
+        $r.Text | Should -Match '<Description>TestPattern bundle with 4 patterns</Description>'
+        $r.Text.Contains('<!--') | Should -BeFalse
+        ([regex]::Matches($r.Text, "(?<!`r)`n")).Count | Should -Be 0
+        $r.Text | Should -Match '^<\?xml version="1\.0" encoding="utf-8"\?>'
+    }
+
+    It 'passes dictionary placeholders through verbatim' {
+        (Invoke-Compose).Text | Should -Match '<Match idRef="\{\{DICT_AU_FORENAMES\}\}" />'
+    }
+
+    It 'throws when an item has no ledger binding' {
+        $noLedger = [pscustomobject]@{ Path = 'x'; Entries = @() }
+        { Invoke-Compose -Ledger $noLedger } | Should -Throw '*ledger*'
+    }
+}
