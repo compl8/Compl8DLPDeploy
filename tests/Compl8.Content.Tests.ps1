@@ -346,3 +346,93 @@ Describe 'Merge-DesiredContent' {
         ($a | ConvertTo-Json -Depth 10) | Should -Be ($b | ConvertTo-Json -Depth 10)
     }
 }
+
+Describe 'Get-RulePackageAssignment' {
+    BeforeAll {
+        function New-PackItem {
+            param([string]$Slug, [int]$SizeBytes = 2000)
+            [pscustomobject]@{ Slug = $Slug; SizeBytes = $SizeBytes }
+        }
+        function Invoke-Pack {
+            param($Items, $Prior = $null)
+            Get-RulePackageAssignment -Items $Items -Prior $Prior -Prefix 'P' -Tier 'test'
+        }
+        $script:Limits = Get-DeploymentLimits
+    }
+
+    It 'is deterministic: identical inputs produce identical output' {
+        $items = 1..20 | ForEach-Object { New-PackItem "slug-$_" }
+        $a = Invoke-Pack $items
+        $b = Invoke-Pack $items
+        ($a | ConvertTo-Json -Depth 10) | Should -Be ($b | ConvertTo-Json -Depth 10)
+    }
+
+    It 'greedy baseline without prior: 70 small items pack to the 50-entity cap -> 2 packages' {
+        $items = 1..70 | ForEach-Object { New-PackItem "slug-$_" }
+        $r = Invoke-Pack $items
+        @($r.Packages).Count | Should -Be 2
+        @($r.Packages[0].Slugs).Count | Should -Be 50
+        @($r.Packages[1].Slugs).Count | Should -Be 20
+        @($r.Dropped).Count | Should -Be 0
+    }
+
+    It 'opens a new package when the size cap binds before the entity cap' {
+        # 60KB each: two fit under the 148KB preferred cap, the third must spill.
+        $items = 1..3 | ForEach-Object { New-PackItem "big-$_" -SizeBytes 61440 }
+        $r = Invoke-Pack $items
+        @($r.Packages).Count | Should -Be 2
+        @($r.Packages[0].Slugs) | Should -Be @('big-1', 'big-2')
+        @($r.Packages[1].Slugs) | Should -Be @('big-3')
+    }
+
+    It 'prior assignments are sticky: removing one slug moves nothing else' {
+        $items = @(
+            New-PackItem 'a'; New-PackItem 'c'; New-PackItem 'd'  # 'b' departed
+        )
+        $prior = @{ a = 'P-test-01'; b = 'P-test-01'; c = 'P-test-01'; d = 'P-test-02' }
+        $r = Invoke-Pack $items $prior
+        $r.Assignments['a'] | Should -Be 'P-test-01'
+        $r.Assignments['c'] | Should -Be 'P-test-01'
+        $r.Assignments['d'] | Should -Be 'P-test-02'
+    }
+
+    It 'new slugs fill existing headroom in ascending package order before opening new packages' {
+        $items = @(New-PackItem 'a'; New-PackItem 'b'; New-PackItem 'new-1')
+        $prior = @{ a = 'P-test-01'; b = 'P-test-02' }
+        $r = Invoke-Pack $items $prior
+        $r.Assignments['new-1'] | Should -Be 'P-test-01'
+        @($r.Packages).Count | Should -Be 2
+    }
+
+    It 'overflow evicts only the newest slugs of the oversized package' {
+        # Prior package P-test-01 holds three items; release growth inflates them so only
+        # two fit. The LAST in item order (c) must move; a and b stay.
+        $items = @(
+            New-PackItem 'a' -SizeBytes 61440
+            New-PackItem 'b' -SizeBytes 61440
+            New-PackItem 'c' -SizeBytes 61440
+        )
+        $prior = @{ a = 'P-test-01'; b = 'P-test-01'; c = 'P-test-01' }
+        $r = Invoke-Pack $items $prior
+        $r.Assignments['a'] | Should -Be 'P-test-01'
+        $r.Assignments['b'] | Should -Be 'P-test-01'
+        $r.Assignments['c'] | Should -Not -Be 'P-test-01'
+    }
+
+    It 'drops items beyond the tenant package cap with a reason, never throws' {
+        # 70KB items: exactly two fit per package under the 148KB preferred cap, so 22
+        # items need 11 packages — one over the tenant cap; the last two drop.
+        $items = 1..22 | ForEach-Object { New-PackItem "cap-$_" -SizeBytes 71680 }
+        $r = Invoke-Pack $items
+        @($r.Packages).Count | Should -Be $script:Limits.MaxRulePackagesPerTenant
+        @($r.Dropped).Count | Should -Be 2
+        $r.Dropped[0].Reason | Should -Match 'package'
+    }
+
+    It 'preserves verbatim prior package names from an adopted layout' {
+        $items = @(New-PackItem 'a'; New-PackItem 'b')
+        $prior = @{ a = 'QGISCF-medium-07a'; b = 'QGISCF-medium-07a' }
+        $r = Invoke-Pack $items $prior
+        $r.Packages[0].Name | Should -Be 'QGISCF-medium-07a'
+    }
+}
