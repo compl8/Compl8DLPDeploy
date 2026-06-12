@@ -7,6 +7,7 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Get-Compl8WorkspacePath'
+        'Import-ContentRelease'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
