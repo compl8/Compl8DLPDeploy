@@ -528,3 +528,82 @@ Describe 'ConvertTo-RulePackageXml' {
         { Invoke-Compose -Ledger $noLedger } | Should -Throw '*ledger*'
     }
 }
+
+Describe 'ConvertTo-CustomSitFragment' {
+    BeforeAll {
+        $script:Release = Import-ContentRelease -Path (Join-Path $script:FixtureRoot 'mini-release')
+        $script:Overlay = Import-ContentOverlay -Path (Join-Path $script:FixtureRoot 'mini-overlay') -Release $script:Release
+        $script:CustomDef = $script:Overlay.Add[0].Definition
+        $script:CustomGuid = '55555555-aaaa-4bbb-8ccc-000000000005'
+    }
+
+    It 'renders a release-shaped fragment with the provided ledger GUID' {
+        $f = ConvertTo-CustomSitFragment -Definition $script:CustomDef -EntityId $script:CustomGuid
+        $f.Slug | Should -Be 'custom-incident-ref'
+        $f.EntityId | Should -Be $script:CustomGuid
+        $f.Sections.Entity | Should -Match "^<Entity id=`"$($script:CustomGuid)`""
+        @($f.Sections.Regexes).Count | Should -Be 1
+        @($f.Sections.Keywords).Count | Should -Be 2   # evidence + exclusion filter
+        @($f.Sections.Resources).Count | Should -Be 1
+        $f.Sections.Resources[0] | Should -Match "idRef=`"$($script:CustomGuid)`""
+    }
+
+    It 'is deterministic for the same inputs' {
+        $a = ConvertTo-CustomSitFragment -Definition $script:CustomDef -EntityId $script:CustomGuid
+        $b = ConvertTo-CustomSitFragment -Definition $script:CustomDef -EntityId $script:CustomGuid
+        ($a | ConvertTo-Json -Depth 10) | Should -Be ($b | ConvertTo-Json -Depth 10)
+    }
+
+    It 'composes into a package that passes Test-SITRulePackageXml alongside release items' {
+        $ledgerPath = Join-Path $TestDrive 'custom-ledger.json'
+        Initialize-EntityLedger -Release $script:Release -Path $ledgerPath | Out-Null
+        $entry = Update-EntityLedger -Path $ledgerPath -Add 'custom-incident-ref'
+        $fragment = ConvertTo-CustomSitFragment -Definition $script:CustomDef -EntityId $entry.entityId
+
+        $emptyOverlay = Import-ContentOverlay -Path (Join-Path $TestDrive 'no-ov2') -Release $script:Release
+        $merged = Merge-DesiredContent -Release $script:Release -Overlay $emptyOverlay
+        $items = @($merged.Items) + [pscustomobject]@{
+            Slug        = $fragment.Slug
+            Source      = 'custom'
+            EntityId    = $fragment.EntityId
+            Sections    = $fragment.Sections
+            AttrPatches = @{}
+        }
+        $r = ConvertTo-RulePackageXml -Name 'P-test-01' -Items $items `
+            -Ledger (Get-EntityLedger -Path $ledgerPath) -Publisher 'Test Pub' `
+            -RulePackId 'deadbeef-dead-4eef-8eef-deadbeefdead'
+        $out = Join-Path $TestDrive 'composed-custom.xml'
+        [System.IO.File]::WriteAllBytes($out, $r.Bytes)
+        $v = Test-SITRulePackageXml -FilePath $out
+        $v.Errors | Should -BeNullOrEmpty
+        $v.Valid | Should -BeTrue
+        $r.EntityCount | Should -Be 5
+    }
+
+    It 'XML-escapes user-supplied text' {
+        $def = [pscustomobject]@{
+            slug = 'custom-esc'; name = 'A & B <Test>'; description = 'Uses "quotes" & <angles>'
+            regex = '(?i)\bA&B\b'; keywords = @('a & b'); confidence = 'low'
+        }
+        $f = ConvertTo-CustomSitFragment -Definition $def -EntityId $script:CustomGuid
+        $f.Sections.Resources[0] | Should -Match 'A &amp; B &lt;Test&gt;'
+        $f.Sections.Keywords[0] | Should -Match 'a &amp; b'
+        $f.Sections.Regexes[0] | Should -Match 'A&amp;B'
+        $f.Sections.Entity | Should -Match 'recommendedConfidence="65"'
+    }
+
+    It 'rejects complex definitions with a pointer to testpattern curation' {
+        $def = [pscustomobject]@{
+            slug = 'custom-complex'; name = 'X'; description = 'Y'
+            regex = 'a'; regexes = @('a', 'b')
+        }
+        { ConvertTo-CustomSitFragment -Definition $def -EntityId $script:CustomGuid } |
+            Should -Throw '*testpattern*'
+    }
+
+    It 'rejects a definition missing the regex' {
+        $def = [pscustomobject]@{ slug = 'custom-noregex'; name = 'X'; description = 'Y' }
+        { ConvertTo-CustomSitFragment -Definition $def -EntityId $script:CustomGuid } |
+            Should -Throw '*regex*'
+    }
+}

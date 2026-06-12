@@ -6,6 +6,7 @@
     Description       = 'Compl8 content layer: curated release + overlay merge + repack engine (Stage 3).'
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
+        'ConvertTo-CustomSitFragment'
         'ConvertTo-RulePackageXml'
         'Get-Compl8WorkspacePath'
         'Get-EntityLedger'
