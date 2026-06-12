@@ -23,8 +23,11 @@ function Initialize-EntityLedger {
     )
 
     $entries = [System.Collections.Generic.List[object]]::new()
+    $packages = @()
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        foreach ($entry in (Get-EntityLedger -Path $Path).Entries) { $entries.Add($entry) }
+        $existing = Get-EntityLedger -Path $Path
+        foreach ($entry in $existing.Entries) { $entries.Add($entry) }
+        $packages = @($existing.Packages)
     }
     $known = @{}
     foreach ($entry in $entries) { $known[$entry.slug] = $entry }
@@ -53,6 +56,7 @@ function Initialize-EntityLedger {
     $payload = [pscustomobject]@{
         schemaVersion = 'compl8.entity-ledger/v1'
         entries       = $entries.ToArray()
+        packages      = $packages
     }
     # Atomic write: the ledger is precious — never leave a torn file.
     $tmp = "$Path.tmp"

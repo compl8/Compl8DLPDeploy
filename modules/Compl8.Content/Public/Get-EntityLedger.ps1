@@ -22,7 +22,8 @@ function Get-EntityLedger {
     }
 
     [pscustomobject]@{
-        Path    = $Path
-        Entries = @($ledger.entries)
+        Path     = $Path
+        Entries  = @($ledger.entries)
+        Packages = @($ledger.packages)
     }
 }

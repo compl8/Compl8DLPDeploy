@@ -9,12 +9,16 @@
         'ConvertTo-CustomSitFragment'
         'ConvertTo-RulePackageXml'
         'Get-Compl8WorkspacePath'
+        'Get-ContentInputHash'
         'Get-EntityLedger'
         'Get-RulePackageAssignment'
         'Import-ContentOverlay'
         'Import-ContentRelease'
         'Initialize-EntityLedger'
         'Merge-DesiredContent'
+        'Resolve-DesiredContent'
+        'Test-ContentDictionaryBudget'
+        'Test-ResolveManifestCurrent'
         'Update-EntityLedger'
     )
     CmdletsToExport   = @()

@@ -3,11 +3,14 @@ function Update-EntityLedger {
     .SYNOPSIS
         Mints custom-SIT bindings and flips entry state; entries are never deleted.
     .DESCRIPTION
-        -Add <custom-slug>  mints a GUID for an operator-added SIT (idempotent: re-adding
-                            returns the existing binding; re-adding a disabled slug re-enables
-                            it with the SAME GUID — the spec's re-enable invariant).
-        -Disable <slug>     flips state to 'disabled' but RETAINS the entry/GUID.
-        -Enable <slug>      flips state back to 'active'.
+        -Add <custom-slug>     mints a GUID for an operator-added SIT (idempotent: re-adding
+                               returns the existing binding; re-adding a disabled slug
+                               re-enables it with the SAME GUID — the re-enable invariant).
+        -Disable <slug>        flips state to 'disabled' but RETAINS the entry/GUID.
+        -Enable <slug>         flips state back to 'active'.
+        -BindPackage <name>    mints (or returns) the RulePack GUID pinned to a package
+                               name — package ids are precious for the same reason entity
+                               ids are: regenerating desired/resolved must reproduce them.
         Returns the affected entry.
     #>
     [CmdletBinding(DefaultParameterSetName = 'Add')]
@@ -22,12 +25,17 @@ function Update-EntityLedger {
         [string]$Disable,
 
         [Parameter(Mandatory, ParameterSetName = 'Enable')]
-        [string]$Enable
+        [string]$Enable,
+
+        [Parameter(Mandatory, ParameterSetName = 'BindPackage')]
+        [string]$BindPackage
     )
 
     $ledger = Get-EntityLedger -Path $Path
     $entries = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in $ledger.Entries) { $entries.Add($entry) }
+    $packages = [System.Collections.Generic.List[object]]::new()
+    foreach ($package in $ledger.Packages) { $packages.Add($package) }
 
     $result = $null
     switch ($PSCmdlet.ParameterSetName) {
@@ -62,11 +70,24 @@ function Update-EntityLedger {
             $existing.state = 'active'
             $result = $existing
         }
+        'BindPackage' {
+            $existing = $packages | Where-Object name -EQ $BindPackage
+            if ($existing) {
+                $result = $existing
+            } else {
+                $result = [pscustomobject]@{
+                    name       = $BindPackage
+                    rulePackId = [guid]::NewGuid().ToString()
+                }
+                $packages.Add($result)
+            }
+        }
     }
 
     $payload = [pscustomobject]@{
         schemaVersion = 'compl8.entity-ledger/v1'
         entries       = $entries.ToArray()
+        packages      = $packages.ToArray()
     }
     # Atomic write: the ledger is precious — never leave a torn file.
     $tmp = "$Path.tmp"

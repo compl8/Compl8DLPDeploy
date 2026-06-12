@@ -607,3 +607,125 @@ Describe 'ConvertTo-CustomSitFragment' {
             Should -Throw '*regex*'
     }
 }
+
+Describe 'Test-ContentDictionaryBudget' {
+    BeforeAll { $script:Limits = Get-DeploymentLimits }
+
+    It 'warns at the conservative threshold' {
+        $r = Test-ContentDictionaryBudget -Dictionaries @(
+            [pscustomobject]@{ placeholder = '{{DICT_BIG}}'; termsBytes = $script:Limits.DictionaryBudgetWarnBytes }
+        )
+        @($r.Warnings).Count | Should -Be 1
+        @($r.Errors).Count | Should -Be 0
+    }
+
+    It 'errors at the hard cap' {
+        $r = Test-ContentDictionaryBudget -Dictionaries @(
+            [pscustomobject]@{ placeholder = '{{DICT_HUGE}}'; termsBytes = $script:Limits.DictionaryBudgetMaxBytes }
+        )
+        @($r.Errors).Count | Should -Be 1
+    }
+
+    It 'gates only the used placeholders when -UsedPlaceholders is given' {
+        $r = Test-ContentDictionaryBudget -Dictionaries @(
+            [pscustomobject]@{ placeholder = '{{DICT_HUGE}}'; termsBytes = $script:Limits.DictionaryBudgetMaxBytes }
+        ) -UsedPlaceholders @('{{DICT_OTHER}}')
+        @($r.Errors).Count | Should -Be 0
+    }
+}
+
+Describe 'Resolve-DesiredContent pipeline' {
+    BeforeAll {
+        function New-ResolveWorkspace {
+            param([string]$Name)
+            $ws = Join-Path $TestDrive $Name
+            New-Item -ItemType Directory -Path (Join-Path $ws 'desired') -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:FixtureRoot 'mini-release') `
+                -Destination (Join-Path $ws 'desired' 'release') -Recurse
+            Copy-Item -LiteralPath (Join-Path $script:FixtureRoot 'mini-overlay') `
+                -Destination (Join-Path $ws 'desired' 'overlay') -Recurse
+            # Fixed ledger (entities AND package GUID) so resolve output is fully deterministic.
+            [pscustomobject]@{
+                schemaVersion = 'compl8.entity-ledger/v1'
+                entries       = @(
+                    [pscustomobject]@{ slug = 'bail-note'; entityId = '11111111-aaaa-4bbb-8ccc-000000000001'; state = 'active'; source = 'release'; firstBound = '2026-06-13' }
+                    [pscustomobject]@{ slug = 'name-dict'; entityId = '22222222-aaaa-4bbb-8ccc-000000000002'; state = 'active'; source = 'release'; firstBound = '2026-06-13' }
+                    [pscustomobject]@{ slug = 'shared-a'; entityId = '33333333-aaaa-4bbb-8ccc-000000000003'; state = 'active'; source = 'release'; firstBound = '2026-06-13' }
+                    [pscustomobject]@{ slug = 'shared-b'; entityId = '44444444-aaaa-4bbb-8ccc-000000000004'; state = 'active'; source = 'release'; firstBound = '2026-06-13' }
+                    [pscustomobject]@{ slug = 'custom-incident-ref'; entityId = '55555555-aaaa-4bbb-8ccc-000000000005'; state = 'active'; source = 'custom'; firstBound = '2026-06-13' }
+                )
+                packages      = @(
+                    [pscustomobject]@{ name = 'P-test-01'; rulePackId = 'cafebabe-cafe-4abe-8abe-cafebabecafe' }
+                )
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ws 'entity-ledger.json')
+            $ws
+        }
+        function Invoke-Resolve {
+            param([string]$Workspace)
+            Resolve-DesiredContent -WorkspacePath $Workspace -Prefix 'P' -Publisher 'Test Pub'
+        }
+    }
+
+    It 'resolves end-to-end: package file, manifest, ledger-pinned RulePack id' {
+        $ws = New-ResolveWorkspace 'ws-main'
+        $m = Invoke-Resolve $ws
+        $packageFile = Join-Path $ws 'desired' 'resolved' 'P-test-01.xml'
+        Test-Path -LiteralPath $packageFile | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $ws 'desired' 'resolved' 'resolve-manifest.json') | Should -BeTrue
+        $m.packages[0].name | Should -Be 'P-test-01'
+        $m.packages[0].rulePackId | Should -Be 'cafebabe-cafe-4abe-8abe-cafebabecafe'
+        # shared-b disabled by overlay: 3 release items + 1 custom add.
+        $m.packages[0].entities | Should -Be 4
+        $m.packing.assignments.'custom-incident-ref' | Should -Be 'P-test-01'
+        @($m.warnings).Count | Should -Be 0
+        $v = Test-SITRulePackageXml -FilePath $packageFile
+        $v.Valid | Should -BeTrue
+    }
+
+    It 'pins the golden package hash (recorded from the first green run)' {
+        $ws = New-ResolveWorkspace 'ws-golden'
+        $m = Invoke-Resolve $ws
+        # Golden constant recorded 2026-06-13 from the first green run; regenerate ONLY by
+        # deliberate fixture change (the regeneration-invariant test guards accidental drift).
+        $m.packages[0].sha256 | Should -Be '94e516887ffb2670f9ab0051b23e0456ef806a4cdcc5af0484af394270d87bf4'
+    }
+
+    It 'regenerates identically after desired/resolved is deleted (pure-function invariant)' {
+        $ws = New-ResolveWorkspace 'ws-regen'
+        $first = Invoke-Resolve $ws
+        Remove-Item -LiteralPath (Join-Path $ws 'desired' 'resolved') -Recurse -Force -Confirm:$false
+        $second = Invoke-Resolve $ws
+        $second.packages[0].sha256 | Should -Be $first.packages[0].sha256
+        $second.packages[0].rulePackId | Should -Be $first.packages[0].rulePackId
+    }
+
+    It 'reports current after resolve and stale after an overlay edit' {
+        $ws = New-ResolveWorkspace 'ws-stale'
+        Invoke-Resolve $ws | Out-Null
+        Test-ResolveManifestCurrent -WorkspacePath $ws | Should -BeTrue
+        Set-Content -LiteralPath (Join-Path $ws 'desired' 'overlay' 'note.txt') -Value 'drift'
+        Test-ResolveManifestCurrent -WorkspacePath $ws | Should -BeFalse
+        (Test-ResolveManifestCurrent -WorkspacePath $ws -Detail).Stale | Should -Contain 'overlay'
+    }
+
+    It 'aborts on a dictionary budget error leaving no resolved output' {
+        $ws = New-ResolveWorkspace 'ws-budget'
+        $dictPath = Join-Path $ws 'desired' 'release' 'dictionaries' 'manifest.json'
+        $dict = Get-Content -LiteralPath $dictPath -Raw | ConvertFrom-Json
+        ($dict.dictionaries | Where-Object placeholder -EQ '{{DICT_AU_FORENAMES}}').termsBytes = 2097152
+        $dict | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $dictPath
+        { Invoke-Resolve $ws } | Should -Throw '*budget*'
+        Test-Path -LiteralPath (Join-Path $ws 'desired' 'resolved') | Should -BeFalse
+        @(Get-ChildItem -Path (Join-Path $ws 'desired') -Directory -Filter '.resolved-staging-*').Count | Should -Be 0
+    }
+
+    It 'records merge conflicts in the manifest warnings' {
+        $ws = New-ResolveWorkspace 'ws-conflict'
+        $ovPath = Join-Path $ws 'desired' 'overlay' 'overlay.json'
+        $ov = Get-Content -LiteralPath $ovPath -Raw | ConvertFrom-Json
+        $ov.override[0].baseSourceHash = 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+        $ov | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ovPath
+        $m = Invoke-Resolve $ws
+        @($m.warnings | Where-Object { $_ -like 'conflict:override-base-changed:bail-note*' }).Count | Should -Be 1
+    }
+}
