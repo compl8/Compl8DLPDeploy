@@ -1,0 +1,467 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+<RulePack id="afb2542c-6d06-4770-b39b-5b9dfbf844bc">
+<Version major="1" minor="0" build="0" revision="0" />
+<Publisher id="afb2542c-6d06-4770-b39b-5b9dfbf844bc" />
+<Details defaultLangCode="en-us">
+<LocalizedDetails langcode="en-us">
+<PublisherName>Queensland Government CSU</PublisherName>
+<Name>QGISCF-medium-08</Name>
+<Description>TestPattern bundle with 5 patterns</Description>
+</LocalizedDetails>
+</Details>
+</RulePack>
+<Rules>
+<Entity id="ab4ca41e-d5ef-4ee0-9851-06be367cb032" patternsProximity="300" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_bail_condition_document_bail_condition_terms_bail-condition-document" />
+<Match idRef="Evidence_bail_condition_document_primary_keywords_bail-condition-document" />
+<Match idRef="Evidence_bail_condition_document_classification_markers_bail-condition-document" />
+<Match idRef="Evidence_bail_condition_document_corroborative_terms_bail-condition-document" />
+<Match idRef="Pattern_bail_condition_document_bail_act_reference_bail-condition-document" />
+<Match idRef="Pattern_bail_condition_document_bail_section_reference_bail-condition-document" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_bail_condition_document_exclusion_bail-condition-document" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_bail_condition_document_bail_condition_terms_bail-condition-document" />
+<Match idRef="Evidence_bail_condition_document_primary_keywords_bail-condition-document" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_bail_condition_document_exclusion_bail-condition-document" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="65">
+<IdMatch idRef="Pattern_bail_condition_document_bail_condition_terms_bail-condition-document" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_bail_condition_document_exclusion_bail-condition-document" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="eaa642b1-0e7e-4137-8183-1523eb99b26d" patternsProximity="300" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_community_corrections_order_corrections_order_terms_community-corrections-order" />
+<Match idRef="Evidence_community_corrections_order_primary_keywords_community-corrections-order" />
+<Match idRef="Evidence_community_corrections_order_classification_markers_community-corrections-order" />
+<Match idRef="Evidence_community_corrections_order_corroborative_terms_community-corrections-order" />
+<Match idRef="Pattern_community_corrections_order_corrective_services_act_community-corrections-order" />
+<Match idRef="Pattern_community_corrections_order_corrections_reference_community-corrections-order" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_community_corrections_order_exclusion_community-corrections-order" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_community_corrections_order_corrections_order_terms_community-corrections-order" />
+<Match idRef="Evidence_community_corrections_order_primary_keywords_community-corrections-order" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_community_corrections_order_exclusion_community-corrections-order" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="65">
+<IdMatch idRef="Pattern_community_corrections_order_corrections_order_terms_community-corrections-order" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_community_corrections_order_exclusion_community-corrections-order" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="ad1e7a73-26fc-44f9-aabc-ae1eaac0de1e" patternsProximity="300" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_domestic_violence_order_application_dvo_reference_number_domestic-violence-order-application" />
+<Match idRef="Evidence_domestic_violence_order_application_primary_keywords_domestic-violence-order-application" />
+<Match idRef="Evidence_domestic_violence_order_application_classification_markers_domestic-violence-order-application" />
+<Match idRef="Evidence_domestic_violence_order_application_corroborative_terms_domestic-violence-order-application" />
+<Match idRef="Pattern_domestic_violence_order_application_dvo_terms_domestic-violence-order-application" />
+<Match idRef="Pattern_domestic_violence_order_application_dfv_act_reference_domestic-violence-order-application" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_domestic_violence_order_application_exclusion_domestic-violence-order-application" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_domestic_violence_order_application_dvo_reference_number_domestic-violence-order-application" />
+<Match idRef="Evidence_domestic_violence_order_application_primary_keywords_domestic-violence-order-application" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_domestic_violence_order_application_exclusion_domestic-violence-order-application" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="65">
+<IdMatch idRef="Pattern_domestic_violence_order_application_dvo_reference_number_domestic-violence-order-application" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_domestic_violence_order_application_exclusion_domestic-violence-order-application" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="608a31b8-fa96-47ab-90d7-1a9bf37fb8fe" patternsProximity="300" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_police_body_worn_camera_metadata_bwc_metadata_terms_police-body-worn-camera-metadata" />
+<Match idRef="Evidence_police_body_worn_camera_metadata_primary_keywords_police-body-worn-camera-metadata" />
+<Match idRef="Evidence_police_body_worn_camera_metadata_classification_markers_police-body-worn-camera-metadata" />
+<Match idRef="Evidence_police_body_worn_camera_metadata_corroborative_terms_police-body-worn-camera-metadata" />
+<Match idRef="Pattern_police_body_worn_camera_metadata_bwc_unit_reference_police-body-worn-camera-metadata" />
+<Match idRef="Pattern_police_body_worn_camera_metadata_activation_timestamp_police-body-worn-camera-metadata" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_police_body_worn_camera_metadata_exclusion_police-body-worn-camera-metadata" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_police_body_worn_camera_metadata_bwc_metadata_terms_police-body-worn-camera-metadata" />
+<Match idRef="Evidence_police_body_worn_camera_metadata_primary_keywords_police-body-worn-camera-metadata" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_police_body_worn_camera_metadata_exclusion_police-body-worn-camera-metadata" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="65">
+<IdMatch idRef="Pattern_police_body_worn_camera_metadata_bwc_metadata_terms_police-body-worn-camera-metadata" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_police_body_worn_camera_metadata_exclusion_police-body-worn-camera-metadata" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="9382fc7d-e2c9-4fc6-b47d-12d941dc0f9e" patternsProximity="300" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_qps_incident_report_qps_reference_number_qps-incident-report" />
+<Match idRef="Evidence_qps_incident_report_primary_keywords_qps-incident-report" />
+<Match idRef="Evidence_qps_incident_report_classification_markers_qps-incident-report" />
+<Match idRef="Evidence_qps_incident_report_corroborative_terms_qps-incident-report" />
+<Match idRef="Pattern_qps_incident_report_occurrence_number_qps-incident-report" />
+<Match idRef="Pattern_qps_incident_report_incident_report_terms_qps-incident-report" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_qps_incident_report_exclusion_qps-incident-report" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_qps_incident_report_qps_reference_number_qps-incident-report" />
+<Match idRef="Evidence_qps_incident_report_primary_keywords_qps-incident-report" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_qps_incident_report_exclusion_qps-incident-report" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="65">
+<IdMatch idRef="Pattern_qps_incident_report_qps_reference_number_qps-incident-report" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_qps_incident_report_exclusion_qps-incident-report" />
+</Any>
+</Pattern>
+</Entity>
+<Regex id="Pattern_bail_condition_document_bail_condition_terms_bail-condition-document">(?i)\b(bail\s+(?:conditions?|undertaking|order|variation)|surety\s+(?:agreement|amount)|reporting\s+conditions?|curfew\s+(?:condition|hours)|exclusion\s+zone|no[\-\s]contact\s+(?:condition|order))\b</Regex>
+<Regex id="Pattern_bail_condition_document_bail_act_reference_bail-condition-document">(?i)\bBail\s+Act\s+1980\b</Regex>
+<Regex id="Pattern_bail_condition_document_bail_section_reference_bail-condition-document">(?i)\bs\.(?:\s+)?(?:11|16|17|29)\s+Bail\s+Act\b</Regex>
+<Regex id="Pattern_community_corrections_order_corrections_order_terms_community-corrections-order">(?i)\b(community\s+corrections?\s+order|probation\s+order|parole\s+(?:conditions?|order|board)|community\s+service\s+order|supervision\s+order|intensive\s+correction\s+order)\b</Regex>
+<Regex id="Pattern_community_corrections_order_corrective_services_act_community-corrections-order">(?i)\bCorrective\s+Services\s+Act\s+2006\b</Regex>
+<Regex id="Pattern_community_corrections_order_corrections_reference_community-corrections-order">\b(?:CCO|PB)-\d{4}-[A-Z]{2,4}-?\d{3,5}\b</Regex>
+<Regex id="Pattern_domestic_violence_order_application_dvo_reference_number_domestic-violence-order-application">\bDVO-\d{4}-\d{3,5}\b</Regex>
+<Regex id="Pattern_domestic_violence_order_application_dvo_terms_domestic-violence-order-application">(?i)\b(domestic\s+violence\s+(?:order|application)|protection\s+order\s+(?:application|conditions?)|ouster\s+(?:condition|order)|temporary\s+protection\s+order)\b</Regex>
+<Regex id="Pattern_domestic_violence_order_application_dfv_act_reference_domestic-violence-order-application">(?i)\bDomestic\s+and\s+Family\s+Violence\s+Protection\s+Act\s+2012\b</Regex>
+<Regex id="Pattern_police_body_worn_camera_metadata_bwc_metadata_terms_police-body-worn-camera-metadata">(?i)\b(body\s+worn\s+camera\s+(?:metadata|log|record|activation)|BWC\s+(?:activation|footage|reference|log|record))\b</Regex>
+<Regex id="Pattern_police_body_worn_camera_metadata_bwc_unit_reference_police-body-worn-camera-metadata">\bBWC-[A-Z]{2,4}-\d{3,5}\b</Regex>
+<Regex id="Pattern_police_body_worn_camera_metadata_activation_timestamp_police-body-worn-camera-metadata">(?i)\b(?:activation|deactivation)\s+timestamp\b</Regex>
+<Regex id="Pattern_qps_incident_report_qps_reference_number_qps-incident-report">\bQP-\d{4}-\d{5,7}\b</Regex>
+<Regex id="Pattern_qps_incident_report_occurrence_number_qps-incident-report">\bOCC-\d{5,7}\b</Regex>
+<Regex id="Pattern_qps_incident_report_incident_report_terms_qps-incident-report">(?i)\b(QPS\s+incident\s+report|occurrence\s+(?:number|report)|reporting\s+officer|offence\s+code|QPRIME\s+(?:entry|reference|record))\b</Regex>
+<Keyword id="Evidence_bail_condition_document_primary_keywords_bail-condition-document">
+<Group matchStyle="word">
+<Term caseSensitive="false">bail conditions</Term>
+<Term caseSensitive="false">bail undertaking</Term>
+<Term caseSensitive="false">bail order</Term>
+<Term caseSensitive="false">bail variation</Term>
+<Term caseSensitive="false">surety agreement</Term>
+<Term caseSensitive="false">surety amount</Term>
+<Term caseSensitive="false">reporting conditions</Term>
+<Term caseSensitive="false">curfew condition</Term>
+<Term caseSensitive="false">exclusion zone</Term>
+<Term caseSensitive="false">no-contact condition</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_bail_condition_document_classification_markers_bail-condition-document">
+<Group matchStyle="word">
+<Term caseSensitive="false">Legal</Term>
+<Term caseSensitive="false">Bail Act 1980</Term>
+<Term caseSensitive="false">Magistrates Court</Term>
+<Term caseSensitive="false">personal undertaking</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_bail_condition_document_corroborative_terms_bail-condition-document">
+<Group matchStyle="word">
+<Term caseSensitive="false">accused</Term>
+<Term caseSensitive="false">recognisance</Term>
+<Term caseSensitive="false">watch house</Term>
+<Term caseSensitive="false">surrender passport</Term>
+<Term caseSensitive="false">police station</Term>
+<Term caseSensitive="false">next appearance</Term>
+<Term caseSensitive="false">prosecution</Term>
+<Term caseSensitive="false">personal undertaking</Term>
+<Term caseSensitive="false">deposited</Term>
+<Term caseSensitive="false">variation application</Term>
+<Term caseSensitive="false">shift work</Term>
+<Term caseSensitive="false">registered employer</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_bail_condition_document_exclusion_bail-condition-document">
+<Group matchStyle="word">
+<Term caseSensitive="false">published</Term>
+<Term caseSensitive="false">annual report</Term>
+<Term caseSensitive="false">statistics</Term>
+<Term caseSensitive="false">reporting period</Term>
+<Term caseSensitive="false">compliance rate</Term>
+<Term caseSensitive="false">law reform</Term>
+<Term caseSensitive="false">recommended amendments</Term>
+<Term caseSensitive="false">parliamentary</Term>
+<Term caseSensitive="false">inquiry</Term>
+<Term caseSensitive="false">textbook</Term>
+<Term caseSensitive="false">academic</Term>
+<Term caseSensitive="false">chapter</Term>
+<Term caseSensitive="false">explains</Term>
+<Term caseSensitive="false">university</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_community_corrections_order_primary_keywords_community-corrections-order">
+<Group matchStyle="word">
+<Term caseSensitive="false">community corrections order</Term>
+<Term caseSensitive="false">probation order</Term>
+<Term caseSensitive="false">parole conditions</Term>
+<Term caseSensitive="false">parole order</Term>
+<Term caseSensitive="false">community service order</Term>
+<Term caseSensitive="false">supervision order</Term>
+<Term caseSensitive="false">intensive correction order</Term>
+<Term caseSensitive="false">Queensland Corrective Services</Term>
+<Term caseSensitive="false">community corrections</Term>
+<Term caseSensitive="false">parole board decision</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_community_corrections_order_classification_markers_community-corrections-order">
+<Group matchStyle="word">
+<Term caseSensitive="false">Legal</Term>
+<Term caseSensitive="false">Corrective Services Act 2006</Term>
+<Term caseSensitive="false">Penalties and Sentences Act 1992</Term>
+<Term caseSensitive="false">Queensland Corrective Services</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_community_corrections_order_corroborative_terms_community-corrections-order">
+<Group matchStyle="word">
+<Term caseSensitive="false">offender</Term>
+<Term caseSensitive="false">approved address</Term>
+<Term caseSensitive="false">supervising officer</Term>
+<Term caseSensitive="false">compliance</Term>
+<Term caseSensitive="false">compliance breach</Term>
+<Term caseSensitive="false">return to custody</Term>
+<Term caseSensitive="false">GPS monitoring</Term>
+<Term caseSensitive="false">substance misuse program</Term>
+<Term caseSensitive="false">reporting schedule</Term>
+<Term caseSensitive="false">hours completed</Term>
+<Term caseSensitive="false">fortnightly</Term>
+<Term caseSensitive="false">no contact</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_community_corrections_order_exclusion_community-corrections-order">
+<Group matchStyle="word">
+<Term caseSensitive="false">published</Term>
+<Term caseSensitive="false">annual report</Term>
+<Term caseSensitive="false">recidivism rate</Term>
+<Term caseSensitive="false">reporting period</Term>
+<Term caseSensitive="false">policy paper</Term>
+<Term caseSensitive="false">advisory council</Term>
+<Term caseSensitive="false">recommending</Term>
+<Term caseSensitive="false">effectiveness</Term>
+<Term caseSensitive="false">textbook</Term>
+<Term caseSensitive="false">academic</Term>
+<Term caseSensitive="false">chapter</Term>
+<Term caseSensitive="false">examines</Term>
+<Term caseSensitive="false">university</Term>
+<Term caseSensitive="false">vacancy</Term>
+<Term caseSensitive="false">position available</Term>
+<Term caseSensitive="false">apply online</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_domestic_violence_order_application_primary_keywords_domestic-violence-order-application">
+<Group matchStyle="word">
+<Term caseSensitive="false">domestic violence order</Term>
+<Term caseSensitive="false">DVO</Term>
+<Term caseSensitive="false">protection order application</Term>
+<Term caseSensitive="false">protection order conditions</Term>
+<Term caseSensitive="false">ouster condition</Term>
+<Term caseSensitive="false">ouster order</Term>
+<Term caseSensitive="false">temporary protection order</Term>
+<Term caseSensitive="false">aggrieved person</Term>
+<Term caseSensitive="false">aggrieved party</Term>
+<Term caseSensitive="false">no-contact condition</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_domestic_violence_order_application_classification_markers_domestic-violence-order-application">
+<Group matchStyle="word">
+<Term caseSensitive="false">Legal</Term>
+<Term caseSensitive="false">DFV Protection Act 2012</Term>
+<Term caseSensitive="false">Magistrates Court</Term>
+<Term caseSensitive="false">ex parte application</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_domestic_violence_order_application_corroborative_terms_domestic-violence-order-application">
+<Group matchStyle="word">
+<Term caseSensitive="false">respondent</Term>
+<Term caseSensitive="false">aggrieved</Term>
+<Term caseSensitive="false">good behaviour</Term>
+<Term caseSensitive="false">surrender weapons</Term>
+<Term caseSensitive="false">safe contact centre</Term>
+<Term caseSensitive="false">behaviour change program</Term>
+<Term caseSensitive="false">supervised contact</Term>
+<Term caseSensitive="false">breach</Term>
+<Term caseSensitive="false">criminal offence</Term>
+<Term caseSensitive="false">return date</Term>
+<Term caseSensitive="false">contested hearing</Term>
+<Term caseSensitive="false">coercive control</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_domestic_violence_order_application_exclusion_domestic-violence-order-application">
+<Group matchStyle="word">
+<Term caseSensitive="false">awareness</Term>
+<Term caseSensitive="false">campaign</Term>
+<Term caseSensitive="false">White Ribbon</Term>
+<Term caseSensitive="false">prevention week</Term>
+<Term caseSensitive="false">community event</Term>
+<Term caseSensitive="false">published</Term>
+<Term caseSensitive="false">strategy</Term>
+<Term caseSensitive="false">annual report</Term>
+<Term caseSensitive="false">statistics</Term>
+<Term caseSensitive="false">prevention</Term>
+<Term caseSensitive="false">textbook</Term>
+<Term caseSensitive="false">chapter</Term>
+<Term caseSensitive="false">explains</Term>
+<Term caseSensitive="false">academic</Term>
+<Term caseSensitive="false">university</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_police_body_worn_camera_metadata_primary_keywords_police-body-worn-camera-metadata">
+<Group matchStyle="word">
+<Term caseSensitive="false">body worn camera metadata</Term>
+<Term caseSensitive="false">body worn camera log</Term>
+<Term caseSensitive="false">body worn camera activation</Term>
+<Term caseSensitive="false">BWC activation log</Term>
+<Term caseSensitive="false">BWC footage reference</Term>
+<Term caseSensitive="false">BWC record</Term>
+<Term caseSensitive="false">activation timestamp</Term>
+<Term caseSensitive="false">deactivation timestamp</Term>
+<Term caseSensitive="false">footage catalogue</Term>
+<Term caseSensitive="false">footage reference index</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_police_body_worn_camera_metadata_classification_markers_police-body-worn-camera-metadata">
+<Group matchStyle="word">
+<Term caseSensitive="false">QPS</Term>
+<Term caseSensitive="false">Queensland Police Service</Term>
+<Term caseSensitive="false">digital evidence</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_police_body_worn_camera_metadata_corroborative_terms_police-body-worn-camera-metadata">
+<Group matchStyle="word">
+<Term caseSensitive="false">officer ID</Term>
+<Term caseSensitive="false">badge number</Term>
+<Term caseSensitive="false">incident link</Term>
+<Term caseSensitive="false">chain of custody</Term>
+<Term caseSensitive="false">evidence management</Term>
+<Term caseSensitive="false">DEMS</Term>
+<Term caseSensitive="false">uploaded</Term>
+<Term caseSensitive="false">GPS coordinates</Term>
+<Term caseSensitive="false">use of force</Term>
+<Term caseSensitive="false">evidence category</Term>
+<Term caseSensitive="false">activation record</Term>
+<Term caseSensitive="false">footage duration</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_police_body_worn_camera_metadata_exclusion_police-body-worn-camera-metadata">
+<Group matchStyle="word">
+<Term caseSensitive="false">policy</Term>
+<Term caseSensitive="false">guidelines</Term>
+<Term caseSensitive="false">outlines requirements</Term>
+<Term caseSensitive="false">must activate</Term>
+<Term caseSensitive="false">tender</Term>
+<Term caseSensitive="false">procurement</Term>
+<Term caseSensitive="false">contract</Term>
+<Term caseSensitive="false">specification</Term>
+<Term caseSensitive="false">battery life</Term>
+<Term caseSensitive="false">journal</Term>
+<Term caseSensitive="false">article</Term>
+<Term caseSensitive="false">examined</Term>
+<Term caseSensitive="false">study</Term>
+<Term caseSensitive="false">finding</Term>
+<Term caseSensitive="false">reduction</Term>
+<Term caseSensitive="false">media release</Term>
+<Term caseSensitive="false">announced</Term>
+<Term caseSensitive="false">rollout</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_qps_incident_report_primary_keywords_qps-incident-report">
+<Group matchStyle="word">
+<Term caseSensitive="false">incident report</Term>
+<Term caseSensitive="false">occurrence number</Term>
+<Term caseSensitive="false">occurrence report</Term>
+<Term caseSensitive="false">reporting officer</Term>
+<Term caseSensitive="false">attending officer</Term>
+<Term caseSensitive="false">offence code</Term>
+<Term caseSensitive="false">QPRIME entry</Term>
+<Term caseSensitive="false">QPRIME reference</Term>
+<Term caseSensitive="false">QPRIME record</Term>
+<Term caseSensitive="false">QPS incident</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_qps_incident_report_classification_markers_qps-incident-report">
+<Group matchStyle="word">
+<Term caseSensitive="false">Queensland Police Service</Term>
+<Term caseSensitive="false">QPS</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_qps_incident_report_corroborative_terms_qps-incident-report">
+<Group matchStyle="word">
+<Term caseSensitive="false">informant</Term>
+<Term caseSensitive="false">complainant</Term>
+<Term caseSensitive="false">person of interest</Term>
+<Term caseSensitive="false">witness statement</Term>
+<Term caseSensitive="false">patrol group</Term>
+<Term caseSensitive="false">badge number</Term>
+<Term caseSensitive="false">forensic examination</Term>
+<Term caseSensitive="false">statutory declaration</Term>
+<Term caseSensitive="false">attending officers</Term>
+<Term caseSensitive="false">district office</Term>
+<Term caseSensitive="false">police station</Term>
+<Term caseSensitive="false">CCTV</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_qps_incident_report_exclusion_qps-incident-report">
+<Group matchStyle="word">
+<Term caseSensitive="false">media release</Term>
+<Term caseSensitive="false">published</Term>
+<Term caseSensitive="false">annual report</Term>
+<Term caseSensitive="false">statistical review</Term>
+<Term caseSensitive="false">charged</Term>
+<Term caseSensitive="false">will appear in court</Term>
+<Term caseSensitive="false">sentenced</Term>
+<Term caseSensitive="false">convicted</Term>
+<Term caseSensitive="false">novel</Term>
+<Term caseSensitive="false">fiction</Term>
+<Term caseSensitive="false">screenplay</Term>
+<Term caseSensitive="false">training manual</Term>
+<Term caseSensitive="false">academy</Term>
+<Term caseSensitive="false">exercise</Term>
+</Group>
+</Keyword>
+<LocalizedStrings>
+<Resource idRef="ab4ca41e-d5ef-4ee0-9851-06be367cb032">
+<Name default="true" langcode="en-us">TestPattern - Bail Condition Document</Name>
+<Description default="true" langcode="en-us">Detects bail condition documents including bail undertakings, surety arrangements, and conditions imposed on accused persons under the Bail Act 1980 (Qld). These documents contain personal details of accused persons, reporting obligations, curfew details, exclusion zones, and no-contact conditions.</Description>
+</Resource>
+<Resource idRef="eaa642b1-0e7e-4137-8183-1523eb99b26d">
+<Name default="true" langcode="en-us">TestPattern - Community Corrections Order</Name>
+<Description default="true" langcode="en-us">Detects community-based corrections orders including probation orders, parole conditions, and community service orders issued under the Corrective Services Act 2006 (Qld). These documents contain offender details, supervision conditions, approved addresses, and compliance assessments by Queensland Corrective Services.</Description>
+</Resource>
+<Resource idRef="ad1e7a73-26fc-44f9-aabc-ae1eaac0de1e">
+<Name default="true" langcode="en-us">TestPattern - Domestic Violence Order Application</Name>
+<Description default="true" langcode="en-us">Detects domestic violence order applications and conditions under the Domestic and Family Violence Protection Act 2012 (Qld). These documents contain details of aggrieved persons, respondent details, allegations of domestic violence, ouster conditions, and protection order terms. Disclosure could endanger the aggrieved person.</Description>
+</Resource>
+<Resource idRef="608a31b8-fa96-47ab-90d7-1a9bf37fb8fe">
+<Name default="true" langcode="en-us">TestPattern - Police Body Worn Camera Metadata</Name>
+<Description default="true" langcode="en-us">Detects metadata records from police body-worn camera (BWC) systems including activation timestamps, officer identification, incident cross-references, and footage catalogue entries. This pattern targets the metadata and logs, NOT the footage itself. BWC metadata reveals which officers attended which incidents, activation patterns, and evidence chain-of-custody details.</Description>
+</Resource>
+<Resource idRef="9382fc7d-e2c9-4fc6-b47d-12d941dc0f9e">
+<Name default="true" langcode="en-us">TestPattern - QPS Incident Report</Name>
+<Description default="true" langcode="en-us">Detects Queensland Police Service (QPS) incident reports containing operational details about reported offences, informant information, and occurrence records. These are non-covert operational documents that are sensitive due to informant and victim details but do not involve covert methodology or life-safety risks.</Description>
+</Resource>
+</LocalizedStrings>
+</Rules>
+</RulePackage>

@@ -1,0 +1,14 @@
+{
+  "package": "QGISCF-medium-08",
+  "slugs": [
+    "bail-condition-document",
+    "community-corrections-order",
+    "domestic-violence-order-application",
+    "police-body-worn-camera-metadata",
+    "qps-incident-report"
+  ],
+  "rulePackId": "afb2542c-6d06-4770-b39b-5b9dfbf844bc",
+  "publisher": "Queensland Government CSU",
+  "entities": 5,
+  "recordedUtc": "2026-06-12T23:29:37Z"
+}
