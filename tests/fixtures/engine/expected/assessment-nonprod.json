@@ -4,7 +4,7 @@
   "generatedUtc": "2026-06-13T00:00:00Z",
   "inputs": {
     "resolveManifest": "sha256:3cfd7a32d2722a92c30abf9754291385d204b7018946cb0d60c6874a5e064892",
-    "inventory": "sha256:29cd09c282c9436cdc549150512c7ab99f7ceb309eb6ba54bf948afff0e825ed"
+    "inventory": "sha256:187e1da60f10e583c4d7055f8270714452fe7dd63913a5f9638191fb4a21ca2a"
   },
   "buckets": {
     "create": [
@@ -24,7 +24,7 @@
         "objectType": "rulePackage",
         "ref": "QGISCF-test-01",
         "entityId": "cafebabe-cafe-4abe-8abe-cafebabecafe",
-        "reason": "refit — same rule package, content sha256 differs"
+        "reason": "refit — same rule package, canonical content hash differs"
       }
     ],
     "repack-move": [

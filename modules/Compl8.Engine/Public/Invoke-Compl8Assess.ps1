@@ -167,10 +167,20 @@ function Invoke-Compl8Assess {
     foreach ($slug in $desiredAssignment.Keys) { $desiredSits.Add($slug) | Out-Null }
 
     # Desired dictionaries = the placeholders the desired packages reference, AND the desired
-    # per-sit content hash (entity OuterXml) keyed by entity GUID — the latter is the drift
-    # baseline (an actual sit whose recorded contentHash diverges from this changed out-of-band).
-    $desiredDictionaries  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $desiredSitHashByGuid = @{}
+    # per-sit content hash keyed by entity GUID — the latter is the drift baseline (an actual
+    # sit whose recorded contentHash diverges from this changed out-of-band).
+    #
+    # COMPARABILITY (closes codex 4A P1): the desired hash is computed via the SHARED canonical
+    # helper Get-DlpEntityContentHash — the SAME convention Get-TenantInventory uses when it
+    # reads the deployed package back. Both sides therefore canonicalize the entity XML
+    # (encoding/whitespace/empty-element-form-agnostic) before hashing, so a semantically
+    # identical entity hashes EQUAL on both sides and only a real content edit registers as
+    # drift. We also derive a per-package content hash from those entity hashes (the same
+    # '<guid>=<hash>' projection the reader hashes), so update-in-place is entity-derived and
+    # never crosses the unreliable desired(file-bytes)/actual(re-serialized) boundary.
+    $desiredDictionaries     = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $desiredSitHashByGuid    = @{}
+    $desiredPkgContentByName = @{}
     foreach ($pkg in @($manifest.packages)) {
         $pkgFile = Join-Path $resolvedDir ([string]$pkg.file)
         if (-not $pkg.file -or -not (Test-Path -LiteralPath $pkgFile -PathType Leaf)) { continue }
@@ -178,6 +188,7 @@ function Invoke-Compl8Assess {
         foreach ($m in [regex]::Matches($pkgText, '\{\{[A-Za-z0-9_]+\}\}')) {
             $desiredDictionaries.Add($m.Value) | Out-Null
         }
+        $pkgEntityHashes = [System.Collections.Generic.List[string]]::new()
         try {
             [xml]$pkgXml = $pkgText
             $rulesNode = $pkgXml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq 'Rules' } | Select-Object -First 1
@@ -185,11 +196,19 @@ function Invoke-Compl8Assess {
                 foreach ($entity in @($rulesNode.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq 'Entity' })) {
                     $eid = $entity.GetAttribute('id')
                     if (-not [string]::IsNullOrWhiteSpace($eid)) {
-                        $desiredSitHashByGuid[$eid.ToLowerInvariant()] = 'sha256:' + (Get-AssessTextHash -Text $entity.OuterXml)
+                        $eidLower = $eid.ToLowerInvariant()
+                        $entityHash = Get-DlpEntityContentHash -EntityXml $entity.OuterXml
+                        $desiredSitHashByGuid[$eidLower] = $entityHash
+                        $pkgEntityHashes.Add("$eidLower=$entityHash") | Out-Null
                     }
                 }
             }
         } catch { }
+        if ($pkg.name) {
+            $projection = (@($pkgEntityHashes) | Sort-Object) -join "`n"
+            $desiredPkgContentByName[[string]$pkg.name] =
+                Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($projection))</pkg>"
+        }
     }
 
     # ----------------------------------------------------------------- actual side
@@ -273,12 +292,17 @@ function Invoke-Compl8Assess {
             # An actual foreign package that happens to share a desired name — opacity-as-safety.
             continue
         }
-        $desiredSha = [string]$desiredPackages[$name].sha256
-        $actualSha  = [string]$actualPkg.sha256
-        if ($desiredSha -and $actualSha -and ($desiredSha -ne $actualSha)) {
+        # update-in-place is detected from the ENTITY-DERIVED canonical content hash (comparable
+        # across the desired/actual boundary), NOT the raw serialized sha256. The inventory's
+        # contentHash is the shared '<guid>=<entityHash>' digest; we compute the desired side the
+        # same way above. Falling back to nothing when either side lacks a comparable hash avoids
+        # the false-positive storm a raw-byte cross-boundary sha comparison would cause.
+        $desiredPkgHash = if ($desiredPkgContentByName.ContainsKey($name)) { [string]$desiredPkgContentByName[$name] } else { $null }
+        $actualPkgHash  = if ($actualPkg.PSObject.Properties['contentHash']) { [string]$actualPkg.contentHash } else { $null }
+        if ($desiredPkgHash -and $actualPkgHash -and ($desiredPkgHash -ne $actualPkgHash)) {
             Add-Bucket -Bucket 'update-in-place' -ObjectType 'rulePackage' -Ref $name -Extra @{
                 entityId = [string]$desiredPackages[$name].rulePackId
-                reason   = 'refit — same rule package, content sha256 differs'
+                reason   = 'refit — same rule package, canonical content hash differs'
             }
         }
     }

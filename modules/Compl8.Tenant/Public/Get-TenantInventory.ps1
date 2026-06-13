@@ -23,13 +23,47 @@ function Get-TenantInventory {
             tenant        : Get-DeploymentTenantInfo header (name/id/guid/...), or $null
             objects       : an object with one array property per type, each a list of records:
                 dictionaries      : { name, identity, ours }
-                sitPackages       : { name, identity, ours, publisher, rulePackId }
-                dlpRules          : { name, identity, ours, policy, priority, disabled }
+                sitPackages       : { name, identity, ours, publisher, rulePackId,
+                                      entityIds[], sha256, contentHash, sits[] }
+                sits              : { name, identity, ours, package, contentHash }
+                dlpRules          : { name, identity, ours, policy, priority, disabled,
+                                      contentContainsSensitiveInformation }
                 dlpPolicies       : { name, identity, ours, mode }
                 labels            : { name, identity, ours, guid }
                 labelPolicies     : { name, identity, ours, guid }
                 autoLabelPolicies : { name, identity, ours, mode, label }
                 autoLabelRules    : { name, identity, ours, policy, workload }
+
+        ASSESS-CONSUMABLE SIT SHAPE (Stage 4 PHASE 4A; closes codex 4A P1). The deployed SIT
+        rule packages returned by Get-DlpSensitiveInformationTypeRulePackage carry their
+        entity definitions in a SerializedClassificationRuleCollection. The reader parses
+        each package (Convert-DlpSerializedRulePackageToText then [xml]) and emits:
+          * sitPackages[].entityIds  — sorted entity GUIDs in the deployed package.
+          * sitPackages[].sits       — recovered per-entity slugs (the same back-compat list).
+          * sitPackages[].sha256     — RAW hash of the serialized collection bytes. Informational
+                                        ONLY: it is NOT comparable to a desired resolved .xml file
+                                        hash because the service re-serializes the package
+                                        (different encoding/whitespace). Never diff it across the
+                                        desired/actual boundary.
+          * sitPackages[].contentHash — a CANONICAL, comparable package digest derived from the
+                                        package's entities via the SHARED Get-DlpEntityContentHash
+                                        helper (see that function). Computable identically from a
+                                        resolved desired package, so update-in-place / drift can be
+                                        diffed without crossing the file/serialized boundary.
+          * objects.sits[]           — one record PER ENTITY: { name (recovered slug), identity
+                                        (entity GUID), ours, package (containing package name),
+                                        contentHash (shared canonical entity hash) }. This is the
+                                        list Invoke-Compl8Assess buckets for repack-move / drift /
+                                        remove / orphan and joins by entity GUID for impact.
+          * dlpRules[].contentContainsSensitiveInformation — the classifier-reference text assess
+                                        feeds the reference graph (which live rules name each SIT
+                                        GUID), used for per-classifier impact edges.
+
+        Slug recovery: a deployed entity's slug is recovered from its first IdMatch/Match
+        idRef (the resolve pipeline encodes ids as '<Kind>_<...>_<slug>', see
+        ConvertTo-CustomSitFragment) — the trailing hyphenated token after the last '_'.
+        When no idRef is present the slug falls back to the LocalizedStrings display name,
+        then the entity GUID. This is the same join key the desired assignment slugs use.
 
         Every record has at minimum name, identity and ours (boolean). `ours` is true when
         the object name carries the '<Prefix>-' marker (D6: prefix is the primary signal,
@@ -101,18 +135,147 @@ function Get-TenantInventory {
 
     $dictionaries = @($rawDictionaries | ForEach-Object { ConvertTo-Record -Object $_ })
 
+    # Recover a deployed entity's slug from its first IdMatch/Match idRef (the resolve
+    # pipeline encodes ids as '<Kind>_<...>_<slug>'; the slug is the trailing hyphenated
+    # token after the last '_'). Falls back to the LocalizedStrings display name, then GUID.
+    function Get-EntitySlug {
+        param([System.Xml.XmlElement]$Entity, [hashtable]$NameByGuid, [string]$Guid)
+        $idRef = $null
+        foreach ($descendant in @($Entity.SelectNodes('.//*'))) {
+            if (($descendant.LocalName -eq 'IdMatch' -or $descendant.LocalName -eq 'Match')) {
+                $candidate = $descendant.GetAttribute('idRef')
+                if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -notmatch '^\{\{.*\}\}$') {
+                    $idRef = $candidate
+                    break
+                }
+            }
+        }
+        if ($idRef -and $idRef.Contains('_')) {
+            $slug = $idRef.Substring($idRef.LastIndexOf('_') + 1)
+            if (-not [string]::IsNullOrWhiteSpace($slug)) { return $slug }
+        }
+        if ($Guid -and $NameByGuid.ContainsKey($Guid) -and -not [string]::IsNullOrWhiteSpace($NameByGuid[$Guid])) {
+            return $NameByGuid[$Guid]
+        }
+        return $Guid
+    }
+
+    # Parse a deployed SIT rule package into its entities (GUID + recovered slug + canonical
+    # content hash). Pure-ish: uses the shared Compl8.Model helpers; tolerates unparseable XML.
+    function Get-PackageEntities {
+        param($Package, [string]$PackageName, [bool]$Ours)
+        # Read the serialized collection from the RAW property — NOT via Get-Prop, which
+        # coerces to .ToString() and would destroy a byte[] (UTF-16 packages come back as
+        # bytes). Convert-DlpSerializedRulePackageToText handles byte[]/BOM/encoding decode.
+        $serialized = $null
+        foreach ($propName in 'SerializedClassificationRuleCollection', 'RulePackXml') {
+            $prop = $Package.PSObject.Properties[$propName]
+            if ($prop -and $null -ne $prop.Value) { $serialized = $prop.Value; break }
+        }
+        $rawText = if ($null -ne $serialized) { Convert-DlpSerializedRulePackageToText -Raw $serialized } else { $null }
+        # A decoded UTF-16/UTF-8-BOM package keeps a leading U+FEFF; [xml] rejects it. Strip it.
+        if ($rawText -and $rawText.Length -gt 0 -and $rawText[0] -eq [char]0xFEFF) {
+            $rawText = $rawText.Substring(1)
+        }
+
+        $entities = @()
+        $sha256 = $null
+        if (-not [string]::IsNullOrWhiteSpace($rawText)) {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$rawText))
+                $sha256 = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+            } finally { $sha.Dispose() }
+            try {
+                [xml]$pkgXml = $rawText
+                $rulesNode = $pkgXml.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq 'Rules' } | Select-Object -First 1
+                if ($rulesNode) {
+                    # Map entity GUID -> LocalizedStrings display name (slug fallback).
+                    $nameByGuid = @{}
+                    $locStrings = $rulesNode.ChildNodes | Where-Object { $_.LocalName -eq 'LocalizedStrings' } | Select-Object -First 1
+                    if ($locStrings) {
+                        foreach ($resource in @($locStrings.ChildNodes | Where-Object { $_.LocalName -eq 'Resource' })) {
+                            $idRef = $resource.GetAttribute('idRef')
+                            $nameNode = $resource.ChildNodes | Where-Object { $_.LocalName -eq 'Name' } | Select-Object -First 1
+                            if ($idRef -and $nameNode) { $nameByGuid[$idRef] = [string]$nameNode.InnerText }
+                        }
+                    }
+                    foreach ($entity in @($rulesNode.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq 'Entity' })) {
+                        $guid = $entity.GetAttribute('id')
+                        if ([string]::IsNullOrWhiteSpace($guid)) { continue }
+                        $guid = $guid.ToLowerInvariant()
+                        $slug = Get-EntitySlug -Entity $entity -NameByGuid $nameByGuid -Guid $guid
+                        $entities += [pscustomobject]@{
+                            Guid        = $guid
+                            Slug        = $slug
+                            ContentHash = Get-DlpEntityContentHash -EntityXml $entity.OuterXml
+                        }
+                    }
+                }
+            } catch { }
+        }
+        [pscustomobject]@{ Entities = @($entities); Sha256 = $sha256 }
+    }
+
+    # Build the assess-consumable SIT shape: one objects.sits[] record per deployed entity,
+    # plus per-package entityIds + comparable contentHash. (codex 4A P1)
+    $sitRecords = [System.Collections.Generic.List[object]]::new()
     $sitPackages = @($rawSitPackages | ForEach-Object {
+        $pkgName = [string](Get-Prop -Object $_ -Names @('Name'))
+        if ([string]::IsNullOrWhiteSpace($pkgName)) { $pkgName = [string](Get-Prop -Object $_ -Names @('Identity')) }
+        $pkgOurs = [bool](Test-Ours -Name $pkgName)
+        $parsed  = Get-PackageEntities -Package $_ -PackageName $pkgName -Ours $pkgOurs
+
+        $entityIds = @(@($parsed.Entities) | ForEach-Object { $_.Guid } | Sort-Object)
+        $sitSlugs  = @(@($parsed.Entities) | ForEach-Object { $_.Slug } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        foreach ($entity in @($parsed.Entities)) {
+            $sitRecords.Add([pscustomobject][ordered]@{
+                name        = [string]$entity.Slug
+                identity    = [string]$entity.Guid
+                ours        = $pkgOurs
+                package     = $pkgName
+                contentHash = [string]$entity.ContentHash
+            }) | Out-Null
+        }
+        # Canonical, comparable package digest: the shared canonical hash over the package's
+        # sorted '<guid>=<entityContentHash>' projection. Derived from entities, so it is
+        # comparable to a resolved desired package computed the same way (NOT a raw-byte sha).
+        $pkgProjection = (@($parsed.Entities) | Sort-Object Guid | ForEach-Object { "$($_.Guid)=$($_.ContentHash)" }) -join "`n"
+        $pkgContentHash = Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($pkgProjection))</pkg>"
+
         ConvertTo-Record -Object $_ -Extra @{
-            publisher  = [string](Get-Prop -Object $_ -Names @('Publisher'))
-            rulePackId = [string](Get-Prop -Object $_ -Names @('RulePackId', 'Id'))
+            publisher   = [string](Get-Prop -Object $_ -Names @('Publisher'))
+            rulePackId  = [string](Get-Prop -Object $_ -Names @('RulePackId', 'Id'))
+            entityIds   = $entityIds
+            sits        = $sitSlugs
+            sha256      = if ($parsed.Sha256) { $parsed.Sha256 } else { $null }
+            contentHash = $pkgContentHash
         }
     })
+    $sits = @($sitRecords)
+
+    # Capture the DLP rule classifier-reference text (which SIT GUIDs each rule names) so
+    # assess can build per-classifier impact edges WITHOUT re-reading the tenant. We emit the
+    # raw ContentContainsSensitiveInformation value (compact JSON when it is an object) and,
+    # when richer reference surfaces exist (AdvancedRule, ExceptIf..., Conditions), fold in the
+    # shared Get-DlpRuleClassifierReferenceText flattening so no GUID reference is lost.
+    function Get-RuleClassifierField {
+        param($Rule)
+        $primary = $Rule.PSObject.Properties['ContentContainsSensitiveInformation']
+        if ($primary -and $null -ne $primary.Value) {
+            try { return ($primary.Value | ConvertTo-Json -Depth 20 -Compress) }
+            catch { return [string]$primary.Value }
+        }
+        # No primary field — fall back to the flattened reference text (covers advanced rules).
+        return (Get-DlpRuleClassifierReferenceText -Rule $Rule)
+    }
 
     $dlpRules = @($rawDlpRules | ForEach-Object {
         ConvertTo-Record -Object $_ -Extra @{
             policy   = [string](Get-Prop -Object $_ -Names @('Policy', 'ParentPolicyName'))
             priority = Get-Prop -Object $_ -Names @('Priority')
             disabled = [bool](Get-Prop -Object $_ -Names @('Disabled'))
+            contentContainsSensitiveInformation = Get-RuleClassifierField -Rule $_
         }
     })
 
@@ -161,6 +324,7 @@ function Get-TenantInventory {
         objects       = [pscustomobject][ordered]@{
             dictionaries      = $dictionaries
             sitPackages       = $sitPackages
+            sits              = $sits
             dlpRules          = $dlpRules
             dlpPolicies       = $dlpPolicies
             labels            = $labels
