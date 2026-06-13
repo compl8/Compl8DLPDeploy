@@ -7,8 +7,10 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Assert-OrchestrationGate'
+        'Export-TenantActualSnapshot'
         'Get-DeploymentTenantInfo'
         'Get-DlpClassifierRuleReferences'
+        'Get-TenantInventory'
         'Test-DeploymentTenantFingerprint'
         'Test-DlpRulePackageRemovalReferenceGuard'
         'Test-IsInteractive'
