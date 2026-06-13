@@ -7,6 +7,7 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Get-Compl8AssessmentReport',
+        'Get-Compl8PlanOrder',
         'Invoke-Compl8Assess'
     )
     CmdletsToExport   = @()
