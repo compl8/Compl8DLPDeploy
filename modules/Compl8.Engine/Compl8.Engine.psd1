@@ -9,9 +9,12 @@
         'Compare-Compl8Plan',
         'Get-Compl8AssessmentReport',
         'Get-Compl8PlanOrder',
+        'Get-Compl8ShadowDiff',
         'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
+        'Invoke-WithRetry',
         'New-Compl8Plan',
+        'Remove-PurviewObject',
         'Test-Compl8Gate',
         'Test-Compl8PlanCurrent'
     )
