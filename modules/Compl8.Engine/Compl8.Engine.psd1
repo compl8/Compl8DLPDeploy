@@ -14,6 +14,7 @@
         'Invoke-Compl8Assess',
         'Invoke-Compl8DictionaryExecutor',
         'Invoke-Compl8LabelExecutor',
+        'Invoke-Compl8RulePackageExecutor',
         'Invoke-WithRetry',
         'New-Compl8Plan',
         'Remove-PurviewObject',

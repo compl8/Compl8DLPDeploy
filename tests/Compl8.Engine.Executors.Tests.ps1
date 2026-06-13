@@ -80,6 +80,17 @@ BeforeAll {
     function global:Set-LabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string[]]$AddLabels, [string]$Comment) }
     function global:Remove-LabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
 
+    # ---- Rule-package SCC cmdlet stubs (Task 10). Same global-stub pattern: the rule-package executor
+    # invokes New-/Set-/Remove-DlpSensitiveInformationTypeRulePackage, the deployed-package probe
+    # Get-DlpSensitiveInformationTypeRulePackage, and the post-upload verify poll
+    # Get-DlpSensitiveInformationType DYNAMICALLY, so they must EXIST for `Mock -ModuleName Compl8.Engine`
+    # to shadow them. (No -ErrorAction/-Confirm redeclared — common params from [CmdletBinding].)
+    function global:New-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData) }
+    function global:Set-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData) }
+    function global:Remove-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+    function global:Get-DlpSensitiveInformationTypeRulePackage { [CmdletBinding()] param([string]$Identity) }
+    function global:Get-DlpSensitiveInformationType { [CmdletBinding()] param([string]$Identity) }
+
     # ---------------------------------------------------------------- fixture: a dictionary content set
     # The resolved content the executor consumes: one record per dictionary placeholder, carrying the
     # name (prefix-scoped), terms, description and termsBytes (the budget input). The shadow fixture is
@@ -353,7 +364,10 @@ AfterAll {
     Remove-Item Env:\COMPL8_DEPLOYMENT_ID -ErrorAction SilentlyContinue
     foreach ($fn in 'New-DlpKeywordDictionary', 'Set-DlpKeywordDictionary', 'Get-DlpKeywordDictionary', 'Remove-DlpKeywordDictionary',
         'Get-Label', 'New-Label', 'Set-Label', 'Remove-Label',
-        'Get-LabelPolicy', 'New-LabelPolicy', 'Set-LabelPolicy', 'Remove-LabelPolicy') {
+        'Get-LabelPolicy', 'New-LabelPolicy', 'Set-LabelPolicy', 'Remove-LabelPolicy',
+        'New-DlpSensitiveInformationTypeRulePackage', 'Set-DlpSensitiveInformationTypeRulePackage',
+        'Remove-DlpSensitiveInformationTypeRulePackage', 'Get-DlpSensitiveInformationTypeRulePackage',
+        'Get-DlpSensitiveInformationType') {
         Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
     }
 }
@@ -811,3 +825,308 @@ Describe 'Invoke-Compl8LabelExecutor — SHADOW PARITY vs Deploy-Labels.ps1 -Wha
         @($diff.Differing).Count    | Should -Be 0
     }
 }
+
+# =================================================================================================
+# Rule-package executor (Task 10) — copies the pilot template and shadows against the rule-package
+# upload/removal path of scripts/Deploy-Classifiers.ps1. Handles `rulePackage` create|update|remove.
+# Ports the operational guards that belong at apply time — the capacity gate (Test-UploadCapacityGate),
+# the dictionary-reference assertion (Assert-RulePackageUploadDictionaryReferences /
+# Assert-PackageDictionaryReferencesExist), and the post-upload SIT verification poll
+# (Test-UploadedSensitiveInformationTypes) — and proves parity against a GENUINE run of the old
+# operational code via Get-Compl8ShadowDiff.
+#
+# SHADOW STRATEGY (genuine, reused from Task 9 but adapted): Deploy-Classifiers.ps1's UPLOAD path is
+# guarded by SCRIPT-scoped gates (Invoke-ReadinessGate -> Test-DeploymentReadiness.ps1, the direct-
+# upload refit gate, the fingerprint gate) that the global-stub boundary cannot shadow and that are
+# NOT the operational mutation code under test (they are SUBSUMED by plan freshness + the apply
+# framework). So instead of running the whole script top-to-bottom, the recorder loads the script's
+# REAL function definitions via AST (skipping the param block + #region Main, so no deployment runs)
+# and invokes the GENUINE Invoke-ClassifierUploadPlan — the real old upload orchestrator that runs the
+# real Test-UploadCapacityGate, Resolve-RulePackageUploadContent, Assert-RulePackageUploadDictionary-
+# References, Invoke-RulePackageUploadCommand and Test-UploadedSensitiveInformationTypes — with the SCC
+# cmdlets replaced by GLOBAL recording stubs. The recorded New-DlpSensitiveInformationTypeRulePackage
+# call (with the real prefix-scoped name the old name generator produced) IS the old path's intended
+# operation, derived from a real run, never hand-authored. This runs live each test (no frozen fixture).
+
+Describe 'module surface — rule-package executor' {
+    It 'exports Invoke-Compl8RulePackageExecutor from Compl8.Engine' {
+        (Get-Command -Name 'Invoke-Compl8RulePackageExecutor' -Module Compl8.Engine -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-Compl8RulePackageExecutor — fixtures' {
+    BeforeAll {
+        # A small, valid resolved rule-package XML with NO dictionary GUID refs (so the dict-ref guard
+        # passes trivially) and one declared local SIT id for the post-upload verify poll.
+        $script:PkgSitId   = '88888888-8888-8888-8888-888888888888'
+        $script:PkgPayload = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="99999999-9999-9999-9999-999999999999">
+    <Version major="1" minor="0" build="0" revision="0" />
+    <Publisher id="99999999-9999-9999-9999-999999999999" />
+    <Details defaultLangCode="en-us"><LocalizedDetails langcode="en-us">
+      <PublisherName>Queensland Government CSU</PublisherName><Name>QGISCF-medium-99</Name><Description>Shadow.</Description>
+    </LocalizedDetails></Details>
+  </RulePack>
+  <Rules>
+    <Entity id="$($script:PkgSitId)" patternsProximity="300" recommendedConfidence="75">
+      <Pattern confidenceLevel="75"><IdMatch idRef="Pattern_shadow" /></Pattern>
+    </Entity>
+    <Regex id="Pattern_shadow">\b\d{3}\b</Regex>
+  </Rules>
+</RulePackage>
+"@
+        $script:PkgContent = [pscustomobject]@{
+            name        = 'QGISCF-medium-99'
+            payloadXml  = $script:PkgPayload
+            localSitIds = @($script:PkgSitId)
+        }
+    }
+
+    It 'create: calls New-DlpSensitiveInformationTypeRulePackage once and verifies, returns created' {
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage { throw 'must not Set on create' }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @([pscustomobject]@{ Identity = $script:PkgSitId; Id = $script:PkgSitId; Name = 'QGISCF - Shadow SIT' }) }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage -Times 0
+        $result.status     | Should -Be 'created'
+        $result.action     | Should -Be 'create'
+        $result.objectType | Should -Be 'rulePackage'
+        $result.objectRef  | Should -Be 'QGISCF-medium-99'
+        $result.verified   | Should -BeTrue
+    }
+
+    It 'update: takes the Set-DlpSensitiveInformationTypeRulePackage path and returns updated' {
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { throw 'must not New on update' }
+        Mock -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @([pscustomobject]@{ Identity = $script:PkgSitId; Id = $script:PkgSitId }) }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'update'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage -Times 1
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 0
+        $result.status | Should -Be 'updated'
+    }
+
+    It 'remove: goes through Remove-PurviewObject (deleted) addressing the deployed Identity' {
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationTypeRulePackage { [pscustomobject]@{ Identity = 'deployed-id-1'; Name = 'QGISCF-medium-99' } }
+        Mock -ModuleName Compl8.Engine Remove-DlpSensitiveInformationTypeRulePackage { }
+
+        $content = [pscustomobject]@{ name = 'QGISCF-medium-99'; identity = 'deployed-id-1' }
+        $step = [pscustomobject]@{ id = 's01'; action = 'remove'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Remove-DlpSensitiveInformationTypeRulePackage -Times 1
+        $result.status      | Should -Be 'deleted'
+        $result.removeState | Should -Be 'deleted'
+    }
+
+    It 'capacity gate: refuses a create that would exceed the slot cap (no New call), mirrors Test-UploadCapacityGate' {
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { throw 'must not create when over capacity' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        # 10/10 slots used, no removals freed -> no slot available for a new package.
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -Prefix 'QGISCF' `
+            -CurrentSlotsUsed 10 -SlotsFreed 0 -MaxPackageSlots 10 -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 0
+        $result.status | Should -Be 'capacity-blocked'
+        $result.reason | Should -Match 'slot'
+    }
+
+    It 'dictionary-reference assertion: refuses upload when a referenced dict GUID is absent (no New call)' {
+        $dictGuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        $payloadWithDict = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <Rules><Entity id="77777777-7777-7777-7777-777777777777"><Pattern confidenceLevel="75">
+    <IdMatch idRef="Pattern_x" /><Match idRef="$dictGuid" /></Pattern></Entity>
+  <Regex id="Pattern_x">x</Regex></Rules>
+</RulePackage>
+"@
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { throw 'must not upload with a missing dictionary reference' }
+
+        $content = [pscustomobject]@{ name = 'QGISCF-medium-99'; payloadXml = $payloadWithDict; localSitIds = @() }
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        # Tenant inventory does NOT contain the referenced GUID.
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $content -Prefix 'QGISCF' `
+            -DictionaryInventory @([pscustomobject]@{ Guid = 'ffffffff-ffff-ffff-ffff-ffffffffffff' }) -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 0
+        $result.status        | Should -Be 'dict-ref-missing'
+        @($result.dictErrors) | Should -Contain $dictGuid
+    }
+
+    It 'dictionary-reference assertion: PASSES when the referenced dict GUID is present in inventory' {
+        $dictGuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        $payloadWithDict = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <Rules><Entity id="77777777-7777-7777-7777-777777777777"><Pattern confidenceLevel="75">
+    <IdMatch idRef="Pattern_x" /><Match idRef="$dictGuid" /></Pattern></Entity>
+  <Regex id="Pattern_x">x</Regex></Rules>
+</RulePackage>
+"@
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @() }
+
+        $content = [pscustomobject]@{ name = 'QGISCF-medium-99'; payloadXml = $payloadWithDict; localSitIds = @() }
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $content -Prefix 'QGISCF' `
+            -DictionaryInventory @([pscustomobject]@{ Guid = $dictGuid }) -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+        $result.status | Should -Be 'created'
+    }
+
+    It 'post-upload verify poll: status verify-failed when a declared SIT never becomes visible' {
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        # Tenant never returns the expected SIT id -> verification times out.
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @([pscustomobject]@{ Identity = 'some-other-id'; Id = 'some-other-id' }) }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -Prefix 'QGISCF' `
+            -VerifyTimeoutSeconds 20 -VerifyIntervalSeconds 10 -SleepAction { param($s) }
+
+        $result.status   | Should -Be 'verify-failed'
+        $result.verified | Should -BeFalse
+    }
+
+    It 'planned ops (-WhatIf): emits a normalised op (create when absent, update when present) NO mutation' {
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { throw 'no mutation under -WhatIf' }
+        Mock -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage { throw 'no mutation under -WhatIf' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $createOp = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -WhatIf
+        $updateOp = Invoke-Compl8RulePackageExecutor -Step $step -Content $script:PkgContent -ExistingState @{ 'QGISCF-medium-99' = [pscustomobject]@{ Identity = 'x' } } -WhatIf
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 0
+        $createOp.objectType | Should -Be 'rulePackage'
+        $createOp.action     | Should -Be 'create'
+        $createOp.objectRef  | Should -Be 'QGISCF-medium-99'
+        $updateOp.action     | Should -Be 'update'
+    }
+}
+
+Describe 'Invoke-Compl8RulePackageExecutor — SHADOW PARITY vs Deploy-Classifiers.ps1 upload (GENUINE)' {
+  BeforeAll {
+    # The GENUINE old-side recorder: load Deploy-Classifiers.ps1's REAL functions via AST (no main
+    # body runs) and invoke the genuine Invoke-ClassifierUploadPlan with recording SCC stubs.
+    function Get-OldRulePackageWhatIfOps {
+        param([string]$PackageKey, [string]$Payload, [string]$LocalSitId)
+
+        $scriptPath = Join-Path $script:RepoRoot 'scripts' 'Deploy-Classifiers.ps1'
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('clsf-shadow-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $recorded = [System.Collections.Generic.List[object]]::new()
+        $global:Compl8ShadowPkgOps = $recorded
+        try {
+            Import-Module $script:DlpDeploy -Force
+            New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+            Set-Content -Path (Join-Path $tmp "$PackageKey.xml") -Value $Payload -Encoding UTF8
+
+            # AST-extract ONLY the script's top-level function definitions (skip param + #region Main).
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
+            $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Parent -is [System.Management.Automation.Language.NamedBlockAst] }, $false)
+            . ([scriptblock]::Create((($funcs | ForEach-Object { $_.Extent.Text }) -join "`n`n")))
+
+            # Script-scope variables the genuine functions read.
+            $DeployDir = $tmp
+            $XmlDir = $tmp
+            $Tier = 'medium'
+            $Publisher = 'Queensland Government CSU'
+            $Prefix = 'QGISCF'
+            $Scope = 'universal'
+            $SkipDictionarySync = $true
+            $WhatIfPreference = $false
+            $Config = @{ maxRetries = 2; baseDelaySec = 1; interCallDelaySec = 0; namingPrefix = 'QGISCF'; sitPrefix = $null; dictionaryManifestUrl = 'https://fixture' }
+            $script:SourceNamingPrefix = 'QGISCF'
+            $script:DeploymentManifest = $null
+            $script:DictionaryGuidMap = @{}
+            $Packages = @{ $PackageKey = [pscustomobject]@{ key = $PackageKey; displayName = $PackageKey; rulePackId = '99999999-9999-9999-9999-999999999999' } }
+
+            # GLOBAL recording SCC stubs — the genuine functions resolve these by normal scope.
+            function global:Get-DlpSensitiveInformationTypeRulePackage { @() }   # empty tenant => New
+            function global:Get-DlpSensitiveInformationType { @([pscustomobject]@{ Identity = $LocalSitId; Id = $LocalSitId; Name = 'QGISCF - Shadow SIT' }) }
+            function global:Get-DlpKeywordDictionary { @() }
+            function global:New-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData); $global:Compl8ShadowPkgOps.Add([pscustomobject]@{ action = 'create'; objectType = 'rulePackage'; objectRef = $PackageKey }) | Out-Null }
+            function global:Set-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData); $global:Compl8ShadowPkgOps.Add([pscustomobject]@{ action = 'update'; objectType = 'rulePackage'; objectRef = $PackageKey }) | Out-Null }
+            function global:Remove-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+
+            # Build the genuine upload plan record the real loop consumes (New since the tenant is empty)
+            # and invoke the REAL Invoke-ClassifierUploadPlan.
+            $localInfo = Get-LocalPackageInfo -FilePath (Join-Path $tmp "$PackageKey.xml")
+            $uploadPlan = @{ $PackageKey = @{ Action = 'New'; LocalInfo = $localInfo; DeployedInfo = $null; BumpVersion = $null } }
+            $null = Invoke-ClassifierUploadPlan -UploadPlan $uploadPlan -Selected @($PackageKey)
+
+            @($recorded)
+        } finally {
+            foreach ($fn in 'Get-DlpSensitiveInformationTypeRulePackage', 'Get-DlpSensitiveInformationType', 'Get-DlpKeywordDictionary',
+                'New-DlpSensitiveInformationTypeRulePackage', 'Set-DlpSensitiveInformationTypeRulePackage', 'Remove-DlpSensitiveInformationTypeRulePackage') {
+                Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
+            }
+            Remove-Variable -Name Compl8ShadowPkgOps -Scope Global -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Module DLP-Deploy -Force -ErrorAction SilentlyContinue
+            Import-Module $script:EngineDir -Force
+            # Re-establish the rule-package SCC global stubs the executor tests rely on.
+            function global:New-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData) }
+            function global:Set-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([byte[]]$FileData) }
+            function global:Remove-DlpSensitiveInformationTypeRulePackage { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+            function global:Get-DlpSensitiveInformationTypeRulePackage { [CmdletBinding()] param([string]$Identity) }
+            function global:Get-DlpSensitiveInformationType { [CmdletBinding()] param([string]$Identity) }
+        }
+    }
+  }
+
+    It 'executor planned ops MATCH the REAL Deploy-Classifiers upload ops (Get-Compl8ShadowDiff.Match = $true)' {
+        $sitId = '88888888-8888-8888-8888-888888888888'
+        $payload = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="99999999-9999-9999-9999-999999999999">
+    <Version major="1" minor="0" build="0" revision="0" />
+    <Publisher id="99999999-9999-9999-9999-999999999999" />
+    <Details defaultLangCode="en-us"><LocalizedDetails langcode="en-us">
+      <PublisherName>TestPattern</PublisherName><Name>QGISCF-medium-99</Name><Description>Shadow.</Description>
+    </LocalizedDetails></Details>
+  </RulePack>
+  <Rules>
+    <Entity id="$sitId" patternsProximity="300" recommendedConfidence="75">
+      <Pattern confidenceLevel="75"><IdMatch idRef="Pattern_shadow" /></Pattern>
+    </Entity>
+    <Regex id="Pattern_shadow">\b\d{3}\b</Regex>
+    <LocalizedStrings><Resource idRef="$sitId">
+      <Name default="true" langcode="en-us">TestPattern - Shadow SIT</Name>
+      <Description default="true" langcode="en-us">Shadow SIT.</Description>
+    </Resource></LocalizedStrings>
+  </Rules>
+</RulePackage>
+"@
+        # OLD side: genuinely run the real Invoke-ClassifierUploadPlan against an empty tenant.
+        $oldOps = Get-OldRulePackageWhatIfOps -PackageKey 'QGISCF-medium-99' -Payload $payload -LocalSitId $sitId
+
+        # ENGINE side: run the executor in -WhatIf over the same package in the same (empty) tenant state.
+        $content = [pscustomobject]@{ name = 'QGISCF-medium-99'; payloadXml = $payload; localSitIds = @($sitId) }
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-medium-99'; dependsOn = @(); impact = @(); gate = $null }
+        $engineOps = @(Invoke-Compl8RulePackageExecutor -Step $step -Content $content -Prefix 'QGISCF' -WhatIf)
+
+        # Guard against a vacuous empty == empty pass: the old path MUST have produced operations.
+        @($oldOps).Count    | Should -BeGreaterThan 0 -Because 'the fixture must drive a real Invoke-ClassifierUploadPlan upload'
+        @($oldOps).Count    | Should -Be 1 -Because 'one package, empty tenant => one create'
+        @($engineOps).Count | Should -Be 1
+
+        $diff = Get-Compl8ShadowDiff -EngineOps @($engineOps) -OldOps @($oldOps)
+        $diff.Match | Should -BeTrue -Because "executor planned ops must reproduce the real Deploy-Classifiers upload path. OnlyInEngine=$(@($diff.OnlyInEngine) | ForEach-Object { $_.action + ':' + $_.objectRef } | Join-String -Separator ','); OnlyInOld=$(@($diff.OnlyInOld) | ForEach-Object { $_.action + ':' + $_.objectRef } | Join-String -Separator ',')"
+        @($diff.OnlyInEngine).Count | Should -Be 0
+        @($diff.OnlyInOld).Count    | Should -Be 0
+        @($diff.Differing).Count    | Should -Be 0
+    }
+}
+
