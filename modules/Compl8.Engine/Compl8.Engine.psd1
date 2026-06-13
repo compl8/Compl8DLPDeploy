@@ -5,7 +5,10 @@
     Author            = 'Compl8 DLP Deploy'
     Description       = 'Compl8 engine layer: assess, plan, apply — the only tenant-mutating layer (Stage 4).'
     PowerShellVersion = '7.0'
-    FunctionsToExport = @()
+    FunctionsToExport = @(
+        'Get-Compl8AssessmentReport',
+        'Invoke-Compl8Assess'
+    )
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

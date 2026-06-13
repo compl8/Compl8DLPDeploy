@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "compl8.inventory/v1",
+  "prefix": "QGISCF",
+  "generatedUtc": "2026-06-13T00:00:00Z",
+  "tenant": {
+    "name": "compl8.nonprod",
+    "id": "00000000-0000-0000-0000-0000000000aa",
+    "guid": "00000000-0000-0000-0000-0000000000aa",
+    "tenantId": "00000000-0000-0000-0000-0000000000aa",
+    "status": "Connected"
+  },
+  "objects": {
+    "dictionaries": [
+      { "name": "QGISCF-orphan-keywords", "identity": "QGISCF-orphan-keywords", "ours": true },
+      { "name": "Diseases", "identity": "Diseases", "ours": false }
+    ],
+    "sitPackages": [
+      { "name": "QGISCF-test-01", "identity": "QGISCF-test-01", "ours": true, "publisher": "QGISCF DLP Deploy", "rulePackId": "cafebabe-cafe-4abe-8abe-cafebabecafe", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "sits": ["name-dict", "shared-a", "shared-b"] },
+      { "name": "QGISCF-test-02", "identity": "QGISCF-test-02", "ours": true, "publisher": "QGISCF DLP Deploy", "rulePackId": "deadbeef-dead-4eef-8eef-deadbeefdead", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "sits": ["bail-note"] },
+      { "name": "Microsoft Rule Package", "identity": "Microsoft Rule Package", "ours": false, "publisher": "Microsoft Corporation", "rulePackId": "00000000-0000-0000-0000-000000000001", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "sits": ["Microsoft.SSN"] }
+    ],
+    "sits": [
+      { "name": "bail-note", "identity": "11111111-aaaa-4bbb-8ccc-000000000001", "ours": true, "package": "QGISCF-test-02", "contentHash": "sha256:bail00000000000000000000000000000000000000000000000000000000bail" },
+      { "name": "name-dict", "identity": "22222222-aaaa-4bbb-8ccc-000000000002", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:driftdriftdriftdriftdriftdriftdriftdriftdriftdriftdriftdriftdrif" },
+      { "name": "shared-a", "identity": "33333333-aaaa-4bbb-8ccc-000000000003", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:463e9ac5be3621b6dd53aaee24de93499665fefca669bbebc2cff1906a23fb80" },
+      { "name": "shared-b", "identity": "44444444-aaaa-4bbb-8ccc-000000000004", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:sharedb0sharedb0sharedb0sharedb0sharedb0sharedb0sharedb0sharedb00" },
+      { "name": "Microsoft.SSN", "identity": "ffffffff-ffff-4fff-8fff-ffffffffffff", "ours": false, "package": "Microsoft Rule Package", "contentHash": "sha256:microsoftssn0microsoftssn0microsoftssn0microsoftssn0microsoftssn0" }
+    ],
+    "dlpRules": [
+      { "name": "QGISCF-QLD-Medium-Email-07", "identity": "QGISCF-QLD-Medium-Email-07", "ours": true, "policy": "P01-MED-QGISCF-EXT", "priority": 0, "disabled": false, "contentContainsSensitiveInformation": "[{\"name\":\"name-dict\",\"id\":\"22222222-aaaa-4bbb-8ccc-000000000002\"}]" }
+    ],
+    "dlpPolicies": [
+      { "name": "P01-MED-QGISCF-EXT", "identity": "P01-MED-QGISCF-EXT", "ours": false, "mode": "Enable" }
+    ],
+    "labels": [],
+    "labelPolicies": [],
+    "autoLabelPolicies": [],
+    "autoLabelRules": []
+  }
+}

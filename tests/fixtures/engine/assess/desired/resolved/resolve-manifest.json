@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "compl8.resolve-manifest/v1",
+  "generatedUtc": "2026-06-13T00:00:00Z",
+  "inputs": {
+    "releaseVersion": "2026.06-test.1",
+    "releaseHash": "sha256:feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+    "overlayHash": "sha256:950273e8d37179d811d54bccbdd6032dd8e09444f3a72f1edf8bc88f046d02e5",
+    "ledgerHash": "sha256:f6f49d48b8a3202cd350532db3af51e26f4fe4aee9014e84a0a7d7b003d230f1"
+  },
+  "packing": {
+    "assignments": {
+      "bail-note": "QGISCF-test-01",
+      "name-dict": "QGISCF-test-01",
+      "shared-a": "QGISCF-test-01",
+      "custom-incident-ref": "QGISCF-test-01"
+    }
+  },
+  "packages": [
+    {
+      "name": "QGISCF-test-01",
+      "file": "QGISCF-test-01.xml",
+      "sha256": "ced88cd0b46a56b98e19e2f86507d5b0b2f276defc4ed8f0b3671e7f93dc5851",
+      "rulePackId": "cafebabe-cafe-4abe-8abe-cafebabecafe",
+      "entities": 4,
+      "sizeBytes": 4623
+    }
+  ],
+  "warnings": [
+    "conflict:override-base-changed:bail-note — Override was authored against sha256:0000000000000000000000000000000000000000000000000000000000000000 but the release item is now sha256:1111111111111111111111111111111111111111111111111111111111111111; override still applied, review and re-base."
+  ]
+}

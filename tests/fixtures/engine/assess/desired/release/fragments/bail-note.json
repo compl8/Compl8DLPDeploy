@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "compl8.fragment/v1",
+  "slug": "bail-note",
+  "entityId": "11111111-aaaa-4bbb-8ccc-000000000001",
+  "sections": {
+    "entity": "<Entity id=\"11111111-aaaa-4bbb-8ccc-000000000001\" patternsProximity=\"300\" recommendedConfidence=\"85\" relaxProximity=\"false\">\n<Pattern confidenceLevel=\"85\">\n<IdMatch idRef=\"Pattern_bail_note_terms_bail-note\" />\n<Match idRef=\"Evidence_bail_note_keywords_bail-note\" />\n<Any minMatches=\"0\" maxMatches=\"0\">\n<Match idRef=\"Filter_bail_note_exclusion_bail-note\" />\n</Any>\n</Pattern>\n<Pattern confidenceLevel=\"75\">\n<IdMatch idRef=\"Pattern_bail_note_terms_bail-note\" />\n<Any minMatches=\"0\" maxMatches=\"0\">\n<Match idRef=\"Filter_bail_note_exclusion_bail-note\" />\n</Any>\n</Pattern>\n</Entity>",
+    "regexes": [
+      "<Regex id=\"Pattern_bail_note_terms_bail-note\">(?i)\\b(bail\\s+(?:note|undertaking)|surety\\s+amount)\\b</Regex>"
+    ],
+    "keywords": [
+      "<Keyword id=\"Evidence_bail_note_keywords_bail-note\">\n<Group matchStyle=\"word\">\n<Term caseSensitive=\"false\">bail note</Term>\n<Term caseSensitive=\"false\">surety amount</Term>\n</Group>\n</Keyword>",
+      "<Keyword id=\"Filter_bail_note_exclusion_bail-note\">\n<Group matchStyle=\"word\">\n<Term caseSensitive=\"false\">annual report</Term>\n<Term caseSensitive=\"false\">statistics</Term>\n</Group>\n</Keyword>"
+    ],
+    "filters": [],
+    "validators": [],
+    "resources": [
+      "<Resource idRef=\"11111111-aaaa-4bbb-8ccc-000000000001\">\n<Name default=\"true\" langcode=\"en-us\">TestPattern - Bail Note</Name>\n<Description default=\"true\" langcode=\"en-us\">Detects bail notes with surety arrangements.</Description>\n</Resource>"
+    ]
+  }
+}

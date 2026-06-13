@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "compl8.assessment/v1",
+  "workspace": "nonprod",
+  "generatedUtc": "2026-06-13T00:00:00Z",
+  "inputs": {
+    "resolveManifest": "sha256:3cfd7a32d2722a92c30abf9754291385d204b7018946cb0d60c6874a5e064892",
+    "inventory": "sha256:29cd09c282c9436cdc549150512c7ab99f7ceb309eb6ba54bf948afff0e825ed"
+  },
+  "buckets": {
+    "create": [
+      {
+        "objectType": "dictionary",
+        "ref": "{{DICT_AU_FORENAMES}}",
+        "reason": "desired dictionary not present in actual"
+      },
+      {
+        "objectType": "sit",
+        "ref": "custom-incident-ref",
+        "reason": "desired sit not present in actual"
+      }
+    ],
+    "update-in-place": [
+      {
+        "objectType": "rulePackage",
+        "ref": "QGISCF-test-01",
+        "entityId": "cafebabe-cafe-4abe-8abe-cafebabecafe",
+        "reason": "refit — same rule package, content sha256 differs"
+      }
+    ],
+    "repack-move": [
+      {
+        "objectType": "sit",
+        "ref": "bail-note",
+        "from": "QGISCF-test-02",
+        "reason": "package assignment changed",
+        "to": "QGISCF-test-01"
+      }
+    ],
+    "remove": [
+      {
+        "objectType": "sit",
+        "ref": "shared-b",
+        "reason": "ledger-disabled — desired (planned) removal"
+      }
+    ],
+    "orphan": [
+      {
+        "objectType": "dictionary",
+        "ref": "QGISCF-orphan-keywords",
+        "reason": "ours dictionary not in desired and not a planned removal"
+      },
+      {
+        "objectType": "rulePackage",
+        "ref": "QGISCF-test-02",
+        "reason": "ours rule package not in desired and not a planned removal"
+      }
+    ],
+    "foreign": [
+      {
+        "objectType": "dictionary",
+        "ref": "Diseases",
+        "reason": "not ours — never touched"
+      },
+      {
+        "objectType": "rulePackage",
+        "ref": "Microsoft Rule Package",
+        "reason": "not ours — never touched"
+      },
+      {
+        "objectType": "sit",
+        "ref": "Microsoft.SSN",
+        "reason": "not ours — never touched"
+      }
+    ],
+    "drift": [
+      {
+        "objectType": "sit",
+        "ref": "name-dict",
+        "reason": "ours — content changed out-of-band vs desired/resolved"
+      }
+    ]
+  },
+  "upgradeConflicts": [
+    {
+      "slug": "bail-note",
+      "kind": "override-base-changed",
+      "detail": "Override was authored against sha256:0000000000000000000000000000000000000000000000000000000000000000 but the release item is now sha256:1111111111111111111111111111111111111111111111111111111111111111; override still applied, review and re-base."
+    }
+  ],
+  "impact": [
+    {
+      "objectRef": "name-dict",
+      "affects": [
+        "dlp-rule: QGISCF-QLD-Medium-Email-07"
+      ]
+    }
+  ]
+}

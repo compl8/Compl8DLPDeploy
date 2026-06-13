@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+<RulePack id="cafebabe-cafe-4abe-8abe-cafebabecafe">
+<Version major="1" minor="0" build="0" revision="0" />
+<Publisher id="cafebabe-cafe-4abe-8abe-cafebabecafe" />
+<Details defaultLangCode="en-us">
+<LocalizedDetails langcode="en-us">
+<PublisherName>QGISCF DLP Deploy</PublisherName>
+<Name>QGISCF-test-01</Name>
+<Description>TestPattern bundle with 4 patterns</Description>
+</LocalizedDetails>
+</Details>
+</RulePack>
+<Rules>
+<Entity id="11111111-aaaa-4bbb-8ccc-000000000001" patternsProximity="200" recommendedConfidence="85" relaxProximity="false">
+<Pattern confidenceLevel="85">
+<IdMatch idRef="Pattern_bail_note_terms_bail-note" />
+<Match idRef="Evidence_bail_note_keywords_bail-note" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_bail_note_exclusion_bail-note" />
+</Any>
+</Pattern>
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_bail_note_terms_bail-note" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_bail_note_exclusion_bail-note" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="22222222-aaaa-4bbb-8ccc-000000000002" patternsProximity="300" recommendedConfidence="75" relaxProximity="false">
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_name_dict_phrase_name-dict" />
+<Match idRef="{{DICT_AU_FORENAMES}}" />
+</Pattern>
+</Entity>
+<Entity id="33333333-aaaa-4bbb-8ccc-000000000003" patternsProximity="300" recommendedConfidence="75" relaxProximity="false">
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_shared_a_terms_shared-a" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Keyword_shared_noise_filter" />
+</Any>
+</Pattern>
+</Entity>
+<Entity id="55555555-aaaa-4bbb-8ccc-000000000005" patternsProximity="300" recommendedConfidence="75" relaxProximity="false">
+<Pattern confidenceLevel="75">
+<IdMatch idRef="Pattern_custom_terms_custom-incident-ref" />
+<Match idRef="Evidence_custom_keywords_custom-incident-ref" />
+<Any minMatches="0" maxMatches="0">
+<Match idRef="Filter_custom_exclusion_custom-incident-ref" />
+</Any>
+</Pattern>
+</Entity>
+<Regex id="Pattern_bail_note_terms_bail-note">(?i)\b(bail\s+(?:note|undertaking)|surety\s+amount)\b</Regex>
+<Regex id="Pattern_name_dict_phrase_name-dict">(?i)\b(?:full\s+legal\s+name|name\s+of\s+accused)\b</Regex>
+<Regex id="Pattern_shared_a_terms_shared-a">(?i)\bshared\s+alpha\s+document\b</Regex>
+<Regex id="Pattern_custom_terms_custom-incident-ref">(?i)\bINC-20\d{2}-\d{6}\b</Regex>
+<Keyword id="Evidence_bail_note_keywords_bail-note">
+<Group matchStyle="word">
+<Term caseSensitive="false">bail note</Term>
+<Term caseSensitive="false">surety amount</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_bail_note_exclusion_bail-note">
+<Group matchStyle="word">
+<Term caseSensitive="false">annual report</Term>
+<Term caseSensitive="false">statistics</Term>
+</Group>
+</Keyword>
+<Keyword id="Keyword_shared_noise_filter">
+<Group matchStyle="word">
+<Term caseSensitive="false">template</Term>
+<Term caseSensitive="false">sample only</Term>
+</Group>
+</Keyword>
+<Keyword id="Evidence_custom_keywords_custom-incident-ref">
+<Group matchStyle="word">
+<Term caseSensitive="false">incident reference</Term>
+<Term caseSensitive="false">case number</Term>
+</Group>
+</Keyword>
+<Keyword id="Filter_custom_exclusion_custom-incident-ref">
+<Group matchStyle="word">
+<Term caseSensitive="false">training example</Term>
+</Group>
+</Keyword>
+<LocalizedStrings>
+<Resource idRef="11111111-aaaa-4bbb-8ccc-000000000001">
+<Name default="true" langcode="en-us">TestPattern - Bail Note</Name>
+<Description default="true" langcode="en-us">Detects bail notes with surety arrangements.</Description>
+</Resource>
+<Resource idRef="22222222-aaaa-4bbb-8ccc-000000000002">
+<Name default="true" langcode="en-us">TestPattern - Name With Dictionary</Name>
+<Description default="true" langcode="en-us">Detects legal names corroborated by the AU forenames dictionary.</Description>
+</Resource>
+<Resource idRef="33333333-aaaa-4bbb-8ccc-000000000003">
+<Name default="true" langcode="en-us">TestPattern - Shared Keyword A</Name>
+<Description default="true" langcode="en-us">First user of the shared noise filter keyword.</Description>
+</Resource>
+<Resource idRef="55555555-aaaa-4bbb-8ccc-000000000005">
+<Name default="true" langcode="en-us">Incident Reference Number</Name>
+<Description default="true" langcode="en-us">Detects agency incident reference numbers (operator-curated custom SIT).</Description>
+</Resource>
+</LocalizedStrings>
+</Rules>
+</RulePackage>

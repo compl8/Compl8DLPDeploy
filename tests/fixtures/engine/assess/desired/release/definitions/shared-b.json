@@ -1,0 +1,8 @@
+{
+  "slug": "shared-b",
+  "name": "Shared Keyword B",
+  "description": "Second user of the shared noise filter keyword; dedup case.",
+  "confidence": "medium",
+  "proximity": 300,
+  "regex": "(?i)\\bshared\\s+beta\\s+document\\b"
+}
