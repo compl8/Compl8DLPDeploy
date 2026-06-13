@@ -60,6 +60,29 @@ function Get-Compl8ExecutorMap {
         Forwarded to the dlpRule / auto-label executors' name-conflict pre-flight (an active
         same-named object is refused without this).
 
+    .PARAMETER Inventory
+        The tenant inventory the map is assembled against (the same shape the assess/plan consumes:
+        { objects = { sitPackages = [ { name; ours; ... } ] ... } }). Used to DERIVE the rule-package
+        capacity gate's CurrentSlotsUsed = the count of OUR existing rule packages
+        (objects.sitPackages where ours -eq $true), so a near-full tenant's gate sees TRUE headroom
+        and refuses an over-cap create. Optional; when omitted (and -CurrentRulePackageSlotsUsed is not
+        given) the gate falls back to 0 used (legacy behaviour).
+
+    .PARAMETER Plan
+        The plan being applied (compl8.plan/v1: { steps = [ { action; objectType; ... } ] }). Used to
+        DERIVE the capacity gate's SlotsFreed = the count of rulePackage REMOVALS in THIS plan
+        (steps where objectType -eq 'rulePackage' -and action -eq 'remove'), crediting freed slots so a
+        create that reuses a removed package's slot is not falsely blocked. Optional; when omitted (and
+        -RulePackageSlotsFreed is not given) the gate falls back to 0 freed.
+
+    .PARAMETER CurrentRulePackageSlotsUsed
+        Explicit override for the rule-package capacity gate's CurrentSlotsUsed. When supplied it wins
+        over the -Inventory derivation; otherwise it is derived from -Inventory (or defaults to 0).
+
+    .PARAMETER RulePackageSlotsFreed
+        Explicit override for the rule-package capacity gate's SlotsFreed. When supplied it wins over
+        the -Plan derivation; otherwise it is derived from -Plan (or defaults to 0).
+
     .PARAMETER SleepAction
         Injectable sleep forwarded to every executor's retry / remove / verify paths. Defaults to a
         real Start-Sleep; tests pass a no-op so retry/verify run instantly.
@@ -84,6 +107,13 @@ function Get-Compl8ExecutorMap {
 
     .OUTPUTS
         A hashtable objectType -> scriptblock, ready to pass to Invoke-Compl8Apply -ExecutorMap.
+
+    .NOTES
+        SHARED LABEL PARENT-GUID CACHE. The map creates ONE [hashtable] parent-guid cache and threads
+        it (-ParentGuidCache) into EVERY label/labelPolicy closure. A label GROUP created by an earlier
+        step seeds the cache (the executor writes its new Guid back under the group name), so a later
+        SUBLABEL step in the SAME apply resolves the parent from the cache instead of falling to Get-Label
+        — which would return 'parent-not-found' if Purview has not yet surfaced the just-created group.
     #>
     [CmdletBinding()]
     param(
@@ -99,6 +129,14 @@ function Get-Compl8ExecutorMap {
 
         [switch]$ConfirmNameConflicts,
 
+        [object]$Inventory,
+
+        [object]$Plan,
+
+        [int]$CurrentRulePackageSlotsUsed,
+
+        [int]$RulePackageSlotsFreed,
+
         [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
 
         [scriptblock]$SnapshotExecutor,
@@ -109,6 +147,42 @@ function Get-Compl8ExecutorMap {
 
         [string]$SnapshotTimestamp
     )
+
+    # ---- RULE-PACKAGE SLOT ACCOUNTING (capacity-gate inputs for the rulePackage closure) ---------
+    # The capacity gate refuses a create that would exceed MaxRulePackagesPerTenant. It needs the TRUE
+    # batch accounting, NOT the executor defaults (0 used / 0 freed) — otherwise a near-full tenant
+    # always looks to have room and an over-cap create slips through. Derive both from the data the
+    # assembler already holds, with explicit overrides winning when supplied:
+    #   CurrentSlotsUsed = count of OUR existing rule packages (objects.sitPackages where ours = $true),
+    #   SlotsFreed       = count of rulePackage REMOVALS in THIS plan (steps action=remove type=rulePackage).
+    $rulePackageSlotsUsed = if ($PSBoundParameters.ContainsKey('CurrentRulePackageSlotsUsed')) {
+        $CurrentRulePackageSlotsUsed
+    } elseif ($Inventory -and $Inventory.PSObject.Properties['objects'] -and $Inventory.objects `
+              -and $Inventory.objects.PSObject.Properties['sitPackages']) {
+        @(@($Inventory.objects.sitPackages) | Where-Object {
+            $_ -and $_.PSObject.Properties['ours'] -and [bool]$_.ours
+        }).Count
+    } else { 0 }
+
+    $rulePackageSlotsFreed = if ($PSBoundParameters.ContainsKey('RulePackageSlotsFreed')) {
+        $RulePackageSlotsFreed
+    } elseif ($Plan -and $Plan.PSObject.Properties['steps']) {
+        @(@($Plan.steps) | Where-Object {
+            $_ -and [string]$_.objectType -eq 'rulePackage' -and [string]$_.action -eq 'remove'
+        }).Count
+    } else { 0 }
+
+    # The executor's gate is STATELESS per call (it only knows the CurrentSlotsUsed it is handed), so it
+    # cannot see slots consumed by EARLIER creates in this same apply batch. The map closes that gap: it
+    # keeps a running count of creates already realised this batch and adds it to the baseline used, so
+    # the Nth create sees the slots the prior N-1 creates filled. A mutable [ref] survives across the
+    # closure's repeated invocations (the closure captures the SAME box).
+    $rulePackageCreatesDone = [ref]0
+
+    # ---- SHARED LABEL PARENT-GUID CACHE ---------------------------------------------------------
+    # ONE hashtable threaded into every label/labelPolicy closure (each .GetNewClosure() captures the
+    # SAME reference): a group created by an earlier step seeds it for a later sublabel in this apply.
+    $parentGuidCache = @{}
 
     # Resolve a step's bound content from the stepId -> content map (or $null when absent).
     $resolveContent = {
@@ -151,9 +225,16 @@ function Get-Compl8ExecutorMap {
 
         rulePackage = {
             param($Step)
-            Invoke-Compl8RulePackageExecutor -Step $Step -Content (& $resolveContent $Step) `
+            # Add creates already realised this batch to the baseline used so the gate sees true
+            # headroom shrink as the batch fills slots (the executor itself is stateless per call).
+            $usedNow = $rulePackageSlotsUsed + $rulePackageCreatesDone.Value
+            $result = Invoke-Compl8RulePackageExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -DictionaryInventory $DictionaryInventory -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                -CurrentSlotsUsed $usedNow -SlotsFreed $rulePackageSlotsFreed `
                 -SleepAction $SleepAction
+            # A realised create consumed a slot — charge the running batch count so the next create sees it.
+            if ($result -and [string]$result.status -eq 'created') { $rulePackageCreatesDone.Value++ }
+            $result
         }.GetNewClosure()
 
         # A `sit` step (create / repack-move / remove of a SIT entity) has NO standalone tenant
@@ -179,13 +260,15 @@ function Get-Compl8ExecutorMap {
         label = {
             param($Step)
             Invoke-Compl8LabelExecutor -Step $Step -Content (& $resolveContent $Step) `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -ParentGuidCache $parentGuidCache `
+                -SleepAction $SleepAction
         }.GetNewClosure()
 
         labelPolicy = {
             param($Step)
             Invoke-Compl8LabelExecutor -Step $Step -Content (& $resolveContent $Step) `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -ParentGuidCache $parentGuidCache `
+                -SleepAction $SleepAction
         }.GetNewClosure()
 
         dlpRule = {

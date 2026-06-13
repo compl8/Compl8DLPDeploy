@@ -93,6 +93,37 @@ BeforeAll {
     function global:Set-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled) }
     function global:Remove-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
 
+    # Sensitivity-label cmdlets the label executor invokes (needed so `Mock -ModuleName Compl8.Engine`
+    # can shadow them; the e2e plan exercises no labels itself, but the Get-Compl8ExecutorMap Describe
+    # runs the label closures directly — see the shared parent-guid cache test).
+    function global:Get-Label { [CmdletBinding()] param([string]$Identity) }
+    function global:New-Label {
+        [CmdletBinding(SupportsShouldProcess)]
+        param(
+            [string]$Name, [string]$DisplayName, [string]$Tooltip, [string]$Comment, [string]$ContentType,
+            [switch]$IsLabelGroup, [string]$ParentId,
+            [switch]$ApplyContentMarkingHeaderEnabled, [string]$ApplyContentMarkingHeaderText,
+            [int]$ApplyContentMarkingHeaderFontSize, [string]$ApplyContentMarkingHeaderAlignment, [string]$ApplyContentMarkingHeaderFontColor,
+            [switch]$ApplyContentMarkingFooterEnabled, [string]$ApplyContentMarkingFooterText,
+            [int]$ApplyContentMarkingFooterFontSize, [string]$ApplyContentMarkingFooterAlignment, [string]$ApplyContentMarkingFooterFontColor,
+            [hashtable]$AdvancedSettings)
+    }
+    function global:Set-Label {
+        [CmdletBinding(SupportsShouldProcess)]
+        param(
+            [string]$Identity, [string]$DisplayName, [string]$Tooltip, [string]$Comment,
+            [switch]$ApplyContentMarkingHeaderEnabled, [string]$ApplyContentMarkingHeaderText,
+            [int]$ApplyContentMarkingHeaderFontSize, [string]$ApplyContentMarkingHeaderAlignment, [string]$ApplyContentMarkingHeaderFontColor,
+            [switch]$ApplyContentMarkingFooterEnabled, [string]$ApplyContentMarkingFooterText,
+            [int]$ApplyContentMarkingFooterFontSize, [string]$ApplyContentMarkingFooterAlignment, [string]$ApplyContentMarkingFooterFontColor,
+            [hashtable]$AdvancedSettings)
+    }
+    function global:Remove-Label { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+    function global:Get-LabelPolicy { [CmdletBinding()] param([string]$Identity) }
+    function global:New-LabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string[]]$Labels, [string]$ExchangeLocation, [string]$Comment) }
+    function global:Set-LabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string[]]$AddLabels, [string]$Comment) }
+    function global:Remove-LabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+
     # ---- the desired/actual diff + graph the planner consumes (built ONCE, real assess) -------
     function New-E2EAssessment {
         Invoke-Compl8Assess -WorkspacePath $script:FixtureRoot -InventoryPath $script:InventoryPath `
@@ -236,7 +267,9 @@ AfterAll {
         'New-DlpSensitiveInformationTypeRulePackage', 'Set-DlpSensitiveInformationTypeRulePackage', 'Remove-DlpSensitiveInformationTypeRulePackage',
         'Get-DlpSensitiveInformationTypeRulePackage', 'Get-DlpSensitiveInformationType',
         'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy', 'Remove-DlpCompliancePolicy',
-        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule') {
+        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule',
+        'Get-Label', 'New-Label', 'Set-Label', 'Remove-Label',
+        'Get-LabelPolicy', 'New-LabelPolicy', 'Set-LabelPolicy', 'Remove-LabelPolicy') {
         Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
     }
 }
@@ -291,6 +324,81 @@ Describe 'Get-Compl8ExecutorMap — assembles the production map (objectType -> 
         $map = Get-Compl8ExecutorMap -StepContent @{} -SnapshotExecutor { param($Step) [pscustomobject]@{ status = 'custom-snap'; stepId = $Step.id } }
         $step = [pscustomobject]@{ id = 's00'; action = 'snapshot'; objectType = 'tenant'; objectRef = '*'; dependsOn = @(); impact = @(); gate = $null }
         (& $map['tenant'] $step).status | Should -Be 'custom-snap'
+    }
+
+    It '[P2-1] threads rule-package SLOT ACCOUNTING from -Inventory/-Plan so a near-full tenant refuses an over-cap create' {
+        # The tenant already holds (MaxRulePackagesPerTenant - 1) = 9 of OUR rule packages, plus a
+        # Microsoft package that is NOT ours (must not count toward our slots). The plan creates 2 new
+        # packages and frees 0. The capacity gate must allow exactly ONE create (filling the 10th slot)
+        # and REFUSE the second (over-cap) — NO New call for the over-cap one.
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        $cap = (Get-DeploymentLimits).MaxRulePackagesPerTenant
+
+        $ourPackages = @(1..($cap - 1) | ForEach-Object { [pscustomobject]@{ name = "QGISCF-existing-$_"; ours = $true } })
+        $inventory = [pscustomobject]@{
+            schemaVersion = 'compl8.inventory/v1'
+            objects = [pscustomobject]@{
+                sitPackages = @($ourPackages + [pscustomobject]@{ name = 'Microsoft Rule Package'; ours = $false })
+            }
+        }
+
+        $stepA = [pscustomobject]@{ id = 'pA'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-A'; dependsOn = @(); impact = @(); gate = $null }
+        $stepB = [pscustomobject]@{ id = 'pB'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-B'; dependsOn = @(); impact = @(); gate = $null }
+        $plan = [pscustomobject]@{ steps = @($stepA, $stepB) }   # 2 creates, 0 rulePackage removals
+        # payloadXml referencing no dictionary GUID + empty localSitIds => dict-ref + verify gates pass trivially.
+        $content = @{
+            pA = [pscustomobject]@{ name = 'QGISCF-new-A'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+            pB = [pscustomobject]@{ name = 'QGISCF-new-B'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } `
+            -Inventory $inventory -Plan $plan
+
+        # First create fills the last free slot (9 used + 1 = 10 <= cap) -> created.
+        $rA = & $map['rulePackage'] $stepA
+        $rA.status | Should -Be 'created'
+        # Second create would make 11 > cap -> REFUSED before mutation.
+        $rB = & $map['rulePackage'] $stepB
+        $rB.status | Should -Be 'capacity-blocked'
+
+        # Exactly ONE New call total (the over-cap one never reaches the SCC cmdlet).
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+    }
+
+    It '[P2-2] threads a SHARED parent-guid cache so a sublabel reuses a parent group created earlier in the same apply' {
+        # A label GROUP create step seeds the shared cache with its just-created GUID; a later SUBLABEL
+        # create step (same map) must resolve the parent from THAT cache even though Get-Label returns
+        # NOTHING for the parent (Purview has not yet surfaced the new group). Before the fix (no shared
+        # cache) the sublabel falls to Get-Label, finds nothing, and is skipped as parent-not-found.
+        $parentGuid = '99999999-aaaa-4bbb-8ccc-000000000099'
+        # Get-Label returns nothing for ANY identity (neither the new group nor the parent lookup).
+        Mock -ModuleName Compl8.Engine Get-Label { $null }
+        Mock -ModuleName Compl8.Engine New-Label {
+            if ($Name -eq 'QGISCF - Group') { [pscustomobject]@{ Guid = $parentGuid; Name = $Name } }
+            else { [pscustomobject]@{ Guid = 'sublabel-guid'; Name = $Name } }
+        }
+        Mock -ModuleName Compl8.Engine Set-Label { }
+
+        $groupStep = [pscustomobject]@{ id = 'lg'; action = 'create'; objectType = 'label'; objectRef = 'QGISCF - Group'; dependsOn = @(); impact = @(); gate = $null }
+        $subStep   = [pscustomobject]@{ id = 'ls'; action = 'create'; objectType = 'label'; objectRef = 'QGISCF - Group - Child'; dependsOn = @(); impact = @(); gate = $null }
+        $content = @{
+            lg = [pscustomobject]@{ name = 'QGISCF - Group'; displayName = 'Group'; isGroup = $true }
+            ls = [pscustomobject]@{ name = 'QGISCF - Group - Child'; displayName = 'Child'; isGroup = $false; parentGroup = 'QGISCF - Group'; parentLabelName = 'QGISCF - Group' }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        # Group create seeds the shared cache.
+        $rg = & $map['label'] $groupStep
+        $rg.status | Should -Be 'created'
+        $rg.guid   | Should -Be $parentGuid
+
+        # Sublabel must be CREATED using the cached parent GUID, NOT skipped as parent-not-found.
+        $rs = & $map['label'] $subStep
+        $rs.status   | Should -Be 'created'
+        $rs.parentId | Should -Be $parentGuid
+
+        Should -Invoke -ModuleName Compl8.Engine New-Label -Times 2
     }
 }
 
