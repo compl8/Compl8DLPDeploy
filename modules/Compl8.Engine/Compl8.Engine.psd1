@@ -9,8 +9,10 @@
         'Compare-Compl8Plan',
         'Get-Compl8AssessmentReport',
         'Get-Compl8PlanOrder',
+        'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
         'New-Compl8Plan',
+        'Test-Compl8Gate',
         'Test-Compl8PlanCurrent'
     )
     CmdletsToExport   = @()
