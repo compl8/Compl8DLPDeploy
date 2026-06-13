@@ -250,13 +250,22 @@ function Get-Compl8ExecutorMap {
                 -CurrentSlotsUsed $usedNow -SlotsFreed $freedNow `
                 -SleepAction $SleepAction
             $status = if ($result) { [string]$result.status } else { '' }
-            # A create CONSUMED a slot the moment its upload happened — that is true for 'created' AND
-            # 'verify-failed' (the New upload succeeded; only post-upload verification timed out). Charge
-            # the running consumed count so a LATER create in this batch sees the slot already taken.
-            if ($status -eq 'created' -or $status -eq 'verify-failed') { $rulePackageCreatesDone.Value++ }
-            # A remove FREED a slot only once it actually completed (the package was deleted). Credit the
-            # running freed count so a later create may legitimately reuse the slot.
-            elseif ($status -eq 'deleted') { $rulePackageRemovesDone.Value++ }
+            $stepAction = [string]$Step.action
+            # A CREATE consumes a NEW slot the moment its upload happens — true for 'created' AND a
+            # create that returns 'verify-failed' (the New upload succeeded; only post-upload verification
+            # timed out). An UPDATE that returns 'verify-failed' reuses its EXISTING slot, so it must NOT
+            # be charged as new consumption (would falsely capacity-block a later create). Hence the
+            # verify-failed charge is gated on action='create'. 'created' is create-only by definition.
+            if ($status -eq 'created' -or ($status -eq 'verify-failed' -and $stepAction -eq 'create')) {
+                $rulePackageCreatesDone.Value++
+            }
+            # A remove FREES a slot only once the package is ACTUALLY gone. Remove-PurviewObject maps a
+            # PendingDeletion to status='deleted' but preserves removeState='pending'; a pending package
+            # may still count against the tenant cap, so do NOT credit it as freed (would let a later
+            # create through against a slot that is not yet truly free). Credit only a completed delete.
+            elseif ($status -eq 'deleted' -and [string]$result.removeState -ne 'pending') {
+                $rulePackageRemovesDone.Value++
+            }
             $result
         }.GetNewClosure()
 

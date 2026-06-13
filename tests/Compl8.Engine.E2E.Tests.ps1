@@ -457,6 +457,71 @@ Describe 'Get-Compl8ExecutorMap — assembles the production map (objectType -> 
         Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
     }
 
+    It '[P2-C] an UPDATE that verify-fails does NOT consume a create slot (updates reuse their slot)' {
+        # NEAR-FULL tenant: baselineUsed = cap - 1 (one free slot). An UPDATE uploads (Set) but its
+        # post-upload verification times out -> status 'verify-failed'. An update REUSES its existing
+        # slot, so it must NOT be charged as new consumption — a following CREATE must still fit the free
+        # slot. Before the fix the update's 'verify-failed' wrongly bumped the create counter, capacity-
+        # blocking the create.
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Set-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @() }   # verify never confirms -> timeout
+        $cap = (Get-DeploymentLimits).MaxRulePackagesPerTenant
+
+        $ourPackages = @(1..($cap - 1) | ForEach-Object { [pscustomobject]@{ name = "QGISCF-existing-$_"; ours = $true } })
+        $inventory = [pscustomobject]@{ schemaVersion = 'compl8.inventory/v1'; objects = [pscustomobject]@{ sitPackages = @($ourPackages) } }
+
+        $updateStep = [pscustomobject]@{ id = 'up'; action = 'update'; objectType = 'rulePackage'; objectRef = 'QGISCF-existing-1'; dependsOn = @(); impact = @(); gate = $null }
+        $createStep = [pscustomobject]@{ id = 'cr'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new'; dependsOn = @(); impact = @(); gate = $null }
+        $plan = [pscustomobject]@{ steps = @($updateStep, $createStep) }
+        $content = @{
+            up = [pscustomobject]@{ name = 'QGISCF-existing-1'; payloadXml = '<RulePackage/>'; localSitIds = @('sit-never') }
+            cr = [pscustomobject]@{ name = 'QGISCF-new'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } -Inventory $inventory -Plan $plan
+
+        $rU = & $map['rulePackage'] $updateStep
+        $rU.status | Should -Be 'verify-failed'
+        # The update reused its slot, leaving the one free slot for the create -> the create is allowed.
+        $rC = & $map['rulePackage'] $createStep
+        $rC.status | Should -Be 'created'
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+    }
+
+    It '[P2-D] a PENDING-deletion removal is NOT credited as a freed slot' {
+        # FULL tenant: baselineUsed = cap. The remove finds the package already in PendingDeletion, so
+        # Remove-PurviewObject returns 'pending' -> executor status 'deleted' with removeState 'pending'.
+        # The package is NOT yet truly gone (it may still count against the cap), so it must NOT be
+        # credited as a freed slot — a following CREATE must still be REFUSED. Before the fix the pending
+        # removal credited freed=1 and the create was wrongly allowed.
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Remove-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationTypeRulePackage { [pscustomobject]@{ Identity = 'QGISCF-old-1'; Name = 'QGISCF-old-1'; State = 'PendingDeletion' } }
+        $cap = (Get-DeploymentLimits).MaxRulePackagesPerTenant
+
+        $ourPackages = @(1..$cap | ForEach-Object { [pscustomobject]@{ name = "QGISCF-existing-$_"; ours = $true } })
+        $inventory = [pscustomobject]@{ schemaVersion = 'compl8.inventory/v1'; objects = [pscustomobject]@{ sitPackages = @($ourPackages) } }
+
+        $removeStep = [pscustomobject]@{ id = 'rm'; action = 'remove'; objectType = 'rulePackage'; objectRef = 'QGISCF-old-1'; dependsOn = @(); impact = @(); gate = $null }
+        $createStep = [pscustomobject]@{ id = 'cr'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new'; dependsOn = @(); impact = @(); gate = $null }
+        $plan = [pscustomobject]@{ steps = @($removeStep, $createStep) }
+        $content = @{
+            rm = [pscustomobject]@{ name = 'QGISCF-old-1'; identity = 'QGISCF-old-1' }
+            cr = [pscustomobject]@{ name = 'QGISCF-new'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } -Inventory $inventory -Plan $plan
+
+        $rR = & $map['rulePackage'] $removeStep
+        $rR.status | Should -Be 'deleted'
+        $rR.removeState | Should -Be 'pending'
+        # The pending package is not truly gone -> NOT credited -> the full tenant still blocks the create.
+        $rC = & $map['rulePackage'] $createStep
+        $rC.status | Should -Be 'capacity-blocked'
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 0
+    }
+
     It '[P2-2] threads a SHARED parent-guid cache so a sublabel reuses a parent group created earlier in the same apply' {
         # A label GROUP create step seeds the shared cache with its just-created GUID; a later SUBLABEL
         # create step (same map) must resolve the parent from THAT cache even though Get-Label returns
