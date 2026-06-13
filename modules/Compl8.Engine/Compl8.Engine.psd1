@@ -13,6 +13,7 @@
         'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
         'Invoke-Compl8DictionaryExecutor',
+        'Invoke-Compl8LabelExecutor',
         'Invoke-WithRetry',
         'New-Compl8Plan',
         'Remove-PurviewObject',
