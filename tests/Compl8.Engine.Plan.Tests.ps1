@@ -485,6 +485,58 @@ Describe 'Get-Compl8PlanOrder — reverse-edge removal ordering (P2-2)' {
             $a | Should -Be $b
         }
     }
+
+    Context 'policy + label SHARE the same ref but differ in objectType (composite removal identity)' {
+        BeforeAll {
+            # A dlpPolicy and a label that SHARE the same name/ref ('QGISCF-Shared-Name') are BOTH
+            # removed, with a policyTargetsLabel edge between their nodes (policy references label).
+            # The removal dependency identity must distinguish objectType as well as ref: keyed by
+            # ref ALONE, the referencer (policy) and referent (label) collapse to the same identity
+            # and the reverse edge is SKIPPED — so the default tier sort can teardown the label
+            # before the policy (unsafe). Keyed by (objectType, ref) they are DISTINCT and the
+            # policy-before-label ordering holds.
+            $script:p22cGraph = [pscustomobject]@{
+                Nodes = @(
+                    [pscustomobject]@{ Id = 'dlpPolicy:QGISCF-Shared-Name'; Type = 'DlpPolicy'; Name = 'QGISCF-Shared-Name'; Identity = 'QGISCF-Shared-Name' }
+                    [pscustomobject]@{ Id = 'label:QGISCF-Shared-Name'; Type = 'Label'; Name = 'QGISCF-Shared-Name'; Identity = 'lblguid-shared' }
+                )
+                Edges = @(
+                    [pscustomobject]@{ From = 'dlpPolicy:QGISCF-Shared-Name'; To = 'label:QGISCF-Shared-Name'; Type = 'policyTargetsLabel'; Properties = [pscustomobject]@{ LabelCode = 'QGISCF-Shared-Name'; RuleName = 'QGISCF-rule' } }
+                )
+                Summary = [pscustomobject]@{}
+            }
+            $script:p22cAssessment = New-TestAssessment -Buckets @{
+                'remove' = @(
+                    New-BucketEntry -ObjectType 'label'     -Ref 'QGISCF-Shared-Name'
+                    New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'QGISCF-Shared-Name'
+                )
+            }
+            $script:p22cSteps = @(Get-Compl8PlanOrder -Assessment $script:p22cAssessment -Graph $script:p22cGraph)
+        }
+
+        It 'orders the dlpPolicy remove BEFORE the label remove (shared ref, distinct objectType)' {
+            $policyIdx = -1; $labelIdx = -1
+            for ($i = 0; $i -lt $script:p22cSteps.Count; $i++) {
+                if ($script:p22cSteps[$i].action -eq 'remove' -and $script:p22cSteps[$i].objectType -eq 'dlpPolicy') { $policyIdx = $i }
+                if ($script:p22cSteps[$i].action -eq 'remove' -and $script:p22cSteps[$i].objectType -eq 'label') { $labelIdx = $i }
+            }
+            $policyIdx | Should -BeGreaterThan -1
+            $labelIdx  | Should -BeGreaterThan -1
+            $policyIdx | Should -BeLessThan $labelIdx
+        }
+
+        It 'makes the label remove depend on the policy remove (the reverse edge is NOT skipped)' {
+            $policyStep = @($script:p22cSteps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'dlpPolicy' })[0]
+            $labelStep  = @($script:p22cSteps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'label' })[0]
+            @($labelStep.dependsOn) | Should -Contain $policyStep.id
+        }
+
+        It 'produces an identical ordered step list on repeated runs (determinism)' {
+            $a = @(Get-Compl8PlanOrder -Assessment $script:p22cAssessment -Graph $script:p22cGraph) | ConvertTo-Json -Depth 12
+            $b = @(Get-Compl8PlanOrder -Assessment $script:p22cAssessment -Graph $script:p22cGraph) | ConvertTo-Json -Depth 12
+            $a | Should -Be $b
+        }
+    }
 }
 
 # =====================================================================================

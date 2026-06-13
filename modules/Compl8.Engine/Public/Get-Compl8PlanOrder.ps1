@@ -274,12 +274,19 @@ function Get-Compl8PlanOrder {
     # Map a removed sit's package: a removed sit/package whose graph sit is referenced by a rule.
     # 'dereferenceImpact[rule]' = ordered set of removed-sit refs that rule must shed.
     $dereferenceImpact = @{}                  # rule name -> List[string] (removed sit refs)
-    $removeDepsByRef   = @{}                   # remove entry ref -> List[string] (depends keys)
+    # Removal dependency identity is a COMPOSITE "$objectType|$ref", NOT ref alone: two removed
+    # objects can share the same ref but differ in objectType (e.g. a dlpPolicy and a label both
+    # named 'QGISCF-Shared-Name'). Keying by ref alone would collapse the referencer and referent
+    # to one identity and SKIP the reverse-edge ordering. The '|' delimiter cannot collide: every
+    # objectType is a fixed enum (see $typeTier) that never contains '|', so a split on the FIRST
+    # '|' cleanly recovers (type, ref) even if a ref itself contained '|' or ':'.
+    $removeDepsByRef   = @{}                   # "$type|$ref" -> List[string] (depends keys)
 
     foreach ($entry in $removeEntries) {
         $type = [string]$entry.objectType
         $ref  = [string]$entry.ref
-        if (-not $removeDepsByRef.ContainsKey($ref)) { $removeDepsByRef[$ref] = [System.Collections.Generic.List[string]]::new() }
+        $removeId = "$type|$ref"
+        if (-not $removeDepsByRef.ContainsKey($removeId)) { $removeDepsByRef[$removeId] = [System.Collections.Generic.List[string]]::new() }
 
         # Resolve the referencing rules for this removal, graph-first then impact[] fallback.
         $referencingRules = [System.Collections.Generic.List[string]]::new()
@@ -304,7 +311,7 @@ function Get-Compl8PlanOrder {
             if (-not $dereferenceImpact.ContainsKey($rn)) { $dereferenceImpact[$rn] = [System.Collections.Generic.List[string]]::new() }
             if (-not $dereferenceImpact[$rn].Contains($ref)) { $dereferenceImpact[$rn].Add($ref) | Out-Null }
             $depKey = "dereference:$rn"
-            if (-not $removeDepsByRef[$ref].Contains($depKey)) { $removeDepsByRef[$ref].Add($depKey) | Out-Null }
+            if (-not $removeDepsByRef[$removeId].Contains($depKey)) { $removeDepsByRef[$removeId].Add($depKey) | Out-Null }
         }
     }
 
@@ -317,16 +324,38 @@ function Get-Compl8PlanOrder {
 
     # Reverse-edge removal predecessors (P2-2): when A references B and BOTH are being removed,
     # B's removal must follow A's removal. Resolve graph reference edges to remove-entry refs.
-    # Build: graph node id -> remove-entry ref (so an edge endpoint can name a remove step).
+    # Build: graph node id -> remove identity "$type|$ref" (so an edge endpoint can name a remove
+    # step by BOTH objectType and ref — a label and a policy that share a ref stay distinct).
+    #
+    # The match is SCOPED to the node KIND for the remove's objectType: a `label` remove may only
+    # claim Label nodes, a `dlpPolicy` remove only DlpPolicy nodes, etc. Without this scoping a
+    # label and a policy that share a Name/ref would each claim BOTH nodes (Name matches both), the
+    # first remove entry would win every node id, and the reverse edge would resolve referencer and
+    # referent to the SAME remove identity — silently dropping the policy-before-label ordering.
+    $nodeKindByRemoveType = @{
+        'sit'             = @('SensitiveInformationType')
+        'rulePackage'     = @('SitPackage')
+        'label'           = @('Label')
+        'dlpPolicy'       = @('DlpPolicy')
+        'dlpRule'         = @('DlpRule')
+        'dictionary'      = @('KeywordDictionary')
+        'labelPolicy'     = @('LabelPolicy')
+        'autoLabelPolicy' = @('AutoLabelPolicy')
+    }
     $removeRefByNodeId = @{}
     foreach ($entry in $removeEntries) {
         $type = [string]$entry.objectType
         $ref  = [string]$entry.ref
+        $removeId = "$type|$ref"
+        $allowedKinds = $nodeKindByRemoveType[$type]
         $guid = if ($entry.PSObject.Properties['identity'] -and $entry.identity) { ([string]$entry.identity).ToLowerInvariant() }
                 elseif ($entry.PSObject.Properties['entityId'] -and $entry.entityId) { ([string]$entry.entityId).ToLowerInvariant() }
                 else { $null }
         foreach ($node in @($Graph.Nodes)) {
             if (-not $node.Id) { continue }
+            # Only claim nodes whose kind matches this remove's objectType (when the kind is known),
+            # so a same-ref different-type remove cannot poach the other type's node.
+            if ($allowedKinds -and $node.Type -and ($allowedKinds -notcontains [string]$node.Type)) { continue }
             $matched = $false
             switch ($type) {
                 'sit'         { if ($guid -and $node.Identity -and ([string]$node.Identity).ToLowerInvariant() -eq $guid) { $matched = $true } }
@@ -335,21 +364,22 @@ function Get-Compl8PlanOrder {
                 default       { if (($node.Name -and [string]$node.Name -eq $ref) -or ($node.Identity -and [string]$node.Identity -eq $ref)) { $matched = $true } }
             }
             if ($matched -and -not $removeRefByNodeId.ContainsKey([string]$node.Id)) {
-                $removeRefByNodeId[[string]$node.Id] = $ref
+                $removeRefByNodeId[[string]$node.Id] = $removeId
             }
         }
     }
 
     # A sit node lifts to its owning rule-package's remove (the package is what is removed, the sit
-    # is an entity inside it) so a rule->sit edge orders against the package removal.
+    # is an entity inside it) so a rule->sit edge orders against the package removal. Returns the
+    # COMPOSITE remove identity "$objectType|$ref" (the package lift resolves to 'rulePackage|...').
     function Resolve-RemoveRef {
         param([string]$NodeId)
         if ($removeRefByNodeId.ContainsKey($NodeId)) { return $removeRefByNodeId[$NodeId] }
         if (([string]$NodeId).StartsWith('sit:', [System.StringComparison]::OrdinalIgnoreCase)) {
             $sitGuid = ([string]$NodeId).Substring(4).ToLowerInvariant()
             if ($packageNameBySitGuid.ContainsKey($sitGuid)) {
-                $pkgName = $packageNameBySitGuid[$sitGuid]
-                foreach ($k in $removeRefByNodeId.Keys) { if ($removeRefByNodeId[$k] -eq $pkgName) { return $pkgName } }
+                $pkgRemoveId = "rulePackage|$($packageNameBySitGuid[$sitGuid])"
+                foreach ($k in $removeRefByNodeId.Keys) { if ($removeRefByNodeId[$k] -eq $pkgRemoveId) { return $pkgRemoveId } }
             }
         }
         return $null
@@ -364,6 +394,9 @@ function Get-Compl8PlanOrder {
             'sitReferencedByRule' { $referencerNode = [string]$edge.To;   $referentNode = [string]$edge.From } # rule references sit
             default { continue }
         }
+        # Resolve to COMPOSITE remove identities "$objectType|$ref". The -eq below now compares
+        # composites, so a referencer and referent that share a ref but differ in objectType (a
+        # policy and the label it targets, both named the same) are DISTINCT and the edge stands.
         $referencerRef = Resolve-RemoveRef -NodeId $referencerNode
         $referentRef   = Resolve-RemoveRef -NodeId $referentNode
         if (-not $referencerRef -or -not $referentRef -or $referencerRef -eq $referentRef) { continue }
@@ -373,11 +406,13 @@ function Get-Compl8PlanOrder {
     }
 
     # Finally emit the remove work items with their accumulated dependencies (dereference + reverse
-    # edges). Removes are keyed 'remove:<ref>' so a reverse-edge predecessor can name another remove.
+    # edges). Removes are keyed 'remove:<type>|<ref>' so a reverse-edge predecessor can name another
+    # remove by BOTH objectType and ref (same-ref different-type removes stay distinct).
     foreach ($entry in $removeEntries) {
         $type = [string]$entry.objectType
         $ref  = [string]$entry.ref
-        $deps = if ($removeDepsByRef.ContainsKey($ref)) { @($removeDepsByRef[$ref]) } else { @() }
+        $removeId = "$type|$ref"
+        $deps = if ($removeDepsByRef.ContainsKey($removeId)) { @($removeDepsByRef[$removeId]) } else { @() }
         Add-WorkItem -Action 'remove' -ObjectType $type -Ref $ref -Direction 'backward' -DependsRefs @($deps)
     }
 
@@ -410,11 +445,13 @@ function Get-Compl8PlanOrder {
                 if ($itemByKey.ContainsKey($depRef)) { $predecessors[$it.Key].Add($depRef) | Out-Null }
                 continue
             }
-            # A reverse-edge removal predecessor names another remove step ('remove:<ref>') — the
-            # referencer remove this remove must follow (P2-2). Resolve to that remove item's key.
+            # A reverse-edge removal predecessor names another remove step ('remove:<type>|<ref>')
+            # — the referencer remove this remove must follow (P2-2). The target is a COMPOSITE
+            # identity, so match the remove work item by BOTH objectType AND ref (a same-ref
+            # different-type remove must NOT be picked up by mistake).
             if (([string]$depRef).StartsWith('remove:', [System.StringComparison]::Ordinal)) {
-                $targetRef = ([string]$depRef).Substring(7)
-                $candidate = @($items | Where-Object { $_.Action -eq 'remove' -and $_.Ref -eq $targetRef })
+                $targetRemoveId = ([string]$depRef).Substring(7)
+                $candidate = @($items | Where-Object { $_.Action -eq 'remove' -and "$($_.ObjectType)|$($_.Ref)" -eq $targetRemoveId })
                 foreach ($c in $candidate) {
                     if ($c.Key -ne $it.Key) { $predecessors[$it.Key].Add($c.Key) | Out-Null }
                 }
