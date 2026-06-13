@@ -30,6 +30,17 @@ function Test-AssessmentSchema {
         return [pscustomobject]@{ Valid = $false; Errors = @($errors) }
     }
 
+    # Every one of the seven buckets MUST be present (even if empty) — the contract is
+    # that an assessment is a total partition, so a missing bucket is a malformed object,
+    # not an empty one. Without this an assessment that simply omits 'foreign' or 'drift'
+    # would validate, silently weakening the exactly-one-of-seven guarantee.
+    $presentBuckets = @($Assessment.buckets.PSObject.Properties.Name)
+    foreach ($required in $enums.Buckets) {
+        if ($presentBuckets -notcontains $required) {
+            $errors.Add("Assessment is missing the required '$required' bucket.")
+        }
+    }
+
     # Walk every bucket once; flag unknown buckets, unknown object types, and any
     # ref that shows up in more than one bucket (the exactly-one invariant).
     $seen = @{}

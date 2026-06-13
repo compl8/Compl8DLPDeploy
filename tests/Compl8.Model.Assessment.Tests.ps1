@@ -99,4 +99,17 @@ Describe 'Test-AssessmentSchema' {
         $r.Valid | Should -BeFalse
         @($r.Errors) -join '; ' | Should -Match 'teleport'
     }
+
+    It 'rejects an assessment that omits a required bucket (total-partition contract)' {
+        # Rebuild the buckets object without 'foreign' — an incomplete partition must fail,
+        # not silently pass (codex 4A P2).
+        $partial = [ordered]@{}
+        foreach ($b in (Get-Compl8EngineSchemaEnums).Buckets) {
+            if ($b -ne 'foreign') { $partial[$b] = @() }
+        }
+        $script:Good.buckets = [pscustomobject]$partial
+        $r = Test-AssessmentSchema -Assessment $script:Good
+        $r.Valid | Should -BeFalse
+        @($r.Errors) -join '; ' | Should -Match "missing the required 'foreign' bucket"
+    }
 }
