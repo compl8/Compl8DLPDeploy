@@ -93,6 +93,67 @@ Describe 'Compl8.Model standalone exports (parsing/graph)' {
     }
 }
 
+Describe 'Get-DlpEntityContentHash — shared canonical SIT content hash' {
+    BeforeAll {
+        Remove-Module DLP-Deploy -ErrorAction SilentlyContinue
+        $script:ModelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'Compl8.Model'
+        Import-Module $script:ModelDir -Force
+    }
+
+    It 'is exported by Compl8.Model' {
+        (Get-Command -Name Get-DlpEntityContentHash -Module Compl8.Model -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns a sha256:-prefixed 64-hex-char hash' {
+        $h = Get-DlpEntityContentHash -EntityXml '<Entity id="x"><Pattern confidenceLevel="85"/></Entity>'
+        $h | Should -Match '^sha256:[0-9a-f]{64}$'
+    }
+
+    It 'hashes two serially-different-but-semantically-equal entities EQUAL (the comparability seam)' {
+        # Same entity, three serialisations: compact, indented+xml-decl, and a UTF-16 decl.
+        $compact = '<Entity id="22222222-aaaa-4bbb-8ccc-000000000002"><Pattern confidenceLevel="75"><IdMatch idRef="P"/></Pattern></Entity>'
+        $indented = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Entity id="22222222-aaaa-4bbb-8ccc-000000000002">
+  <Pattern confidenceLevel="75">
+    <IdMatch idRef="P" />
+  </Pattern>
+</Entity>
+"@
+        $utf16decl = "<?xml version='1.0' encoding='utf-16'?>`r`n<Entity id=`"22222222-aaaa-4bbb-8ccc-000000000002`">`r`n`t<Pattern confidenceLevel=`"75`"><IdMatch idRef=`"P`"></IdMatch></Pattern></Entity>"
+
+        $a = Get-DlpEntityContentHash -EntityXml $compact
+        $b = Get-DlpEntityContentHash -EntityXml $indented
+        $c = Get-DlpEntityContentHash -EntityXml $utf16decl
+        $a | Should -Be $b
+        $a | Should -Be $c
+    }
+
+    It 'hashes a genuinely-changed entity DIFFERENTLY (real drift still surfaces)' {
+        $base    = '<Entity id="x"><Pattern confidenceLevel="75"><IdMatch idRef="P"/></Pattern></Entity>'
+        $changed = '<Entity id="x"><Pattern confidenceLevel="85"><IdMatch idRef="P"/></Pattern></Entity>'
+        (Get-DlpEntityContentHash -EntityXml $base) | Should -Not -Be (Get-DlpEntityContentHash -EntityXml $changed)
+    }
+
+    It 'is stable across processes for the same input (deterministic)' {
+        $x = '<Entity id="x"><Regex id="r">(?i)\bfoo\b</Regex></Entity>'
+        Get-DlpEntityContentHash -EntityXml $x | Should -Be (Get-DlpEntityContentHash -EntityXml $x)
+    }
+
+    It 'preserves significant text — a changed Regex body changes the hash' {
+        $a = '<Entity id="x"><Regex id="r">(?i)\bfoo\b</Regex></Entity>'
+        $b = '<Entity id="x"><Regex id="r">(?i)\bbar\b</Regex></Entity>'
+        (Get-DlpEntityContentHash -EntityXml $a) | Should -Not -Be (Get-DlpEntityContentHash -EntityXml $b)
+    }
+
+    It 'does not throw on null/empty/unparseable input' {
+        { Get-DlpEntityContentHash -EntityXml $null } | Should -Not -Throw
+        { Get-DlpEntityContentHash -EntityXml '' }    | Should -Not -Throw
+        { Get-DlpEntityContentHash -EntityXml 'not xml <<<' } | Should -Not -Throw
+    }
+}
+
 Describe 'Compl8.Model standalone exports (naming)' {
     BeforeAll {
         # Reload Compl8.Model in a clean state; the DLP-Deploy facade Describe above

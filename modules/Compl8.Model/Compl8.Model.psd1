@@ -20,6 +20,7 @@
         'Get-DeploymentObjectProperty'
         'Get-DeploymentReferenceGraph'
         'Get-DictionaryGuidReferences'
+        'Get-DlpEntityContentHash'
         'Get-DlpRuleClassifierReferenceText'
         'Get-DlpRulePackageEntityIds'
         'Get-DlpRulePolicyNames'
