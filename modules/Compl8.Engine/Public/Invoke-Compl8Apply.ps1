@@ -21,12 +21,24 @@ function Invoke-Compl8Apply {
           5. -WhatIf SHORT-CIRCUIT. With -WhatIf, apply reports the steps that WOULD run (in
              dependency order) and returns BEFORE any executor call and BEFORE any checkpoint write.
           6. DISPATCH each step IN DEPENDENCY ORDER to an executor resolved by step.objectType:
+               * UNSATISFIED-DEPENDENCY skip (safety). Before anything else, if any id in this step's
+                 direct dependsOn is in the UNSATISFIED set (a prerequisite that was blocked/failed and
+                 produced no success checkpoint), this step is recorded 'skipped-dependency', added to
+                 the unsatisfied set, and its executor is NOT called. Steps run in topological order so
+                 the set propagates forward and the whole dependent subtree is skipped — a dependent
+                 with no gate of its own can never mutate the tenant out of dependency order.
                * gate check (Test-Compl8Gate, injected clock -Now). A blocked step is recorded
-                 'blocked' and apply stops (or, with -ContinueOnBlock, records the block and
-                 continues to independent steps) — it resumes from checkpoint on a later run.
-               * DESTRUCTIVE backstop (D5). A remove/dereference step re-invokes the reference
-                 guard (Test-DlpRulePackageRemovalReferenceGuard) at apply time; a veto (Safe=false)
-                 blocks that step (recorded 'blocked', executor NOT called).
+                 'blocked' and apply stops (or, with -ContinueOnBlock, records the block, marks the
+                 step unsatisfied, and continues to independent steps) — it resumes from checkpoint on
+                 a later run.
+               * DESTRUCTIVE backstop (D5). A `remove` of a `rulePackage` re-invokes the reference
+                 guard (Test-DlpRulePackageRemovalReferenceGuard) at apply time with the step's REAL
+                 resolved package content (-StepContent); a veto (Safe=false) blocks that step
+                 (recorded 'blocked', marked unsatisfied, executor NOT called). The guard is SCOPED to
+                 genuine rule-package removals: label/dictionary/policy removals and dlpRule
+                 `dereference` steps do NOT trigger it (they carry no rule-package XML, so the guard's
+                 parser would falsely veto them; a dereference is itself the de-referencing work,
+                 handled by the dlpRule executor).
                * EXECUTOR. The resolved scriptblock/command runs the step's mutation.
                * CHECKPOINT. On success a per-step checkpoint lands at
                  history/applies/<planId>/<stepId>.json. Re-running the SAME plan path skips any
@@ -66,6 +78,18 @@ function Invoke-Compl8Apply {
         Hashtable objectType -> executor (scriptblock or command name). The dispatcher resolves each
         step's executor here; an unmapped objectType fails closed.
 
+    .PARAMETER StepContent
+        Optional hashtable stepId -> resolved content for that step (the same resolved content the
+        production executor-map closure binds as the executor's -Content). The apply framework uses
+        it for ONE thing: the D5 rule-package removal reference guard. For a `remove` of a
+        `rulePackage`, the guard needs the REAL serialized rule-package XML (+ live DLP rules) to
+        decide Safe — the framework only knows the step's objectRef (Identity/Name), which the
+        guard's package parser would treat as an unparsed package (Safe=false, a false block). So the
+        rule-package-removal guard is handed this step's content { Packages = @(<serialized package>);
+        DlpRules = @(<rules>) } when present; absent content falls back to the objectRef identity. The
+        guard runs ONLY for genuine rulePackage removals (see DISPATCH below) — never for label/dict/
+        policy removals or dlpRule `dereference` steps, which carry no rule-package XML.
+
     .PARAMETER Now
         Injected current instant ([datetime]) for gate evaluation and checkpoint stamps. Defaults to
         [datetime]::UtcNow ONLY as a convenience for production callers; tests pin it. (Get-Date is
@@ -76,8 +100,17 @@ function Invoke-Compl8Apply {
 
     .PARAMETER ContinueOnBlock
         When a step is blocked by a gate or the destructive backstop, continue to subsequent
-        independent steps instead of stopping at the first block. Blocked steps are recorded and
+        INDEPENDENT steps instead of stopping at the first block. Blocked steps are recorded and
         resumed from checkpoint on a later run regardless.
+
+        SAFETY (dependent-skip): a step that was blocked or failed and did NOT produce a success
+        checkpoint is recorded in an UNSATISFIED set. Steps run in topological order, so before
+        executing a step the framework checks its direct dependsOn: if ANY prerequisite is unsatisfied
+        the step is itself recorded 'skipped-dependency' and added to the unsatisfied set WITHOUT
+        calling its executor. Because the set propagates forward in dependency order, this transitively
+        skips the whole dependent subtree — a dependent with no gate of its own can never mutate the
+        tenant once a prerequisite was neither applied nor checkpointed. Without -ContinueOnBlock the
+        run still STOPS at the first block/failure (so dependents are never reached anyway).
 
     .PARAMETER WhatIf
         Plan-without-apply: report the steps that WOULD run (dependency order) and return before any
@@ -111,6 +144,8 @@ function Invoke-Compl8Apply {
         [string]$TargetEnvironment,
 
         [hashtable]$ExecutorMap = @{},
+
+        [hashtable]$StepContent = @{},
 
         [datetime]$Now = [datetime]::UtcNow,
 
@@ -327,6 +362,13 @@ function Invoke-Compl8Apply {
     # ------------------------------------------------------------------ 6. DISPATCH in dep order
     $stepResults = [System.Collections.Generic.List[object]]::new()
 
+    # UNSATISFIED set (SAFETY, P1): step ids that were blocked or failed and produced NO success
+    # checkpoint. Steps are processed in topological order, so a step whose direct dependsOn names an
+    # unsatisfied id is itself unsatisfied and is skipped WITHOUT running its executor — the set
+    # propagates forward and the whole dependent subtree is skipped, never mutating the tenant out of
+    # dependency order. A checkpointed/applied/already-done step is NOT in this set.
+    $unsatisfied = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+
     foreach ($step in $orderedSteps) {
         $stepId = [string]$step.id
 
@@ -338,6 +380,22 @@ function Invoke-Compl8Apply {
                 objectRef = [string]$step.objectRef; status = 'skipped'
                 reason = 'already checkpointed (resume)'; result = $cp.result
             }) | Out-Null
+            continue
+        }
+
+        # ---- SAFETY (P1): skip a step whose prerequisite is UNSATISFIED --------------------------
+        # If any DIRECT dependsOn id was blocked/failed without a success checkpoint, this step must
+        # NOT run (its prerequisite was neither applied nor checkpointed). Record it skipped, add it
+        # to the unsatisfied set so its own dependents are skipped too, and do NOT call the executor.
+        $unmetDeps = @(@($step.dependsOn) | Where-Object { $unsatisfied.Contains([string]$_) } | ForEach-Object { [string]$_ })
+        if ($unmetDeps.Count -gt 0) {
+            $stepResults.Add([pscustomobject]@{
+                stepId = $stepId; action = [string]$step.action; objectType = [string]$step.objectType
+                objectRef = [string]$step.objectRef; status = 'skipped-dependency'
+                reason = "prerequisite step(s) not satisfied (blocked/failed upstream): $($unmetDeps -join ', ') — refusing out-of-dependency-order mutation."
+                result = $null
+            }) | Out-Null
+            $unsatisfied.Add($stepId) | Out-Null
             continue
         }
 
@@ -377,14 +435,41 @@ function Invoke-Compl8Apply {
                     objectRef = [string]$step.objectRef; status = 'blocked'
                     reason = "gate: $($gateResult.Reason)"; result = $null
                 }) | Out-Null
+                # Blocked, no success checkpoint => unsatisfied (dependents must be skipped, P1).
+                $unsatisfied.Add($stepId) | Out-Null
                 if ($ContinueOnBlock) { continue } else { break }
             }
         }
 
-        # ---- destructive backstop (D5): re-invoke the reference guard before remove/dereference --
-        if ([string]$step.action -in 'remove', 'dereference') {
-            $guardPackages = @([pscustomobject]@{ Identity = [string]$step.objectRef; Name = [string]$step.objectRef })
-            $guard = Test-DlpRulePackageRemovalReferenceGuard -Packages $guardPackages -OperationName "apply: $($step.action) $($step.objectRef)"
+        # ---- destructive backstop (D5): rule-package REMOVAL reference guard ---------------------
+        # SCOPED (P2): this guard parses serialized rule-package XML to find live DLP rules still
+        # referencing the package's SITs. It is therefore meaningful ONLY for an actual rule-package
+        # removal. Running it for label/dictionary/policy removals or a dlpRule `dereference` step
+        # would hand its parser an object with no package XML, which it treats as an unparsed package
+        # and vetoes (Safe=false) — falsely blocking unrelated destructive work. (A dereference is the
+        # de-referencing work itself, performed by the dlpRule executor; non-rulePackage removals
+        # carry no rule-package XML.) So gate ONLY genuine rule-package removals here.
+        if ([string]$step.action -eq 'remove' -and [string]$step.objectType -eq 'rulePackage') {
+            # Supply the guard REAL package data: the step's resolved content (the same content the
+            # production executor-map closure binds as the executor's -Content) carries the serialized
+            # rule-package XML + the live DLP rules the guard parses. Without it the guard can only see
+            # the objectRef identity (which would parse as unsafe), so prefer -StepContent when present.
+            $content = if ($StepContent.ContainsKey($stepId)) { $StepContent[$stepId] } else { $null }
+            $guardArgs = @{ OperationName = "apply: remove rulePackage $($step.objectRef)" }
+            if ($content -and $content.PSObject.Properties['Packages'] -and $content.Packages) {
+                $guardArgs['Packages'] = @($content.Packages)
+            } elseif ($content -and $content.PSObject.Properties['payloadXml'] -and $content.payloadXml) {
+                # A package payload carried as a single resolved object — pass it through as the package.
+                $guardArgs['Packages'] = @($content)
+            } else {
+                # Fallback: only the identity is known. Still genuinely guards a real rule-package
+                # removal (defence-in-depth); the guard fails closed if it cannot parse the package.
+                $guardArgs['Packages'] = @([pscustomobject]@{ Identity = [string]$step.objectRef; Name = [string]$step.objectRef })
+            }
+            if ($content -and $content.PSObject.Properties['DlpRules'] -and $content.DlpRules) {
+                $guardArgs['DlpRules'] = @($content.DlpRules)
+            }
+            $guard = Test-DlpRulePackageRemovalReferenceGuard @guardArgs
             $guardSafe = $true
             if ($guard -and $guard.PSObject.Properties['Safe']) { $guardSafe = [bool]$guard.Safe }
             if (-not $guardSafe) {
@@ -395,6 +480,8 @@ function Invoke-Compl8Apply {
                     reason = "reference guard veto: '$($step.objectRef)' is still referenced by $refCount live DLP rule(s) — refusing the destructive step (D5 backstop)."
                     result = $null
                 }) | Out-Null
+                # Blocked, no success checkpoint => unsatisfied (dependents must be skipped, P1).
+                $unsatisfied.Add($stepId) | Out-Null
                 if ($ContinueOnBlock) { continue } else { break }
             }
         }
