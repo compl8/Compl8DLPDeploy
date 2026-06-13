@@ -12,6 +12,7 @@
         'Get-Compl8ShadowDiff',
         'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
+        'Invoke-Compl8DictionaryExecutor',
         'Invoke-WithRetry',
         'New-Compl8Plan',
         'Remove-PurviewObject',
