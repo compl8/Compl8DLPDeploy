@@ -365,6 +365,98 @@ Describe 'Get-Compl8ExecutorMap — assembles the production map (objectType -> 
         Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
     }
 
+    It '[P2-A] credits ONLY removals that have actually COMPLETED, not all planned removals (early create at capacity is refused)' {
+        # FULL tenant: baselineUsed = MaxRulePackagesPerTenant. The plan REMOVES one package and CREATES
+        # one, BUT the create step dispatches BEFORE the remove step (construct a step order where the
+        # create id precedes the remove id). The freed-slot credit a create sees must equal the removals
+        # that have SUCCEEDED so far — which, when the create runs first, is ZERO. So the early create is
+        # REFUSED (no New call). After the remove COMPLETES (freed=1), a subsequent create IS allowed.
+        # Before the fix the static SlotsFreed-from-plan (=1) wrongly credited the early create.
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Remove-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationTypeRulePackage { [pscustomobject]@{ Identity = 'QGISCF-old-1'; Name = 'QGISCF-old-1' } }
+        $cap = (Get-DeploymentLimits).MaxRulePackagesPerTenant
+
+        # Tenant is FULL: all `cap` slots are OUR packages.
+        $ourPackages = @(1..$cap | ForEach-Object { [pscustomobject]@{ name = "QGISCF-existing-$_"; ours = $true } })
+        $inventory = [pscustomobject]@{
+            schemaVersion = 'compl8.inventory/v1'
+            objects = [pscustomobject]@{ sitPackages = @($ourPackages) }
+        }
+
+        # The plan: a create (pA) and a remove (rmOld). The map closure must NOT pre-credit the planned
+        # remove to the create — only completed removes count.
+        $createStep = [pscustomobject]@{ id = 'pA'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-A'; dependsOn = @(); impact = @(); gate = $null }
+        $removeStep = [pscustomobject]@{ id = 'rmOld'; action = 'remove'; objectType = 'rulePackage'; objectRef = 'QGISCF-old-1'; dependsOn = @(); impact = @(); gate = $null }
+        $createStepB = [pscustomobject]@{ id = 'pB'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-B'; dependsOn = @(); impact = @(); gate = $null }
+        $plan = [pscustomobject]@{ steps = @($createStep, $removeStep, $createStepB) }
+        $content = @{
+            pA    = [pscustomobject]@{ name = 'QGISCF-new-A'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+            pB    = [pscustomobject]@{ name = 'QGISCF-new-B'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+            rmOld = [pscustomobject]@{ name = 'QGISCF-old-1'; identity = 'QGISCF-old-1' }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } `
+            -Inventory $inventory -Plan $plan
+
+        # 1) The create dispatches FIRST, while the tenant is still full and NO removal has completed.
+        #    available = cap - (cap + 0) + 0 = 0 < 1 -> REFUSED.
+        $rEarly = & $map['rulePackage'] $createStep
+        $rEarly.status | Should -Be 'capacity-blocked'
+
+        # 2) Now the removal runs and ACTUALLY completes -> frees one slot.
+        $rRemove = & $map['rulePackage'] $removeStep
+        $rRemove.status | Should -Be 'deleted'
+
+        # 3) A subsequent create now fits: available = cap - (cap + 0) + 1 = 1 >= 1 -> created.
+        $rLate = & $map['rulePackage'] $createStepB
+        $rLate.status | Should -Be 'created'
+
+        # Exactly ONE New call (the late create); the early over-cap create never reached the SCC cmdlet.
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+    }
+
+    It '[P2-B] a verify-failed create STILL consumed a tenant slot, so the next create is refused' {
+        # NEAR-FULL tenant: baselineUsed = MaxRulePackagesPerTenant - 1 (one free slot). Two creates run.
+        # The FIRST upload SUCCEEDS but post-upload verification times out (Get-DlpSensitiveInformationType
+        # never shows the declared SIT) -> status 'verify-failed'. That create CONSUMED the last slot. So
+        # the SECOND create must be REFUSED. Before the fix the consumed counter advanced only on 'created',
+        # so the verify-failed first create left stale headroom and the second was wrongly allowed.
+        Mock -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage { }
+        Mock -ModuleName Compl8.Engine Get-DlpSensitiveInformationType { @() }   # entity never surfaces -> verify times out
+        $cap = (Get-DeploymentLimits).MaxRulePackagesPerTenant
+
+        $ourPackages = @(1..($cap - 1) | ForEach-Object { [pscustomobject]@{ name = "QGISCF-existing-$_"; ours = $true } })
+        $inventory = [pscustomobject]@{
+            schemaVersion = 'compl8.inventory/v1'
+            objects = [pscustomobject]@{ sitPackages = @($ourPackages) }
+        }
+
+        $stepA = [pscustomobject]@{ id = 'pA'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-A'; dependsOn = @(); impact = @(); gate = $null }
+        $stepB = [pscustomobject]@{ id = 'pB'; action = 'create'; objectType = 'rulePackage'; objectRef = 'QGISCF-new-B'; dependsOn = @(); impact = @(); gate = $null }
+        $plan = [pscustomobject]@{ steps = @($stepA, $stepB) }   # 2 creates, 0 removals
+        # First create declares a local SIT id (so the verify poll runs and times out); second is irrelevant
+        # because it must be refused before any upload.
+        $content = @{
+            pA = [pscustomobject]@{ name = 'QGISCF-new-A'; payloadXml = '<RulePackage/>'; localSitIds = @('sit-never-surfaces') }
+            pB = [pscustomobject]@{ name = 'QGISCF-new-B'; payloadXml = '<RulePackage/>'; localSitIds = @() }
+        }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } `
+            -Inventory $inventory -Plan $plan
+
+        # First create: upload happens (the slot is consumed) but verification fails.
+        $rA = & $map['rulePackage'] $stepA
+        $rA.status | Should -Be 'verify-failed'
+
+        # Second create: the verify-failed first create consumed the last slot -> over cap -> REFUSED.
+        $rB = & $map['rulePackage'] $stepB
+        $rB.status | Should -Be 'capacity-blocked'
+
+        # Exactly ONE New call (the first create's upload); the second never reached the SCC cmdlet.
+        Should -Invoke -ModuleName Compl8.Engine New-DlpSensitiveInformationTypeRulePackage -Times 1
+    }
+
     It '[P2-2] threads a SHARED parent-guid cache so a sublabel reuses a parent group created earlier in the same apply' {
         # A label GROUP create step seeds the shared cache with its just-created GUID; a later SUBLABEL
         # create step (same map) must resolve the parent from THAT cache even though Get-Label returns
