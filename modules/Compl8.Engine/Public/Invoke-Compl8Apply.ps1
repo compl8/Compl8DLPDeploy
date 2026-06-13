@@ -455,10 +455,26 @@ function Invoke-Compl8Apply {
             # rule-package XML + the live DLP rules the guard parses. Without it the guard can only see
             # the objectRef identity (which would parse as unsafe), so prefer -StepContent when present.
             $content = if ($StepContent.ContainsKey($stepId)) { $StepContent[$stepId] } else { $null }
+            # Read a field from the resolved content whether it is a hashtable (the documented
+            # -StepContent value shape: @{ Packages = ...; DlpRules = ... }) OR a PSObject. A bare
+            # PSObject.Properties[...] lookup misses hashtable keys, which would drop DlpRules /
+            # Packages and falsely veto a safe rule-package removal (codex 4C re-review P2).
+            $readContentField = {
+                param($Obj, [string]$Key)
+                if ($null -eq $Obj) { return $null }
+                if ($Obj -is [System.Collections.IDictionary]) {
+                    if ($Obj.Contains($Key)) { return $Obj[$Key] } else { return $null }
+                }
+                $p = $Obj.PSObject.Properties[$Key]
+                if ($p) { return $p.Value } else { return $null }
+            }
+            $contentPackages = & $readContentField $content 'Packages'
+            $contentPayload  = & $readContentField $content 'payloadXml'
+            $contentDlpRules = & $readContentField $content 'DlpRules'
             $guardArgs = @{ OperationName = "apply: remove rulePackage $($step.objectRef)" }
-            if ($content -and $content.PSObject.Properties['Packages'] -and $content.Packages) {
-                $guardArgs['Packages'] = @($content.Packages)
-            } elseif ($content -and $content.PSObject.Properties['payloadXml'] -and $content.payloadXml) {
+            if ($content -and $contentPackages) {
+                $guardArgs['Packages'] = @($contentPackages)
+            } elseif ($content -and $contentPayload) {
                 # A package payload carried as a single resolved object — pass it through as the package.
                 $guardArgs['Packages'] = @($content)
             } else {
@@ -466,8 +482,8 @@ function Invoke-Compl8Apply {
                 # removal (defence-in-depth); the guard fails closed if it cannot parse the package.
                 $guardArgs['Packages'] = @([pscustomobject]@{ Identity = [string]$step.objectRef; Name = [string]$step.objectRef })
             }
-            if ($content -and $content.PSObject.Properties['DlpRules'] -and $content.DlpRules) {
-                $guardArgs['DlpRules'] = @($content.DlpRules)
+            if ($content -and $contentDlpRules) {
+                $guardArgs['DlpRules'] = @($contentDlpRules)
             }
             $guard = Test-DlpRulePackageRemovalReferenceGuard @guardArgs
             $guardSafe = $true

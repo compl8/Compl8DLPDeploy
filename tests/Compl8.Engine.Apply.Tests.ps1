@@ -536,6 +536,45 @@ Describe 'Invoke-Compl8Apply — rule-package reference guard is SCOPED to ruleP
         $script:guardSawPackages[0].ClassificationRuleCollectionXml | Should -Be '<RulePackage/>'
         Remove-Item -LiteralPath $fixture.WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    It 'reads -StepContent given as a HASHTABLE value (Packages + DlpRules), not only a PSObject' {
+        # codex 4C re-review P2: the documented -StepContent value shape is a hashtable
+        # (@{ Packages = ...; DlpRules = ... }). A PSObject.Properties[] lookup misses hashtable
+        # keys, dropping the real package + rules and falsely vetoing a safe rulePackage removal.
+        $steps = @(
+            New-Step -Id 's00' -Action 'snapshot' -ObjectType 'tenant'      -ObjectRef '*' -Gate ([pscustomobject]@{ type = 'snapshotBeforeDestroy' })
+            New-Step -Id 's01' -Action 'remove'   -ObjectType 'rulePackage' -ObjectRef 'QGISCF-content' -DependsOn @('s00')
+        )
+        $fixture = New-TestPlanFile -Steps $steps -Id 'plan-guard-hashtable'
+        $map = @{
+            tenant      = { param($Step) }
+            rulePackage = { param($Step) }
+        }
+        $script:guardSawPackages = $null
+        $script:guardSawDlpRules = $null
+        Mock -ModuleName Compl8.Engine Test-Compl8PlanCurrent { $true }
+        Mock -ModuleName Compl8.Engine Test-DeploymentTenantFingerprint { [pscustomobject]@{ passed = $true } }
+        Mock -ModuleName Compl8.Engine Test-DlpRulePackageRemovalReferenceGuard {
+            $script:guardSawPackages = @($Packages)
+            $script:guardSawDlpRules = @($DlpRules)
+            [pscustomobject]@{ Safe = $true; ReferencingRuleCount = 0; References = @() }
+        }
+
+        $resolvedPackage = [pscustomobject]@{ Identity = 'QGISCF-content'; Name = 'QGISCF-content'; ClassificationRuleCollectionXml = '<RulePackage/>' }
+        # The VALUE is a hashtable (the documented shape), not a PSObject.
+        $stepContent = @{ s01 = @{ Packages = @($resolvedPackage); DlpRules = @([pscustomobject]@{ Name = 'R1' }) } }
+
+        Invoke-Compl8Apply -PlanPath $fixture.PlanPath `
+            -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:bb' `
+            -ProjectRoot $script:RepoRoot -ExecutorMap $map -StepContent $stepContent | Out-Null
+
+        # The guard received the REAL package XML and the DlpRules from the hashtable value —
+        # not the bare identity stub (which would have ClassificationRuleCollectionXml absent).
+        @($script:guardSawPackages).Count | Should -Be 1
+        $script:guardSawPackages[0].ClassificationRuleCollectionXml | Should -Be '<RulePackage/>'
+        @($script:guardSawDlpRules).Count | Should -Be 1
+        Remove-Item -LiteralPath $fixture.WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # =====================================================================================
