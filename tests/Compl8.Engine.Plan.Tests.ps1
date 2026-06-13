@@ -284,6 +284,209 @@ Describe 'Get-Compl8PlanOrder — determinism' {
     }
 }
 
+Describe 'Get-Compl8PlanOrder — coalesce per-rule dereference (P2-1)' {
+    BeforeAll {
+        # TWO sits, BOTH referenced by the SAME live DLP rule (QGISCF-SharedRule), both being
+        # removed in this plan. The old code emitted one `dereference:QGISCF-SharedRule` work
+        # item per (removed-sit x rule) pair => two work items with the same Key => duplicate
+        # step-id throw in Add-PlanStep. The coalesced behaviour: exactly ONE dereference step
+        # for the rule, and BOTH sit removes depend on it.
+        $sitGuidA = '44444444-aaaa-4bbb-8ccc-000000000004'
+        $sitGuidB = '55555555-aaaa-4bbb-8ccc-000000000005'
+        $pkg = [pscustomobject]@{
+            Identity = 'QGISCF-shared-pkg'; Name = 'QGISCF-shared-pkg'; Publisher = 'Compl8'
+            SerializedClassificationRuleCollection = @"
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="00000000-0000-4000-8000-000000000000"><Version major="1" minor="0" build="0" revision="0" /></RulePack>
+  <Rules>
+    <Entity id="$sitGuidA" patternsProximity="300" recommendedConfidence="85">
+      <Pattern confidenceLevel="85"><IdMatch idRef="kw" /></Pattern>
+    </Entity>
+    <Entity id="$sitGuidB" patternsProximity="300" recommendedConfidence="85">
+      <Pattern confidenceLevel="85"><IdMatch idRef="kw" /></Pattern>
+    </Entity>
+    <Keyword id="kw"><Group matchStyle="word"><Term>alpha</Term></Group></Keyword>
+  </Rules>
+</RulePackage>
+"@
+        }
+        # ONE rule referencing BOTH sits.
+        $rule = [pscustomobject]@{ Name = 'QGISCF-SharedRule'; Identity = 'QGISCF-SharedRule'; Policy = 'P01'
+            ContentContainsSensitiveInformation = "[{`"id`":`"$sitGuidA`"},{`"id`":`"$sitGuidB`"}]" }
+        $script:p21Graph = New-TestGraph -SitPackages @($pkg) -DlpRules @($rule)
+        $script:p21Assessment = New-TestAssessment -Buckets @{
+            'remove' = @(
+                New-BucketEntry -ObjectType 'sit' -Ref 'sit-a' -Extra @{ identity = $sitGuidA }
+                New-BucketEntry -ObjectType 'sit' -Ref 'sit-b' -Extra @{ identity = $sitGuidB }
+            )
+        } -Impact @(
+            [pscustomobject]@{ objectRef = 'sit-a'; affects = @('dlp-rule: QGISCF-SharedRule') }
+            [pscustomobject]@{ objectRef = 'sit-b'; affects = @('dlp-rule: QGISCF-SharedRule') }
+        )
+    }
+
+    It 'does not throw a duplicate-id error when two removed sits share one referencing rule' {
+        { Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph } |
+            Should -Not -Throw
+    }
+
+    It 'emits EXACTLY ONE dereference step for the shared rule' {
+        $steps = @(Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph)
+        $deref = @($steps | Where-Object { $_.action -eq 'dereference' -and $_.objectRef -eq 'QGISCF-SharedRule' })
+        $deref.Count | Should -Be 1
+    }
+
+    It 'makes BOTH sit removes depend on the single dereference step' {
+        $steps = @(Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph)
+        $deref = @($steps | Where-Object { $_.action -eq 'dereference' -and $_.objectRef -eq 'QGISCF-SharedRule' })[0]
+        $removeA = @($steps | Where-Object { $_.action -eq 'remove' -and $_.objectRef -eq 'sit-a' })[0]
+        $removeB = @($steps | Where-Object { $_.action -eq 'remove' -and $_.objectRef -eq 'sit-b' })[0]
+        @($removeA.dependsOn) | Should -Contain $deref.id
+        @($removeB.dependsOn) | Should -Contain $deref.id
+    }
+
+    It 'lists both stripped sits in the single dereference step impact' {
+        $steps = @(Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph)
+        $deref = @($steps | Where-Object { $_.action -eq 'dereference' -and $_.objectRef -eq 'QGISCF-SharedRule' })[0]
+        @($deref.impact) | Should -Contain 'sit-a'
+        @($deref.impact) | Should -Contain 'sit-b'
+    }
+
+    It 'orders the single dereference step before BOTH sit removes' {
+        $steps = @(Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph)
+        $derefIdx = -1; $removeAIdx = -1; $removeBIdx = -1
+        for ($i = 0; $i -lt $steps.Count; $i++) {
+            if ($steps[$i].action -eq 'dereference' -and $steps[$i].objectRef -eq 'QGISCF-SharedRule') { $derefIdx = $i }
+            if ($steps[$i].action -eq 'remove' -and $steps[$i].objectRef -eq 'sit-a') { $removeAIdx = $i }
+            if ($steps[$i].action -eq 'remove' -and $steps[$i].objectRef -eq 'sit-b') { $removeBIdx = $i }
+        }
+        $derefIdx | Should -BeGreaterThan -1
+        $removeAIdx | Should -BeGreaterThan $derefIdx
+        $removeBIdx | Should -BeGreaterThan $derefIdx
+    }
+
+    It 'produces steps that pass Test-PlanSchema' {
+        $steps = @(Get-Compl8PlanOrder -Assessment $script:p21Assessment -Graph $script:p21Graph)
+        $plan = New-PlanObject -Workspace 'nonprod' -Id 'plan-p21'
+        $plan.steps = @($steps)
+        $r = Test-PlanSchema -Plan $plan
+        $r.Valid | Should -BeTrue -Because (@($r.Errors) -join '; ')
+    }
+}
+
+Describe 'Get-Compl8PlanOrder — reverse-edge removal ordering (P2-2)' {
+    Context 'policy + the label it targets (policyTargetsLabel) are both removed' {
+        BeforeAll {
+            # Graph: a dlpPolicy node that targets a label node (edge policyTargetsLabel:
+            # From=policy To=label). The policy REFERENCES the label, so when BOTH are removed
+            # the policy must be torn down FIRST (the referencer goes before the referent).
+            $script:p22Graph = [pscustomobject]@{
+                Nodes = @(
+                    [pscustomobject]@{ Id = 'dlpPolicy:QGISCF-Policy-1'; Type = 'DlpPolicy'; Name = 'QGISCF-Policy-1'; Identity = 'QGISCF-Policy-1' }
+                    [pscustomobject]@{ Id = 'label:QGISCF-Confidential'; Type = 'Label'; Name = 'QGISCF-Confidential'; Identity = 'lblguid-1' }
+                )
+                Edges = @(
+                    [pscustomobject]@{ From = 'dlpPolicy:QGISCF-Policy-1'; To = 'label:QGISCF-Confidential'; Type = 'policyTargetsLabel'; Properties = [pscustomobject]@{ LabelCode = 'QGISCF-Confidential'; RuleName = 'QGISCF-rule' } }
+                )
+                Summary = [pscustomobject]@{}
+            }
+            $script:p22Assessment = New-TestAssessment -Buckets @{
+                'remove' = @(
+                    New-BucketEntry -ObjectType 'label'     -Ref 'QGISCF-Confidential'
+                    New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'QGISCF-Policy-1'
+                )
+            }
+            $script:p22Steps = @(Get-Compl8PlanOrder -Assessment $script:p22Assessment -Graph $script:p22Graph)
+        }
+
+        It 'orders the policy remove BEFORE the label remove' {
+            $policyIdx = -1; $labelIdx = -1
+            for ($i = 0; $i -lt $script:p22Steps.Count; $i++) {
+                if ($script:p22Steps[$i].action -eq 'remove' -and $script:p22Steps[$i].objectType -eq 'dlpPolicy') { $policyIdx = $i }
+                if ($script:p22Steps[$i].action -eq 'remove' -and $script:p22Steps[$i].objectType -eq 'label') { $labelIdx = $i }
+            }
+            $policyIdx | Should -BeGreaterThan -1
+            $labelIdx  | Should -BeGreaterThan -1
+            $policyIdx | Should -BeLessThan $labelIdx
+        }
+
+        It 'makes the label remove depend on the policy remove' {
+            $policyStep = @($script:p22Steps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'dlpPolicy' })[0]
+            $labelStep  = @($script:p22Steps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'label' })[0]
+            @($labelStep.dependsOn) | Should -Contain $policyStep.id
+        }
+
+        It 'produces steps that pass Test-PlanSchema' {
+            $plan = New-PlanObject -Workspace 'nonprod' -Id 'plan-p22a'
+            $plan.steps = @($script:p22Steps)
+            $r = Test-PlanSchema -Plan $plan
+            $r.Valid | Should -BeTrue -Because (@($r.Errors) -join '; ')
+        }
+    }
+
+    Context 'rulePackage + a dlpRule referencing its sit are both removed' {
+        BeforeAll {
+            # rule --references--> sit --contained-by--> package (graph edges sitReferencedByRule
+            # From=sit To=rule, packageContainsSit From=pkg To=sit). The rule is the referencer of
+            # the package's classifier, so the rule must be torn down BEFORE the package.
+            $sitGuid = '66666666-aaaa-4bbb-8ccc-000000000006'
+            $pkg = [pscustomobject]@{ Identity = 'QGISCF-doomed-pkg'; Name = 'QGISCF-doomed-pkg'; Publisher = 'Compl8'
+                SerializedClassificationRuleCollection = (New-PkgXml -EntityId $sitGuid -DictGuid $null) }
+            $rule = [pscustomobject]@{ Name = 'QGISCF-doomed-rule'; Identity = 'QGISCF-doomed-rule'; Policy = 'P01'
+                ContentContainsSensitiveInformation = "[{`"id`":`"$sitGuid`"}]" }
+            $script:p22bGraph = New-TestGraph -SitPackages @($pkg) -DlpRules @($rule)
+            $script:p22bAssessment = New-TestAssessment -Buckets @{
+                'remove' = @(
+                    New-BucketEntry -ObjectType 'rulePackage' -Ref 'QGISCF-doomed-pkg'
+                    New-BucketEntry -ObjectType 'dlpRule'     -Ref 'QGISCF-doomed-rule'
+                )
+            }
+            $script:p22bSteps = @(Get-Compl8PlanOrder -Assessment $script:p22bAssessment -Graph $script:p22bGraph)
+        }
+
+        It 'orders the dlpRule remove BEFORE the rulePackage remove' {
+            $ruleIdx = -1; $pkgIdx = -1
+            for ($i = 0; $i -lt $script:p22bSteps.Count; $i++) {
+                if ($script:p22bSteps[$i].action -eq 'remove' -and $script:p22bSteps[$i].objectType -eq 'dlpRule') { $ruleIdx = $i }
+                if ($script:p22bSteps[$i].action -eq 'remove' -and $script:p22bSteps[$i].objectType -eq 'rulePackage') { $pkgIdx = $i }
+            }
+            $ruleIdx | Should -BeGreaterThan -1
+            $pkgIdx  | Should -BeGreaterThan -1
+            $ruleIdx | Should -BeLessThan $pkgIdx
+        }
+
+        It 'makes the rulePackage remove depend on the dlpRule remove' {
+            $ruleStep = @($script:p22bSteps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'dlpRule' })[0]
+            $pkgStep  = @($script:p22bSteps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'rulePackage' })[0]
+            @($pkgStep.dependsOn) | Should -Contain $ruleStep.id
+        }
+    }
+
+    Context 'determinism with reverse-edge removal predecessors' {
+        It 'produces an identical ordered step list on repeated runs' {
+            $graph = [pscustomobject]@{
+                Nodes = @(
+                    [pscustomobject]@{ Id = 'dlpPolicy:QGISCF-Policy-1'; Type = 'DlpPolicy'; Name = 'QGISCF-Policy-1'; Identity = 'QGISCF-Policy-1' }
+                    [pscustomobject]@{ Id = 'label:QGISCF-Confidential'; Type = 'Label'; Name = 'QGISCF-Confidential'; Identity = 'lblguid-1' }
+                )
+                Edges = @(
+                    [pscustomobject]@{ From = 'dlpPolicy:QGISCF-Policy-1'; To = 'label:QGISCF-Confidential'; Type = 'policyTargetsLabel'; Properties = [pscustomobject]@{ LabelCode = 'QGISCF-Confidential'; RuleName = 'QGISCF-rule' } }
+                )
+                Summary = [pscustomobject]@{}
+            }
+            $assessment = New-TestAssessment -Buckets @{
+                'remove' = @(
+                    New-BucketEntry -ObjectType 'label'     -Ref 'QGISCF-Confidential'
+                    New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'QGISCF-Policy-1'
+                )
+            }
+            $a = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph) | ConvertTo-Json -Depth 12
+            $b = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph) | ConvertTo-Json -Depth 12
+            $a | Should -Be $b
+        }
+    }
+}
+
 # =====================================================================================
 # Task 5 — New-Compl8Plan / Test-Compl8PlanCurrent / Compare-Compl8Plan (PHASE 4B).
 # New-Compl8Plan turns an assessment (+ reference graph) into a compl8.plan/v1 object:

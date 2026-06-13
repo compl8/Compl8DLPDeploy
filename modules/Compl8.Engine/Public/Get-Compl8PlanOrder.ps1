@@ -252,12 +252,34 @@ function Get-Compl8PlanOrder {
     }
 
     # ---- removal work (backward) + generated dereference steps (D5) --------------------------
-    # For each remove of a sit/rulePackage still referenced by live rules, generate a
-    # dereference step per referencing rule; the remove depends on those dereference steps.
-    foreach ($entry in @($Assessment.buckets.remove)) {
+    # For each remove of a sit/rulePackage still referenced by live rules, generate dereference
+    # steps; the remove depends on those dereference steps. Two distinct dependency mechanisms:
+    #
+    #   (a) DEREFERENCE coalescing (P2-1): a dereference is per-RULE work (strip the removed SITs
+    #       from that rule), so it is COALESCED to ONE step per referencing rule even when several
+    #       removed SITs name the same rule. The dereference step's impact lists the removed SIT
+    #       refs being stripped; each of those SIT removes depends on that single dereference step.
+    #
+    #   (b) REVERSE-EDGE removal ordering (P2-2): if object A references object B in the graph and
+    #       BOTH are being removed in this plan, the referencer A must be torn down BEFORE the
+    #       referent B (so B is never deleted while A still points at it). This is derived purely
+    #       from the graph's reference edges (no tenant call) and emitted as extra remove->remove
+    #       predecessors below, after the remove work items exist.
+
+    # First, index the removal entries so reverse-edge wiring can resolve graph nodes to remove
+    # work items. A removal entry maps to a graph node by its identity/entityId (sits) or its name
+    # (rulePackage/dlpRule/dlpPolicy/label, also label Code/Identity).
+    $removeEntries = @($Assessment.buckets.remove)
+
+    # Map a removed sit's package: a removed sit/package whose graph sit is referenced by a rule.
+    # 'dereferenceImpact[rule]' = ordered set of removed-sit refs that rule must shed.
+    $dereferenceImpact = @{}                  # rule name -> List[string] (removed sit refs)
+    $removeDepsByRef   = @{}                   # remove entry ref -> List[string] (depends keys)
+
+    foreach ($entry in $removeEntries) {
         $type = [string]$entry.objectType
         $ref  = [string]$entry.ref
-        $removeDeps = [System.Collections.Generic.List[string]]::new()
+        if (-not $removeDepsByRef.ContainsKey($ref)) { $removeDepsByRef[$ref] = [System.Collections.Generic.List[string]]::new() }
 
         # Resolve the referencing rules for this removal, graph-first then impact[] fallback.
         $referencingRules = [System.Collections.Generic.List[string]]::new()
@@ -276,12 +298,87 @@ function Get-Compl8PlanOrder {
         }
 
         foreach ($rn in @($referencingRules)) {
-            # The dereference step must precede the remove; the remove depends on it.
-            Add-WorkItem -Action 'dereference' -ObjectType 'dlpRule' -Ref $rn -Direction 'backward' -DependsRefs @()
-            $removeDeps.Add("dereference:$rn") | Out-Null
+            # Coalesce: accumulate this removed object's ref under the rule's single dereference
+            # step (so N removed SITs sharing one rule => 1 dereference listing all N refs), and
+            # record that this remove depends on that rule's dereference step.
+            if (-not $dereferenceImpact.ContainsKey($rn)) { $dereferenceImpact[$rn] = [System.Collections.Generic.List[string]]::new() }
+            if (-not $dereferenceImpact[$rn].Contains($ref)) { $dereferenceImpact[$rn].Add($ref) | Out-Null }
+            $depKey = "dereference:$rn"
+            if (-not $removeDepsByRef[$ref].Contains($depKey)) { $removeDepsByRef[$ref].Add($depKey) | Out-Null }
         }
+    }
 
-        Add-WorkItem -Action 'remove' -ObjectType $type -Ref $ref -Direction 'backward' -DependsRefs @($removeDeps)
+    # Emit exactly ONE dereference work item per referencing rule, impact = the removed sit refs.
+    foreach ($rn in @($dereferenceImpact.Keys | Sort-Object)) {
+        $impactRefs = @($dereferenceImpact[$rn] | Sort-Object)
+        Add-WorkItem -Action 'dereference' -ObjectType 'dlpRule' -Ref $rn -Direction 'backward' `
+            -DependsRefs @() -Impact $impactRefs
+    }
+
+    # Reverse-edge removal predecessors (P2-2): when A references B and BOTH are being removed,
+    # B's removal must follow A's removal. Resolve graph reference edges to remove-entry refs.
+    # Build: graph node id -> remove-entry ref (so an edge endpoint can name a remove step).
+    $removeRefByNodeId = @{}
+    foreach ($entry in $removeEntries) {
+        $type = [string]$entry.objectType
+        $ref  = [string]$entry.ref
+        $guid = if ($entry.PSObject.Properties['identity'] -and $entry.identity) { ([string]$entry.identity).ToLowerInvariant() }
+                elseif ($entry.PSObject.Properties['entityId'] -and $entry.entityId) { ([string]$entry.entityId).ToLowerInvariant() }
+                else { $null }
+        foreach ($node in @($Graph.Nodes)) {
+            if (-not $node.Id) { continue }
+            $matched = $false
+            switch ($type) {
+                'sit'         { if ($guid -and $node.Identity -and ([string]$node.Identity).ToLowerInvariant() -eq $guid) { $matched = $true } }
+                'rulePackage' { if (($node.Name -and [string]$node.Name -eq $ref) -or ($node.Identity -and [string]$node.Identity -eq $ref)) { $matched = $true } }
+                'label'       { if (($node.Name -and [string]$node.Name -eq $ref) -or ($node.Identity -and [string]$node.Identity -eq $ref) -or ($node.PSObject.Properties['Properties'] -and $node.Properties -and $node.Properties.PSObject.Properties['Code'] -and [string]$node.Properties.Code -eq $ref)) { $matched = $true } }
+                default       { if (($node.Name -and [string]$node.Name -eq $ref) -or ($node.Identity -and [string]$node.Identity -eq $ref)) { $matched = $true } }
+            }
+            if ($matched -and -not $removeRefByNodeId.ContainsKey([string]$node.Id)) {
+                $removeRefByNodeId[[string]$node.Id] = $ref
+            }
+        }
+    }
+
+    # A sit node lifts to its owning rule-package's remove (the package is what is removed, the sit
+    # is an entity inside it) so a rule->sit edge orders against the package removal.
+    function Resolve-RemoveRef {
+        param([string]$NodeId)
+        if ($removeRefByNodeId.ContainsKey($NodeId)) { return $removeRefByNodeId[$NodeId] }
+        if (([string]$NodeId).StartsWith('sit:', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $sitGuid = ([string]$NodeId).Substring(4).ToLowerInvariant()
+            if ($packageNameBySitGuid.ContainsKey($sitGuid)) {
+                $pkgName = $packageNameBySitGuid[$sitGuid]
+                foreach ($k in $removeRefByNodeId.Keys) { if ($removeRefByNodeId[$k] -eq $pkgName) { return $pkgName } }
+            }
+        }
+        return $null
+    }
+
+    # For each reference edge type, define (referencer node, referent node). Tear down the
+    # referencer first => referent-remove depends on referencer-remove.
+    foreach ($edge in @($Graph.Edges)) {
+        $referencerNode = $null; $referentNode = $null
+        switch ([string]$edge.Type) {
+            'policyTargetsLabel'  { $referencerNode = [string]$edge.From; $referentNode = [string]$edge.To }   # policy references label
+            'sitReferencedByRule' { $referencerNode = [string]$edge.To;   $referentNode = [string]$edge.From } # rule references sit
+            default { continue }
+        }
+        $referencerRef = Resolve-RemoveRef -NodeId $referencerNode
+        $referentRef   = Resolve-RemoveRef -NodeId $referentNode
+        if (-not $referencerRef -or -not $referentRef -or $referencerRef -eq $referentRef) { continue }
+        if (-not $removeDepsByRef.ContainsKey($referentRef)) { $removeDepsByRef[$referentRef] = [System.Collections.Generic.List[string]]::new() }
+        $depKey = "remove:$referencerRef"
+        if (-not $removeDepsByRef[$referentRef].Contains($depKey)) { $removeDepsByRef[$referentRef].Add($depKey) | Out-Null }
+    }
+
+    # Finally emit the remove work items with their accumulated dependencies (dereference + reverse
+    # edges). Removes are keyed 'remove:<ref>' so a reverse-edge predecessor can name another remove.
+    foreach ($entry in $removeEntries) {
+        $type = [string]$entry.objectType
+        $ref  = [string]$entry.ref
+        $deps = if ($removeDepsByRef.ContainsKey($ref)) { @($removeDepsByRef[$ref]) } else { @() }
+        Add-WorkItem -Action 'remove' -ObjectType $type -Ref $ref -Direction 'backward' -DependsRefs @($deps)
     }
 
     if ($items.Count -eq 0) { return @() }
@@ -311,6 +408,16 @@ function Get-Compl8PlanOrder {
             # A dereference dependency is named explicitly ('dereference:<rule>').
             if (([string]$depRef).StartsWith('dereference:', [System.StringComparison]::Ordinal)) {
                 if ($itemByKey.ContainsKey($depRef)) { $predecessors[$it.Key].Add($depRef) | Out-Null }
+                continue
+            }
+            # A reverse-edge removal predecessor names another remove step ('remove:<ref>') — the
+            # referencer remove this remove must follow (P2-2). Resolve to that remove item's key.
+            if (([string]$depRef).StartsWith('remove:', [System.StringComparison]::Ordinal)) {
+                $targetRef = ([string]$depRef).Substring(7)
+                $candidate = @($items | Where-Object { $_.Action -eq 'remove' -and $_.Ref -eq $targetRef })
+                foreach ($c in $candidate) {
+                    if ($c.Key -ne $it.Key) { $predecessors[$it.Key].Add($c.Key) | Out-Null }
+                }
                 continue
             }
             # Otherwise the dep is an object ref; it may resolve to any object-type key present.
