@@ -22,7 +22,7 @@
     "sits": [
       { "name": "bail-note", "identity": "11111111-aaaa-4bbb-8ccc-000000000001", "ours": true, "package": "QGISCF-test-02", "contentHash": "sha256:bail00000000000000000000000000000000000000000000000000000000bail" },
       { "name": "name-dict", "identity": "22222222-aaaa-4bbb-8ccc-000000000002", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:driftdriftdriftdriftdriftdriftdriftdriftdriftdriftdriftdriftdrif" },
-      { "name": "shared-a", "identity": "33333333-aaaa-4bbb-8ccc-000000000003", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:463e9ac5be3621b6dd53aaee24de93499665fefca669bbebc2cff1906a23fb80" },
+      { "name": "shared-a", "identity": "33333333-aaaa-4bbb-8ccc-000000000003", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:1c71483fcd7f8d7f598995da99b502028e1b6552c771ba3a315571dcf102bc6b" },
       { "name": "shared-b", "identity": "44444444-aaaa-4bbb-8ccc-000000000004", "ours": true, "package": "QGISCF-test-01", "contentHash": "sha256:sharedb0sharedb0sharedb0sharedb0sharedb0sharedb0sharedb0sharedb00" },
       { "name": "Microsoft.SSN", "identity": "ffffffff-ffff-4fff-8fff-ffffffffffff", "ours": false, "package": "Microsoft Rule Package", "contentHash": "sha256:microsoftssn0microsoftssn0microsoftssn0microsoftssn0microsoftssn0" }
     ],

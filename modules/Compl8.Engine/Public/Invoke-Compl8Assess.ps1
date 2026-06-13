@@ -197,7 +197,11 @@ function Invoke-Compl8Assess {
                     $eid = $entity.GetAttribute('id')
                     if (-not [string]::IsNullOrWhiteSpace($eid)) {
                         $eidLower = $eid.ToLowerInvariant()
-                        $entityHash = Get-DlpEntityContentHash -EntityXml $entity.OuterXml
+                        # codex 4A P2-A: hash the entity PLUS the transitive idRef closure of its
+                        # sibling support elements, resolved within THIS package's <Rules> pool —
+                        # IDENTICALLY to the actual side (Get-TenantInventory). An edit to a
+                        # referenced <Regex> body (entity node unchanged) now changes this hash.
+                        $entityHash = Get-DlpEntityClosureContentHash -Entity $entity -RulesNode $rulesNode
                         $desiredSitHashByGuid[$eidLower] = $entityHash
                         $pkgEntityHashes.Add("$eidLower=$entityHash") | Out-Null
                     }
@@ -205,9 +209,15 @@ function Invoke-Compl8Assess {
             }
         } catch { }
         if ($pkg.name) {
-            $projection = (@($pkgEntityHashes) | Sort-Object) -join "`n"
-            $desiredPkgContentByName[[string]$pkg.name] =
-                Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($projection))</pkg>"
+            # codex 4A P2-B: only emit a comparable desired package hash when there is at least one
+            # parsed entity. A zero-entity (unparsable/empty) desired package gets $null so it never
+            # falsely diffs against an actual package on hash grounds. The comparison below already
+            # requires BOTH sides non-null before bucketing update-in-place.
+            if (@($pkgEntityHashes).Count -gt 0) {
+                $projection = (@($pkgEntityHashes) | Sort-Object) -join "`n"
+                $desiredPkgContentByName[[string]$pkg.name] =
+                    Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($projection))</pkg>"
+            }
         }
     }
 

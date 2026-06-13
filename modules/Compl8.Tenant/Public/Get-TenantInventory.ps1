@@ -208,7 +208,11 @@ function Get-TenantInventory {
                         $entities += [pscustomobject]@{
                             Guid        = $guid
                             Slug        = $slug
-                            ContentHash = Get-DlpEntityContentHash -EntityXml $entity.OuterXml
+                            # codex 4A P2-A: hash the entity PLUS the transitive idRef closure of its
+                            # sibling <Regex>/<Keyword>/<Filter>/<Validator> support elements, resolved
+                            # within THIS package's <Rules> pool. Computed identically on the desired
+                            # side so editing a deployed regex body (entity node unchanged) drifts.
+                            ContentHash = Get-DlpEntityClosureContentHash -Entity $entity -RulesNode $rulesNode
                         }
                     }
                 }
@@ -240,8 +244,17 @@ function Get-TenantInventory {
         # Canonical, comparable package digest: the shared canonical hash over the package's
         # sorted '<guid>=<entityContentHash>' projection. Derived from entities, so it is
         # comparable to a resolved desired package computed the same way (NOT a raw-byte sha).
-        $pkgProjection = (@($parsed.Entities) | Sort-Object Guid | ForEach-Object { "$($_.Guid)=$($_.ContentHash)" }) -join "`n"
-        $pkgContentHash = Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($pkgProjection))</pkg>"
+        #
+        # codex 4A P2-B: when the package could NOT be parsed (missing/garbage serialized XML)
+        # there are zero comparable entities. Emitting a hash of an empty <pkg/> projection would
+        # be a valid-looking digest that assess would diff against a real desired package and
+        # falsely bucket update-in-place. Emit $null (omit) instead so assess treats it as
+        # "cannot compare" and leaves it out of update-in-place on hash grounds.
+        $pkgContentHash = $null
+        if (@($parsed.Entities).Count -gt 0) {
+            $pkgProjection = (@($parsed.Entities) | Sort-Object Guid | ForEach-Object { "$($_.Guid)=$($_.ContentHash)" }) -join "`n"
+            $pkgContentHash = Get-DlpEntityContentHash -EntityXml "<pkg>$([System.Security.SecurityElement]::Escape($pkgProjection))</pkg>"
+        }
 
         ConvertTo-Record -Object $_ -Extra @{
             publisher   = [string](Get-Prop -Object $_ -Names @('Publisher'))
@@ -261,13 +274,22 @@ function Get-TenantInventory {
     # shared Get-DlpRuleClassifierReferenceText flattening so no GUID reference is lost.
     function Get-RuleClassifierField {
         param($Rule)
+        # codex 4A P2-C: a SIT GUID can be referenced from ANY of the classifier-reference
+        # surfaces — ContentContainsSensitiveInformation, ExceptIfContentContainsSensitiveInformation,
+        # AdvancedRule, Conditions, Exceptions. The old code early-returned on the primary field
+        # and dropped GUIDs that appear ONLY in the others, so assess's impact missed live rules.
+        # Always fold in the shared flatten helper, which already joins all five surfaces, so the
+        # emitted reference text is the UNION across every surface. The compact-JSON of the primary
+        # field is retained first for shape back-compat, then the flattened union is appended.
+        $parts = New-Object System.Collections.Generic.List[string]
         $primary = $Rule.PSObject.Properties['ContentContainsSensitiveInformation']
         if ($primary -and $null -ne $primary.Value) {
-            try { return ($primary.Value | ConvertTo-Json -Depth 20 -Compress) }
-            catch { return [string]$primary.Value }
+            try { $parts.Add(($primary.Value | ConvertTo-Json -Depth 20 -Compress)) | Out-Null }
+            catch { $parts.Add([string]$primary.Value) | Out-Null }
         }
-        # No primary field — fall back to the flattened reference text (covers advanced rules).
-        return (Get-DlpRuleClassifierReferenceText -Rule $Rule)
+        $flattened = Get-DlpRuleClassifierReferenceText -Rule $Rule
+        if (-not [string]::IsNullOrWhiteSpace($flattened)) { $parts.Add($flattened) | Out-Null }
+        return ($parts -join "`n")
     }
 
     $dlpRules = @($rawDlpRules | ForEach-Object {

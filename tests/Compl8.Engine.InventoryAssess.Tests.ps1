@@ -260,14 +260,17 @@ Describe 'Get-TenantInventory — produces the assess-consumable SIT shape from 
         # SAME canonical value as the resolved DESIRED entity. We take the desired entity exactly
         # as assess sees it — parsed out of the namespaced resolved package XML — so the only
         # differences between the two sides are the serialisation ones the canonical hash erases.
+        # codex 4A P2-A: the hash now covers the entity PLUS its transitive idRef closure (the
+        # referenced sibling <Regex>), so we resolve the desired side the SAME closure way —
+        # alpha-sit's referenced regex is byte-equal across desired/deployed, so it still matches.
         $resolved = Get-Content -LiteralPath (Join-Path $script:Ws 'desired' 'resolved' 'QGISCF-roundtrip-01.xml') -Raw
         [xml]$rdoc = $resolved
         $rrules = $rdoc.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq 'Rules' } | Select-Object -First 1
-        $desiredEntityXml = (@($rrules.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq 'Entity' -and $_.GetAttribute('id') -eq $script:GuidA })[0]).OuterXml
-        $desiredHash = Get-DlpEntityContentHash -EntityXml $desiredEntityXml
+        $desiredEntity = @($rrules.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq 'Entity' -and $_.GetAttribute('id') -eq $script:GuidA })[0]
+        $desiredHash = Get-DlpEntityClosureContentHash -Entity $desiredEntity -RulesNode $rrules
 
         $alpha = @($script:Inv.objects.sits | Where-Object { $_.name -eq 'alpha-sit' })[0]
-        $alpha.contentHash | Should -Be $desiredHash -Because 'the canonical hash erases the serialisation differences between desired and deployed'
+        $alpha.contentHash | Should -Be $desiredHash -Because 'the canonical closure hash erases the serialisation differences between desired and deployed'
     }
 
     It 'carries the dlp rule classifier-reference field for impact' {
