@@ -114,6 +114,19 @@ BeforeAll {
     }
     function global:Remove-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
 
+    # ---- Auto-label SCC cmdlet stubs (Task 12). The auto-label executor invokes
+    # New-/Set-/Get-/Remove-AutoSensitivityLabelPolicy and *-AutoSensitivityLabelRule DYNAMICALLY, so
+    # they must EXIST for `Mock -ModuleName Compl8.Engine`. New/Set declare the param surface the
+    # executor splats so a mock binds without a "parameter cannot be found".
+    function global:Get-AutoSensitivityLabelPolicy { [CmdletBinding()] param([string]$Identity) }
+    function global:New-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [switch]$OverwriteLabel) }
+    function global:Set-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [bool]$StartSimulation, [switch]$OverwriteLabel) }
+    function global:Remove-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+    function global:Get-AutoSensitivityLabelRule { [CmdletBinding()] param([string]$Identity, [string]$Policy) }
+    function global:New-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$Policy, [string]$Workload, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope) }
+    function global:Set-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope) }
+    function global:Remove-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+
     # ---------------------------------------------------------------- fixture: a dictionary content set
     # The resolved content the executor consumes: one record per dictionary placeholder, carrying the
     # name (prefix-scoped), terms, description and termsBytes (the budget input). The shadow fixture is
@@ -392,7 +405,9 @@ AfterAll {
         'Remove-DlpSensitiveInformationTypeRulePackage', 'Get-DlpSensitiveInformationTypeRulePackage',
         'Get-DlpSensitiveInformationType',
         'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy', 'Remove-DlpCompliancePolicy',
-        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule') {
+        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule',
+        'Get-AutoSensitivityLabelPolicy', 'New-AutoSensitivityLabelPolicy', 'Set-AutoSensitivityLabelPolicy', 'Remove-AutoSensitivityLabelPolicy',
+        'Get-AutoSensitivityLabelRule', 'New-AutoSensitivityLabelRule', 'Set-AutoSensitivityLabelRule', 'Remove-AutoSensitivityLabelRule') {
         Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
     }
 }
@@ -1451,6 +1466,313 @@ Describe 'Invoke-Compl8DlpRuleExecutor — SHADOW PARITY vs Deploy-DLPRules.ps1 
 
         $diff = Get-Compl8ShadowDiff -EngineOps @($engineOps) -OldOps @($oldOps)
         $diff.Match | Should -BeTrue -Because "executor planned ops must reproduce the real Deploy-DLPRules.ps1 path. OnlyInEngine=$(@($diff.OnlyInEngine) | ForEach-Object { $_.action + ':' + $_.objectType + ':' + $_.objectRef } | Join-String -Separator ','); OnlyInOld=$(@($diff.OnlyInOld) | ForEach-Object { $_.action + ':' + $_.objectType + ':' + $_.objectRef } | Join-String -Separator ',')"
+        @($diff.OnlyInEngine).Count | Should -Be 0
+        @($diff.OnlyInOld).Count    | Should -Be 0
+        @($diff.Differing).Count    | Should -Be 0
+    }
+}
+
+
+# =================================================================================================
+# Auto-label executor (Task 12) — copies the pilot template and shadows against the inline deployment
+# loop of scripts/Deploy-AutoLabeling.ps1. Handles `autoLabelPolicy` and `autoLabelRule`
+# create|update|remove. Ports the 125-classifier-per-rule CHUNKING (Split-ClassifierChunks parity —
+# the AutoLabelMaxSitsPerRule consumption limit, distinct from the 50-SIT authoring cap), the SIT-
+# validation gate, the name-conflict pre-flight, and simulation-mode policy creation
+# (Mode=TestWithoutNotifications). Proves parity against a GENUINE Deploy-AutoLabeling.ps1 run.
+#
+# SHADOW STRATEGY (genuine, reused from Task 9/11): Deploy-AutoLabeling.ps1's deployment loop is the
+# script's TOP-LEVEL body. Its session gate (Assert-DLPSession) PROBES Get-DlpCompliancePolicy, so
+# stubbing that probe cmdlet lets the REAL Assert-DLPSession pass; the fingerprint gate warn-passes for
+# an unconfigured -TargetEnvironment. So the recorder runs the WHOLE real script against the real global
+# config with those boundary cmdlets + the SCC cmdlets replaced by GLOBAL recording stubs. The recorded
+# New-AutoSensitivityLabelPolicy / New-AutoSensitivityLabelRule calls (real prefix-scoped names) ARE the
+# old path's intended operations. The ENGINE side INDEPENDENTLY generates the same names via the same
+# config + Get-DeploymentObjectName (not echoing the old side), so the diff is non-vacuous.
+
+Describe 'module surface — auto-label executor' {
+    It 'exports Invoke-Compl8AutoLabelExecutor from Compl8.Engine' {
+        (Get-Command -Name 'Invoke-Compl8AutoLabelExecutor' -Module Compl8.Engine -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-Compl8AutoLabelExecutor — policy + rule create/update/remove' {
+    BeforeAll {
+        $script:AlPolicyContent = [pscustomobject]@{
+            name = 'AL01-OFFI-QGISCF-EXT-ADT'; label = 'QGISCF-OFFICIAL-OFFI'; mode = 'TestWithoutNotifications'
+            comment = 'auto-label OFFICIAL'; locations = @{ ExchangeLocation = 'All' }
+        }
+        $script:AlRuleContent = [pscustomobject]@{
+            name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'AL01-OFFI-QGISCF-EXT-ADT'; workload = 'Exchange'
+            comment = 'OFFICIAL - Exchange'; scopeParam = 'AccessScope'; scopeValue = 'NotInOrganization'
+            classifiers = @(
+                [pscustomobject]@{ Id = '50b8b56b-4ef8-44c2-a924-03374f5831ce'; Name = 'All Full Names'; minCount = 1; maxCount = -1; confidencelevel = 'Medium' }
+            )
+        }
+    }
+
+    It 'policy create: New-AutoSensitivityLabelPolicy once, Mode=TestWithoutNotifications, provenance Comment' {
+        $script:capturedAlMode = $null
+        $script:capturedAlComment = $null
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelPolicy { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelPolicy { $script:capturedAlMode = $Mode; $script:capturedAlComment = $Comment }
+        Mock -ModuleName Compl8.Engine Set-AutoSensitivityLabelPolicy { throw 'must not Set on create' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'autoLabelPolicy'; objectRef = 'AL01-OFFI-QGISCF-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $script:AlPolicyContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelPolicy -Times 1
+        $result.status            | Should -Be 'created'
+        $result.objectType        | Should -Be 'autoLabelPolicy'
+        $script:capturedAlMode    | Should -Be 'TestWithoutNotifications'
+        $script:capturedAlComment | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]'
+    }
+
+    It 'policy update: Set-AutoSensitivityLabelPolicy when it already exists' {
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelPolicy { [pscustomobject]@{ Name = 'AL01-OFFI-QGISCF-EXT-ADT' } }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelPolicy { throw 'must not New on update' }
+        Mock -ModuleName Compl8.Engine Set-AutoSensitivityLabelPolicy { }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'update'; objectType = 'autoLabelPolicy'; objectRef = 'AL01-OFFI-QGISCF-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $script:AlPolicyContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Set-AutoSensitivityLabelPolicy -Times 1
+        $result.status | Should -Be 'updated'
+    }
+
+    It 'rule create (single chunk): New-AutoSensitivityLabelRule once, returns created' {
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { }
+        Mock -ModuleName Compl8.Engine Set-AutoSensitivityLabelRule { throw 'must not Set on create' }
+
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $script:AlRuleContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 1
+        $result.status     | Should -Be 'created'
+        $result.objectType | Should -Be 'autoLabelRule'
+    }
+
+    It 'rule remove: via Remove-PurviewObject (deleted)' {
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { [pscustomobject]@{ Name = 'AL01-R01-ECH-OFFI-EXT-ADT' } }
+        Mock -ModuleName Compl8.Engine Remove-AutoSensitivityLabelRule { }
+
+        $step = [pscustomobject]@{ id = 's02'; action = 'remove'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $script:AlRuleContent -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Remove-AutoSensitivityLabelRule -Times 1
+        $result.status | Should -Be 'deleted'
+    }
+
+    It 'SIT validation gate: refuses a rule create whose SIT GUID is missing from the tenant (no New call)' {
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { throw 'must not create a rule referencing a missing SIT' }
+
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $script:AlRuleContent -Prefix 'QGISCF' `
+            -TenantSitInventory @([pscustomobject]@{ Id = '99999999-9999-9999-9999-999999999999'; Name = 'Other' }) -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 0
+        $result.status | Should -Be 'sit-invalid'
+    }
+}
+
+Describe 'Invoke-Compl8AutoLabelExecutor — 125-classifier CHUNKING (Split-ClassifierChunks parity)' {
+    BeforeAll {
+        # Build a classifier list > 125 to force a split.
+        $script:Big = 1..130 | ForEach-Object {
+            [pscustomobject]@{ Id = ([guid]::NewGuid().ToString()); Name = "SIT-$_"; minCount = 1; maxCount = -1; confidencelevel = 'Medium' }
+        }
+    }
+
+    It 'splits a 130-classifier rule into 2 chunked rules (a/b), creating one rule per chunk' {
+        $script:createdRuleNames = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { $script:createdRuleNames.Add($Name) | Out-Null }
+
+        $content = [pscustomobject]@{ name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'AL01-OFFI-QGISCF-EXT-ADT'; workload = 'Exchange'; classifiers = $script:Big }
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        # 130 classifiers / 125 cap -> 2 chunks of 65 each -> 2 rules with chunk letters a, b.
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 2
+        $result.status        | Should -Be 'chunked'
+        @($result.chunks).Count | Should -Be 2
+        @($script:createdRuleNames) | Should -Contain 'AL01-R01a-ECH-OFFI-EXT-ADT'
+        @($script:createdRuleNames) | Should -Contain 'AL01-R01b-ECH-OFFI-EXT-ADT'
+    }
+
+    It 'a 250-classifier rule splits into 2 chunks of 125 (still 2, even split)' {
+        $big = 1..250 | ForEach-Object { [pscustomobject]@{ Id = ([guid]::NewGuid().ToString()); Name = "SIT-$_" } }
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { }
+
+        $content = [pscustomobject]@{ name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'p'; workload = 'Exchange'; classifiers = $big }
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 2
+        @($result.chunks).Count | Should -Be 2
+    }
+
+    It 'a 300-classifier rule splits into 3 chunks of 100 (ceil(300/125)=3)' {
+        $big = 1..300 | ForEach-Object { [pscustomobject]@{ Id = ([guid]::NewGuid().ToString()); Name = "SIT-$_" } }
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { }
+
+        $content = [pscustomobject]@{ name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'p'; workload = 'Exchange'; classifiers = $big }
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 3
+        @($result.chunks).Count | Should -Be 3
+    }
+
+    It 'a <=125-classifier rule is NOT split (single rule, no chunk letter)' {
+        $small = 1..50 | ForEach-Object { [pscustomobject]@{ Id = ([guid]::NewGuid().ToString()); Name = "SIT-$_" } }
+        $script:smallNames = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Compl8.Engine Get-AutoSensitivityLabelRule { $null }
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { $script:smallNames.Add($Name) | Out-Null }
+
+        $content = [pscustomobject]@{ name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'p'; workload = 'Exchange'; classifiers = $small }
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8AutoLabelExecutor -Step $step -Content $content -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-AutoSensitivityLabelRule -Times 1
+        @($script:smallNames) | Should -Contain 'AL01-R01-ECH-OFFI-EXT-ADT'   # no chunk letter
+        $result.status | Should -Be 'created'
+    }
+
+    It 'planned ops (-WhatIf) for a >125-classifier rule emit one op per chunk (chunk-letter names)' {
+        Mock -ModuleName Compl8.Engine New-AutoSensitivityLabelRule { throw 'no mutation under -WhatIf' }
+
+        $content = [pscustomobject]@{ name = 'AL01-R01-ECH-OFFI-EXT-ADT'; policy = 'p'; workload = 'Exchange'; classifiers = $script:Big }
+        $step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'autoLabelRule'; objectRef = 'AL01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $ops = @(Invoke-Compl8AutoLabelExecutor -Step $step -Content $content -Prefix 'QGISCF' -WhatIf)
+
+        @($ops).Count | Should -Be 2
+        @($ops.objectRef) | Should -Contain 'AL01-R01a-ECH-OFFI-EXT-ADT'
+        @($ops.objectRef) | Should -Contain 'AL01-R01b-ECH-OFFI-EXT-ADT'
+    }
+}
+
+Describe 'Invoke-Compl8AutoLabelExecutor — SHADOW PARITY vs Deploy-AutoLabeling.ps1 (GENUINE)' {
+  BeforeAll {
+    # GENUINE old-side recorder: run the WHOLE real Deploy-AutoLabeling.ps1 against the REAL global
+    # config, stubbing Get-DlpCompliancePolicy (the Assert-DLPSession probe) + a nonexistent
+    # -TargetEnvironment (so the fingerprint gate warn-passes) + recording AL SCC stubs. The recorded
+    # New-AutoSensitivityLabelPolicy / New-AutoSensitivityLabelRule names are the old path's REAL ops.
+    function Get-OldAlWhatIfOps {
+        $recorded = [System.Collections.Generic.List[object]]::new()
+        $global:Compl8ShadowAlOps = $recorded
+        try {
+            Import-Module $script:DlpDeploy -Force
+            function global:Connect-DLPSession { param() $true }
+            function global:Start-DeploymentLog { param([string]$ScriptName) $null }
+            function global:Stop-Transcript { }
+            function global:Get-DlpCompliancePolicy { param([string]$Identity) @() }   # Assert-DLPSession probe
+            function global:Get-DlpSensitiveInformationType { @() }
+            function global:Get-AutoSensitivityLabelPolicy { param([string]$Identity) $null }
+            function global:Get-AutoSensitivityLabelRule { param([string]$Identity, [string]$Policy) $null }
+            function global:New-AutoSensitivityLabelPolicy { param([string]$Name, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [switch]$OverwriteLabel); $global:Compl8ShadowAlOps.Add([pscustomobject]@{ action = 'create'; objectType = 'autoLabelPolicy'; objectRef = $Name }) | Out-Null }
+            function global:Set-AutoSensitivityLabelPolicy { param([string]$Identity, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [bool]$StartSimulation, [switch]$OverwriteLabel); if ($PSBoundParameters.ContainsKey('StartSimulation')) { return }; $global:Compl8ShadowAlOps.Add([pscustomobject]@{ action = 'update'; objectType = 'autoLabelPolicy'; objectRef = $Identity }) | Out-Null }
+            function global:New-AutoSensitivityLabelRule { param([string]$Name, [string]$Policy, [string]$Workload, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope); $global:Compl8ShadowAlOps.Add([pscustomobject]@{ action = 'create'; objectType = 'autoLabelRule'; objectRef = $Name }) | Out-Null }
+            function global:Set-AutoSensitivityLabelRule { param([string]$Identity); $global:Compl8ShadowAlOps.Add([pscustomobject]@{ action = 'update'; objectType = 'autoLabelRule'; objectRef = $Identity }) | Out-Null }
+            function global:Remove-AutoSensitivityLabelRule { param([string]$Identity) }
+            function global:Remove-AutoSensitivityLabelPolicy { param([string]$Identity) }
+
+            & (Join-Path $script:RepoRoot 'scripts' 'Deploy-AutoLabeling.ps1') -TargetEnvironment 'compl8-shadow-noenv' -SkipValidation -SkipVerification -AllowDirectRun *> $null
+
+            @($recorded)
+        } finally {
+            foreach ($fn in 'Connect-DLPSession', 'Start-DeploymentLog', 'Stop-Transcript', 'Get-DlpCompliancePolicy', 'Get-DlpSensitiveInformationType',
+                'Get-AutoSensitivityLabelPolicy', 'Get-AutoSensitivityLabelRule', 'New-AutoSensitivityLabelPolicy', 'Set-AutoSensitivityLabelPolicy',
+                'New-AutoSensitivityLabelRule', 'Set-AutoSensitivityLabelRule', 'Remove-AutoSensitivityLabelRule', 'Remove-AutoSensitivityLabelPolicy') {
+                Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
+            }
+            Remove-Variable -Name Compl8ShadowAlOps -Scope Global -ErrorAction SilentlyContinue
+            Remove-Module DLP-Deploy -Force -ErrorAction SilentlyContinue
+            Import-Module $script:EngineDir -Force
+            # Re-establish the AL SCC global stubs the executor tests rely on.
+            function global:Get-AutoSensitivityLabelPolicy { [CmdletBinding()] param([string]$Identity) }
+            function global:New-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [switch]$OverwriteLabel) }
+            function global:Set-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$ApplySensitivityLabel, [string]$Comment, [string]$Mode, [bool]$StartSimulation, [switch]$OverwriteLabel) }
+            function global:Remove-AutoSensitivityLabelPolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+            function global:Get-AutoSensitivityLabelRule { [CmdletBinding()] param([string]$Identity, [string]$Policy) }
+            function global:New-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$Policy, [string]$Workload, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope) }
+            function global:Set-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope) }
+            function global:Remove-AutoSensitivityLabelRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+        }
+    }
+
+    # The ENGINE side independently generates the same AL policy/rule names + steps from the SAME real
+    # config (labels, classifiers, workloads), via the module's own name generator — NOT by echoing the
+    # old ops. Returns the executor's -WhatIf planned ops over those steps.
+    function Get-EngineAlWhatIfOps {
+        Import-Module $script:DlpDeploy -Force
+        try {
+            $cfgDir = Join-Path $script:RepoRoot 'config'
+            $Defaults = Get-ModuleDefaults
+            $gj  = Import-JsonConfig -FilePath (Join-Path $cfgDir 'settings.json')   -Description s
+            $lj  = Import-JsonConfig -FilePath (Join-Path $cfgDir 'labels.json')     -Description l
+            $pj  = Import-JsonConfig -FilePath (Join-Path $cfgDir 'policies.json')   -Description p
+            $cj  = Import-JsonConfig -FilePath (Join-Path $cfgDir 'classifiers.json') -Description c
+            $Config = Merge-GlobalConfig -Defaults $Defaults -GlobalJson $gj
+            $Labels = Resolve-LabelConfig -LabelsJson $lj
+            $Policies = Resolve-PolicyConfig -PoliciesJson $pj
+            $Classifiers = Resolve-ClassifierConfig -ClassifiersJson $cj -Defaults $Defaults
+
+            # Same workload map + filter as the old script.
+            $wlMap = @{ 'ECH' = 'Exchange'; 'SPO' = 'SharePoint'; 'ODB' = 'OneDriveForBusiness' }
+            $workloads = @()
+            foreach ($p in ($Policies | Where-Object { $_.Enabled })) {
+                if ($wlMap.ContainsKey($p.Code)) { $workloads += @{ Code = $p.Code; Workload = $wlMap[$p.Code]; ScopeParam = $p.ScopeParam; ScopeValue = $p.ScopeValue } }
+            }
+            # Same label filter as the old script: non-group labels that have classifiers.
+            $Labels = $Labels | Where-Object { $_.code -and $Classifiers.ContainsKey($_.code) }
+            $LabelNameLookup = @{}
+            foreach ($l in $lj) { if ($l.code) { $LabelNameLookup[$l.code] = Get-DeploymentObjectName -Config $Config -ObjectType 'label' -Name $l.name -Tokens @{ labelCode = $l.code; displayName = $l.displayName } } }
+
+            $ops = [System.Collections.Generic.List[object]]::new()
+            $policyNum = 0
+            foreach ($label in $Labels) {
+                $policyNum++
+                $policyName = Get-DeploymentObjectName -Config $Config -ObjectType 'autoLabelPolicy' -Tokens @{ policyNumber = ('{0:D2}' -f $policyNum); labelCode = $label.code }
+                $polStep = [pscustomobject]@{ id = "p$policyNum"; action = 'create'; objectType = 'autoLabelPolicy'; objectRef = $policyName; dependsOn = @(); impact = @(); gate = $null }
+                $polContent = [pscustomobject]@{ name = $policyName; label = $LabelNameLookup[$label.code]; mode = 'TestWithoutNotifications'; comment = 'c'; locations = @{ ExchangeLocation = 'All' } }
+                foreach ($o in @(Invoke-Compl8AutoLabelExecutor -Step $polStep -Content $polContent -Prefix 'QGISCF' -WhatIf)) { $ops.Add($o) | Out-Null }
+
+                $ruleNum = 0
+                foreach ($wl in $workloads) {
+                    $ruleNum++
+                    $ruleName = Get-DeploymentObjectName -Config $Config -ObjectType 'autoLabelRule' -Tokens @{ policyNumber = ('{0:D2}' -f $policyNum); ruleNumber = ('{0:D2}' -f $ruleNum); chunkLetter = ''; workloadCode = $wl.Code; labelCode = $label.code }
+                    $ruleStep = [pscustomobject]@{ id = "r$policyNum-$ruleNum"; action = 'create'; objectType = 'autoLabelRule'; objectRef = $ruleName; dependsOn = @(); impact = @(); gate = $null }
+                    $ruleContent = [pscustomobject]@{ name = $ruleName; policy = $policyName; workload = $wl.Workload; comment = 'c'; scopeParam = $wl.ScopeParam; scopeValue = $wl.ScopeValue; classifiers = @($Classifiers[$label.code]) }
+                    foreach ($o in @(Invoke-Compl8AutoLabelExecutor -Step $ruleStep -Content $ruleContent -Prefix 'QGISCF' -WhatIf)) { $ops.Add($o) | Out-Null }
+                }
+            }
+            @($ops)
+        } finally {
+            Remove-Module DLP-Deploy -Force -ErrorAction SilentlyContinue
+            Import-Module $script:EngineDir -Force
+        }
+    }
+  }
+
+    It 'executor planned ops MATCH the REAL Deploy-AutoLabeling.ps1 ops (Get-Compl8ShadowDiff.Match = $true)' {
+        # OLD side: genuinely run the whole Deploy-AutoLabeling.ps1 against the real config (empty tenant => all create).
+        $oldOps = Get-OldAlWhatIfOps
+        # ENGINE side: independently generate the same steps + names and run the executor in -WhatIf.
+        $engineOps = Get-EngineAlWhatIfOps
+
+        # Guard against a vacuous empty == empty pass.
+        @($oldOps).Count    | Should -BeGreaterThan 0 -Because 'the fixture must drive real Deploy-AutoLabeling.ps1 operations'
+        @($engineOps).Count | Should -BeGreaterThan 0
+        @($engineOps).Count | Should -Be (@($oldOps).Count) -Because 'engine and old path generate the same per-label/workload AL policy+rule set'
+
+        $diff = Get-Compl8ShadowDiff -EngineOps @($engineOps) -OldOps @($oldOps)
+        $diff.Match | Should -BeTrue -Because "executor planned ops must reproduce the real Deploy-AutoLabeling.ps1 path. OnlyInEngine=$(@($diff.OnlyInEngine) | ForEach-Object { $_.action + ':' + $_.objectRef } | Select-Object -First 5 | Join-String -Separator ','); OnlyInOld=$(@($diff.OnlyInOld) | ForEach-Object { $_.action + ':' + $_.objectRef } | Select-Object -First 5 | Join-String -Separator ',')"
         @($diff.OnlyInEngine).Count | Should -Be 0
         @($diff.OnlyInOld).Count    | Should -Be 0
         @($diff.Differing).Count    | Should -Be 0

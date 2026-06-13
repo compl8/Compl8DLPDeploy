@@ -12,6 +12,7 @@
         'Get-Compl8ShadowDiff',
         'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
+        'Invoke-Compl8AutoLabelExecutor',
         'Invoke-Compl8DictionaryExecutor',
         'Invoke-Compl8DlpRuleExecutor',
         'Invoke-Compl8LabelExecutor',
