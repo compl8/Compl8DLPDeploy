@@ -8,6 +8,7 @@
     FunctionsToExport = @(
         'Compare-Compl8Plan',
         'Get-Compl8AssessmentReport',
+        'Get-Compl8ExecutorMap',
         'Get-Compl8PlanOrder',
         'Get-Compl8ShadowDiff',
         'Invoke-Compl8Apply',

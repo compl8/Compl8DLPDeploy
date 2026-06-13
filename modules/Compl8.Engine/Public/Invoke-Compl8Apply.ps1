@@ -342,16 +342,40 @@ function Invoke-Compl8Apply {
     }
 
     # Resolve the apply instant of a step's already-checkpointed dependency (for propagation gates
-    # whose notBefore is offset from the dependency apply time).
+    # whose notBefore is offset from the dependency apply time). The checkpoint is read back via
+    # ConvertFrom-Json, which auto-converts the 'yyyy-MM-ddTHH:mm:ssZ' appliedUtc string into a
+    # [datetime] (Kind=Unspecified/Local) — NOT the original 'Z' string. A culture-sensitive
+    # [string] cast of that [datetime] + a locale-default TryParse then FAILS to round-trip on many
+    # machines (e.g. it yields '06/13/2026 00:00:01', which InvariantCulture-less TryParse rejects),
+    # silently dropping the dependency time and fail-closing the propagation gate forever. So accept
+    # a [datetime]/[datetimeoffset] directly, and parse a string with InvariantCulture + AssumeUniversal.
+    function ConvertTo-AppliedInstant {
+        param($Value)
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [datetime]) {
+            $dt = [datetime]$Value
+            if ($dt.Kind -eq [System.DateTimeKind]::Unspecified) { return [datetime]::SpecifyKind($dt, [System.DateTimeKind]::Utc) }
+            return $dt.ToUniversalTime()
+        }
+        if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).UtcDateTime }
+        $s = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+        $parsed = [datetimeoffset]::MinValue
+        $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+        if ([datetimeoffset]::TryParse($s, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+            return $parsed.UtcDateTime
+        }
+        $null
+    }
     function Get-DependencyAppliedUtc {
         param([pscustomobject]$Step)
         $latest = $null
         foreach ($depId in @($Step.dependsOn)) {
             $cp = Read-Checkpoint -StepId ([string]$depId)
             if ($cp -and $cp.PSObject.Properties['appliedUtc'] -and $cp.appliedUtc) {
-                $parsed = [datetimeoffset]::MinValue
-                if ([datetimeoffset]::TryParse([string]$cp.appliedUtc, [ref]$parsed)) {
-                    if ($null -eq $latest -or $parsed.UtcDateTime -gt $latest) { $latest = $parsed.UtcDateTime }
+                $instant = ConvertTo-AppliedInstant -Value $cp.appliedUtc
+                if ($null -ne $instant) {
+                    if ($null -eq $latest -or $instant -gt $latest) { $latest = $instant }
                 }
             }
         }
