@@ -91,6 +91,29 @@ BeforeAll {
     function global:Get-DlpSensitiveInformationTypeRulePackage { [CmdletBinding()] param([string]$Identity) }
     function global:Get-DlpSensitiveInformationType { [CmdletBinding()] param([string]$Identity) }
 
+    # ---- DLP rule/policy SCC cmdlet stubs (Task 11). The DLP rule/policy executor invokes
+    # New-/Set-/Get-/Remove-DlpComplianceRule and *-DlpCompliancePolicy DYNAMICALLY, so they must EXIST
+    # for `Mock -ModuleName Compl8.Engine`. New/Set-Rule declare the full param surface the executor
+    # splats (condition + report/notify params) so a mock binds without a "parameter cannot be found".
+    function global:Get-DlpCompliancePolicy { [CmdletBinding()] param([string]$Identity) }
+    function global:New-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [string]$EndpointDlpLocation, [string]$TeamsLocation) }
+    function global:Set-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, [string]$Mode) }
+    function global:Remove-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+    function global:Get-DlpComplianceRule { [CmdletBinding()] param([string]$Identity, [string]$Policy) }
+    function global:New-DlpComplianceRule {
+        [CmdletBinding(SupportsShouldProcess)]
+        param([string]$Name, [string]$Policy, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule,
+            [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope,
+            [string]$GenerateIncidentReport, [string]$IncidentReportContent, [string]$NotifyUser)
+    }
+    function global:Set-DlpComplianceRule {
+        [CmdletBinding(SupportsShouldProcess)]
+        param([string]$Identity, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule,
+            [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope,
+            [string]$GenerateIncidentReport, [string]$IncidentReportContent, [string]$NotifyUser)
+    }
+    function global:Remove-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+
     # ---------------------------------------------------------------- fixture: a dictionary content set
     # The resolved content the executor consumes: one record per dictionary placeholder, carrying the
     # name (prefix-scoped), terms, description and termsBytes (the budget input). The shadow fixture is
@@ -367,7 +390,9 @@ AfterAll {
         'Get-LabelPolicy', 'New-LabelPolicy', 'Set-LabelPolicy', 'Remove-LabelPolicy',
         'New-DlpSensitiveInformationTypeRulePackage', 'Set-DlpSensitiveInformationTypeRulePackage',
         'Remove-DlpSensitiveInformationTypeRulePackage', 'Get-DlpSensitiveInformationTypeRulePackage',
-        'Get-DlpSensitiveInformationType') {
+        'Get-DlpSensitiveInformationType',
+        'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy', 'Remove-DlpCompliancePolicy',
+        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule') {
         Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
     }
 }
@@ -1124,6 +1149,308 @@ Describe 'Invoke-Compl8RulePackageExecutor — SHADOW PARITY vs Deploy-Classifie
 
         $diff = Get-Compl8ShadowDiff -EngineOps @($engineOps) -OldOps @($oldOps)
         $diff.Match | Should -BeTrue -Because "executor planned ops must reproduce the real Deploy-Classifiers upload path. OnlyInEngine=$(@($diff.OnlyInEngine) | ForEach-Object { $_.action + ':' + $_.objectRef } | Join-String -Separator ','); OnlyInOld=$(@($diff.OnlyInOld) | ForEach-Object { $_.action + ':' + $_.objectRef } | Join-String -Separator ',')"
+        @($diff.OnlyInEngine).Count | Should -Be 0
+        @($diff.OnlyInOld).Count    | Should -Be 0
+        @($diff.Differing).Count    | Should -Be 0
+    }
+}
+
+
+# =================================================================================================
+# DLP rule + policy executor (Task 11) — copies the pilot template and shadows against the inline
+# deployment loop of scripts/Deploy-DLPRules.ps1. Handles `dlpPolicy` and `dlpRule`
+# create|update|remove, PLUS the planner-generated `dereference` action (D5): strip the removed SIT
+# GUID(s) carried on the step's impact from the rule's ContentContainsSensitiveInformation, and DELETE
+# the rule if no SIT remains. Ports the SIT-validation gate, the name-conflict pre-flight, and
+# Invoke-WithRetry, stamps provenance, and proves parity against a GENUINE Deploy-DLPRules.ps1 run.
+#
+# SHADOW STRATEGY (genuine, reused from Task 9): Deploy-DLPRules.ps1's deployment loop is the script's
+# TOP-LEVEL body, and its gates (Connect-/Assert-DLPSession, Test-DeploymentTenantFingerprint,
+# Start-DeploymentLog) are module-scoped functions the global-stub boundary CAN shadow. So the recorder
+# runs the WHOLE real script against a committed per-tenant config fixture with those boundary functions
+# + the SCC cmdlets replaced by GLOBAL recording stubs. The recorded New-DlpCompliancePolicy /
+# New-DlpComplianceRule calls (with the real prefix-scoped names the production name generator produced)
+# ARE the old path's intended operations, derived from a real run. Runs live each test (no frozen fixture).
+
+Describe 'module surface — DLP rule/policy executor' {
+    It 'exports Invoke-Compl8DlpRuleExecutor from Compl8.Engine' {
+        (Get-Command -Name 'Invoke-Compl8DlpRuleExecutor' -Module Compl8.Engine -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-Compl8DlpRuleExecutor — policy + rule create/update/remove' {
+    BeforeAll {
+        $script:DlpPolicyContent = [pscustomobject]@{
+            name = 'P01-ECH-QGISCF-EXT-ADT'; mode = 'TestWithNotifications'; comment = 'policy c'
+            locations = @{ ExchangeLocation = 'All' }
+        }
+        $script:DlpRuleContent = [pscustomobject]@{
+            name = 'P01-R01-ECH-OFFI-EXT-ADT'; policy = 'P01-ECH-QGISCF-EXT-ADT'; comment = 'rule c'
+            sitIds = @('50b8b56b-4ef8-44c2-a924-03374f5831ce')
+            condition = @{ Format = 'Simple'; Value = @{ operator = 'And'; groups = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @(@{ id = '50b8b56b-4ef8-44c2-a924-03374f5831ce'; name = 'All Full Names' }) }) } }
+        }
+    }
+
+    It 'policy create: New-DlpCompliancePolicy once, provenance-stamped Comment, returns created' {
+        $script:capturedPolicyComment = $null
+        Mock -ModuleName Compl8.Engine Get-DlpCompliancePolicy { $null }
+        Mock -ModuleName Compl8.Engine New-DlpCompliancePolicy { $script:capturedPolicyComment = $Comment }
+        Mock -ModuleName Compl8.Engine Set-DlpCompliancePolicy { throw 'must not Set on create' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpPolicy'; objectRef = 'P01-ECH-QGISCF-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpPolicyContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpCompliancePolicy -Times 1
+        $result.status               | Should -Be 'created'
+        $result.objectType           | Should -Be 'dlpPolicy'
+        $script:capturedPolicyComment | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]'
+    }
+
+    It 'policy update: Set-DlpCompliancePolicy when it already exists, returns updated' {
+        Mock -ModuleName Compl8.Engine Get-DlpCompliancePolicy { [pscustomobject]@{ Name = 'P01-ECH-QGISCF-EXT-ADT' } }
+        Mock -ModuleName Compl8.Engine New-DlpCompliancePolicy { throw 'must not New on update' }
+        Mock -ModuleName Compl8.Engine Set-DlpCompliancePolicy { }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'update'; objectType = 'dlpPolicy'; objectRef = 'P01-ECH-QGISCF-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpPolicyContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpCompliancePolicy -Times 1
+        $result.status | Should -Be 'updated'
+    }
+
+    It 'rule create: New-DlpComplianceRule once, provenance Comment, ContentContainsSensitiveInformation set' {
+        $script:capturedCcsi = $null
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { $null }
+        Mock -ModuleName Compl8.Engine New-DlpComplianceRule { $script:capturedCcsi = $ContentContainsSensitiveInformation }
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { throw 'must not Set on create' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 1
+        $result.status      | Should -Be 'created'
+        $result.objectType  | Should -Be 'dlpRule'
+        $script:capturedCcsi | Should -Not -BeNullOrEmpty
+    }
+
+    It 'rule update: Set-DlpComplianceRule when it already exists' {
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { [pscustomobject]@{ Name = 'P01-R01-ECH-OFFI-EXT-ADT' } }
+        Mock -ModuleName Compl8.Engine New-DlpComplianceRule { throw 'must not New on update' }
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'update'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpComplianceRule -Times 1
+        $result.status | Should -Be 'updated'
+    }
+
+    It 'rule remove: via Remove-PurviewObject (deleted)' {
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { [pscustomobject]@{ Name = 'P01-R01-ECH-OFFI-EXT-ADT' } }
+        Mock -ModuleName Compl8.Engine Remove-DlpComplianceRule { }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'remove'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Remove-DlpComplianceRule -Times 1
+        $result.status | Should -Be 'deleted'
+    }
+}
+
+Describe 'Invoke-Compl8DlpRuleExecutor — SIT validation + name-conflict gates' {
+    BeforeAll {
+        $script:DlpRuleContent = [pscustomobject]@{
+            name = 'P01-R01-ECH-OFFI-EXT-ADT'; policy = 'P01-ECH-QGISCF-EXT-ADT'; comment = 'rule c'
+            sitIds = @('50b8b56b-4ef8-44c2-a924-03374f5831ce')
+            condition = @{ Format = 'Simple'; Value = @{ operator = 'And'; groups = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @(@{ id = '50b8b56b-4ef8-44c2-a924-03374f5831ce'; name = 'All Full Names' }) }) } }
+        }
+    }
+
+    It 'SIT validation gate: refuses a create whose SIT GUID is missing from the tenant (no New call)' {
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { $null }
+        Mock -ModuleName Compl8.Engine New-DlpComplianceRule { throw 'must not create a rule referencing a missing SIT' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        # Tenant inventory does NOT contain the referenced SIT id.
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -Prefix 'QGISCF' `
+            -TenantSitInventory @([pscustomobject]@{ Id = '99999999-9999-9999-9999-999999999999'; Name = 'Other' }) -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 0
+        $result.status | Should -Be 'sit-invalid'
+    }
+
+    It 'SIT validation gate: PASSES (creates) when the SIT GUID is present in the tenant' {
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { $null }
+        Mock -ModuleName Compl8.Engine New-DlpComplianceRule { }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -Prefix 'QGISCF' `
+            -TenantSitInventory @([pscustomobject]@{ Id = '50b8b56b-4ef8-44c2-a924-03374f5831ce'; Name = 'All Full Names' }) -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 1
+        $result.status | Should -Be 'created'
+    }
+
+    It 'name-conflict pre-flight: refuses a CREATE whose name is an active existing object (no New call)' {
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule { [pscustomobject]@{ Name = 'P01-R01-ECH-OFFI-EXT-ADT' } }   # active conflict
+        Mock -ModuleName Compl8.Engine New-DlpComplianceRule { throw 'must not create over an active name conflict' }
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { throw 'create must not Set' }
+
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $script:DlpRuleContent -Prefix 'QGISCF' -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 0
+        $result.status | Should -Be 'name-conflict'
+    }
+}
+
+Describe 'Invoke-Compl8DlpRuleExecutor — DEREFERENCE (D5: strip removed SITs / delete empty rule)' {
+    It 'strips the removed SIT(s) from the rule condition and Set-DlpComplianceRule (SITs remain)' {
+        $keepId = '11111111-1111-1111-1111-111111111111'
+        $dropId = '22222222-2222-2222-2222-222222222222'
+        $script:capturedDerefCcsi = $null
+        # The live rule references TWO SITs; one is removed.
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule {
+            [pscustomobject]@{ Name = 'P01-R01-ECH-OFFI-EXT-ADT'; ContentContainsSensitiveInformation = @{
+                operator = 'And'
+                groups   = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @(
+                    @{ id = $keepId; name = 'Keep SIT' }
+                    @{ id = $dropId; name = 'Drop SIT' }
+                ) }) } }
+        }
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { $script:capturedDerefCcsi = $ContentContainsSensitiveInformation }
+        Mock -ModuleName Compl8.Engine Remove-DlpComplianceRule { throw 'must not delete a rule that still references a SIT' }
+
+        $step = [pscustomobject]@{ id = 's05'; action = 'dereference'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'
+            dependsOn = @(); impact = @($dropId); gate = $null }
+        $content = [pscustomobject]@{ name = 'P01-R01-ECH-OFFI-EXT-ADT' }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $content -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpComplianceRule -Times 1
+        Should -Invoke -ModuleName Compl8.Engine Remove-DlpComplianceRule -Times 0
+        $result.status            | Should -Be 'dereferenced'
+        @($result.strippedSits)   | Should -Contain $dropId
+        @($result.remainingSits)  | Should -Contain $keepId
+        # The Set condition must NOT contain the dropped SIT and MUST contain the kept SIT.
+        $remainingIds = @($script:capturedDerefCcsi.groups[0].sensitivetypes | ForEach-Object { $_.id })
+        $remainingIds | Should -Contain $keepId
+        $remainingIds | Should -Not -Contain $dropId
+    }
+
+    It 'DELETES the rule when stripping the removed SIT leaves it referencing no SIT (D5 empty-rule delete)' {
+        $dropId = '22222222-2222-2222-2222-222222222222'
+        Mock -ModuleName Compl8.Engine Get-DlpComplianceRule {
+            [pscustomobject]@{ Name = 'P01-R01-ECH-OFFI-EXT-ADT'; ContentContainsSensitiveInformation = @{
+                operator = 'And'
+                groups   = @(@{ operator = 'Or'; name = 'Default'; sensitivetypes = @(@{ id = $dropId; name = 'Drop SIT' }) }) } }
+        }
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { throw 'must not Set a rule that will be deleted' }
+        Mock -ModuleName Compl8.Engine Remove-DlpComplianceRule { }
+
+        $step = [pscustomobject]@{ id = 's05'; action = 'dereference'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'
+            dependsOn = @(); impact = @($dropId); gate = $null }
+        $content = [pscustomobject]@{ name = 'P01-R01-ECH-OFFI-EXT-ADT' }
+        $result = Invoke-Compl8DlpRuleExecutor -Step $step -Content $content -SleepAction { param($s) }
+
+        Should -Invoke -ModuleName Compl8.Engine Remove-DlpComplianceRule -Times 1
+        Should -Invoke -ModuleName Compl8.Engine Set-DlpComplianceRule -Times 0
+        $result.status          | Should -Be 'rule-emptied-deleted'
+        @($result.strippedSits) | Should -Contain $dropId
+        @($result.remainingSits).Count | Should -Be 0
+    }
+
+    It 'planned op for a dereference step is action=dereference (NO mutation under -WhatIf)' {
+        Mock -ModuleName Compl8.Engine Set-DlpComplianceRule { throw 'no mutation under -WhatIf' }
+        $step = [pscustomobject]@{ id = 's05'; action = 'dereference'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @('22222222-2222-2222-2222-222222222222'); gate = $null }
+        $op = Invoke-Compl8DlpRuleExecutor -Step $step -WhatIf
+        $op.action     | Should -Be 'dereference'
+        $op.objectType | Should -Be 'dlpRule'
+        $op.objectRef  | Should -Be 'P01-R01-ECH-OFFI-EXT-ADT'
+    }
+}
+
+Describe 'Invoke-Compl8DlpRuleExecutor — SHADOW PARITY vs Deploy-DLPRules.ps1 (GENUINE)' {
+  BeforeAll {
+    # GENUINE old-side recorder: run the WHOLE real Deploy-DLPRules.ps1 against a committed per-tenant
+    # config fixture, with the connection/session/fingerprint boundary + the SCC cmdlets replaced by
+    # GLOBAL recording stubs. The recorded New-DlpCompliancePolicy / New-DlpComplianceRule calls are the
+    # old path's REAL intended operations (real prefix-scoped names), derived from a real run.
+    function Get-OldDlpWhatIfOps {
+        $envName = 'compl8-shadow-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
+        $cfgRoot = Join-Path $script:RepoRoot 'config' 'tenants' $envName
+        $recorded = [System.Collections.Generic.List[object]]::new()
+        $global:Compl8ShadowDlpOps = $recorded
+        try {
+            New-Item -ItemType Directory -Path $cfgRoot -Force | Out-Null
+            Set-Content -Path (Join-Path $cfgRoot 'settings.json') -Value '{ "namingPrefix":"QGISCF","namingSuffix":"EXT-ADT","auditMode":true,"notifyUser":false,"generateIncidentReport":false,"skipSitValidation":true,"suppressRuleOutput":true,"interCallDelaySec":0,"maxRetries":2,"baseDelaySec":1,"publisher":"QGISCF","sitPrefix":"QGISCF","nameTemplates":{"dlpPolicy":"P{policyNumber}-{policyCode}-{prefix}-{suffix}","dlpRule":"P{policyNumber}-R{ruleNumber}{chunkLetter}-{policyCode}-{labelCode}-{suffix}"} }'
+            Set-Content -Path (Join-Path $cfgRoot 'labels.json')   -Value '[ { "code":"OFFI","name":"OFFICIAL","displayName":"OFFICIAL","fullName":"OFFICIAL","priority":0,"parentGroup":null,"isGroup":false,"colour":"#008000","encrypt":false,"tooltip":"t","contentType":"File, Email" } ]'
+            Set-Content -Path (Join-Path $cfgRoot 'policies.json') -Value '[ { "number":1,"code":"ECH","comment":"c","location":{"ExchangeLocation":"All"},"scopeParam":"AccessScope","scopeValue":"NotInOrganization","optional":false,"enabled":true } ]'
+            Set-Content -Path (Join-Path $cfgRoot 'classifiers.json') -Value '{ "OFFI":[ {"name":"All Full Names","id":"50b8b56b-4ef8-44c2-a924-03374f5831ce","confidencelevel":"Medium","minCount":1,"maxCount":-1}, {"name":"IP Address","id":"1daa4ad5-e2dd-4ca4-a788-54722c09efb2","confidencelevel":"Medium","minCount":1,"maxCount":-1} ] }'
+            Set-Content -Path (Join-Path $cfgRoot 'rule-overrides.json') -Value '{}'
+
+            Import-Module $script:DlpDeploy -Force
+            function global:Connect-DLPSession { param() $true }
+            function global:Assert-DLPSession { param([string]$CommandToTest) $true }
+            function global:Test-DeploymentTenantFingerprint { param() [pscustomobject]@{ passed = $true; environment = 'shadow'; mode = 'warn'; actual = @{ name = 's'; guid = 'g' }; messages = @(); mismatches = @(); configured = $true; matched = $true } }
+            function global:Start-DeploymentLog { param([string]$ScriptName) $null }
+            function global:Stop-Transcript { }
+            function global:Get-DlpSensitiveInformationType { @() }
+            function global:Get-DlpCompliancePolicy { param([string]$Identity) $null }
+            function global:New-DlpCompliancePolicy { param([string]$Name, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [string]$EndpointDlpLocation, [string]$TeamsLocation); $global:Compl8ShadowDlpOps.Add([pscustomobject]@{ action = 'create'; objectType = 'dlpPolicy'; objectRef = $Name }) | Out-Null }
+            function global:Set-DlpCompliancePolicy { param([string]$Identity, [string]$Comment, [string]$Mode); $global:Compl8ShadowDlpOps.Add([pscustomobject]@{ action = 'update'; objectType = 'dlpPolicy'; objectRef = $Identity }) | Out-Null }
+            function global:Get-DlpComplianceRule { param([string]$Identity, [string]$Policy) $null }
+            function global:New-DlpComplianceRule { param([string]$Name, [string]$Policy, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope, [string]$GenerateIncidentReport, [string]$IncidentReportContent, [string]$NotifyUser); $global:Compl8ShadowDlpOps.Add([pscustomobject]@{ action = 'create'; objectType = 'dlpRule'; objectRef = $Name }) | Out-Null }
+            function global:Set-DlpComplianceRule { param([string]$Identity, $ContentContainsSensitiveInformation); $global:Compl8ShadowDlpOps.Add([pscustomobject]@{ action = 'update'; objectType = 'dlpRule'; objectRef = $Identity }) | Out-Null }
+            function global:Remove-DlpComplianceRule { param([string]$Identity) }
+            function global:Remove-DlpCompliancePolicy { param([string]$Identity) }
+
+            & (Join-Path $script:RepoRoot 'scripts' 'Deploy-DLPRules.ps1') -TargetEnvironment $envName -SkipValidation -SkipVerification -AllowDirectRun *> $null
+
+            @($recorded)
+        } finally {
+            foreach ($fn in 'Connect-DLPSession', 'Assert-DLPSession', 'Test-DeploymentTenantFingerprint', 'Start-DeploymentLog', 'Stop-Transcript',
+                'Get-DlpSensitiveInformationType', 'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy', 'Remove-DlpCompliancePolicy',
+                'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule', 'Remove-DlpComplianceRule') {
+                Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
+            }
+            Remove-Variable -Name Compl8ShadowDlpOps -Scope Global -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $cfgRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Module DLP-Deploy -Force -ErrorAction SilentlyContinue
+            Import-Module $script:EngineDir -Force
+            # Re-establish the DLP SCC global stubs the executor tests rely on.
+            function global:Get-DlpCompliancePolicy { [CmdletBinding()] param([string]$Identity) }
+            function global:New-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$Comment, [string]$Mode, [string]$ExchangeLocation, [string]$OneDriveLocation, [string]$SharePointLocation, [string]$EndpointDlpLocation, [string]$TeamsLocation) }
+            function global:Set-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, [string]$Mode) }
+            function global:Remove-DlpCompliancePolicy { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+            function global:Get-DlpComplianceRule { [CmdletBinding()] param([string]$Identity, [string]$Policy) }
+            function global:New-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Name, [string]$Policy, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope, [string]$GenerateIncidentReport, [string]$IncidentReportContent, [string]$NotifyUser) }
+            function global:Set-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity, [string]$Comment, $ContentContainsSensitiveInformation, $AdvancedRule, [string]$ReportSeverityLevel, [bool]$Disabled, [string]$AccessScope, [string]$GenerateIncidentReport, [string]$IncidentReportContent, [string]$NotifyUser) }
+            function global:Remove-DlpComplianceRule { [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+        }
+    }
+  }
+
+    It 'executor planned ops MATCH the REAL Deploy-DLPRules.ps1 ops (Get-Compl8ShadowDiff.Match = $true)' {
+        # OLD side: genuinely run the whole Deploy-DLPRules.ps1 against the fixture (empty tenant => all create).
+        $oldOps = Get-OldDlpWhatIfOps
+
+        # ENGINE side: run the executor in -WhatIf over the SAME objects in the SAME (empty) tenant state.
+        $engineSteps = @(
+            @{ Step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dlpPolicy'; objectRef = 'P01-ECH-QGISCF-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }; Content = [pscustomobject]@{ name = 'P01-ECH-QGISCF-EXT-ADT'; mode = 'TestWithNotifications'; comment = 'c'; locations = @{ ExchangeLocation = 'All' } } }
+            @{ Step = [pscustomobject]@{ id = 's02'; action = 'create'; objectType = 'dlpRule'; objectRef = 'P01-R01-ECH-OFFI-EXT-ADT'; dependsOn = @(); impact = @(); gate = $null }; Content = [pscustomobject]@{ name = 'P01-R01-ECH-OFFI-EXT-ADT'; policy = 'P01-ECH-QGISCF-EXT-ADT'; comment = 'c' } }
+        )
+        $engineOps = foreach ($e in $engineSteps) {
+            Invoke-Compl8DlpRuleExecutor -Step $e.Step -Content $e.Content -Prefix 'QGISCF' -WhatIf
+        }
+
+        # Guard against a vacuous empty == empty pass.
+        @($oldOps).Count    | Should -BeGreaterThan 0 -Because 'the fixture must drive real Deploy-DLPRules.ps1 operations'
+        @($oldOps).Count    | Should -Be 2 -Because 'one policy create + one rule create'
+        @($engineOps).Count | Should -Be 2
+
+        $diff = Get-Compl8ShadowDiff -EngineOps @($engineOps) -OldOps @($oldOps)
+        $diff.Match | Should -BeTrue -Because "executor planned ops must reproduce the real Deploy-DLPRules.ps1 path. OnlyInEngine=$(@($diff.OnlyInEngine) | ForEach-Object { $_.action + ':' + $_.objectType + ':' + $_.objectRef } | Join-String -Separator ','); OnlyInOld=$(@($diff.OnlyInOld) | ForEach-Object { $_.action + ':' + $_.objectType + ':' + $_.objectRef } | Join-String -Separator ',')"
         @($diff.OnlyInEngine).Count | Should -Be 0
         @($diff.OnlyInOld).Count    | Should -Be 0
         @($diff.Differing).Count    | Should -Be 0
