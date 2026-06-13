@@ -6,9 +6,12 @@
     Description       = 'Compl8 engine layer: assess, plan, apply — the only tenant-mutating layer (Stage 4).'
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
+        'Compare-Compl8Plan',
         'Get-Compl8AssessmentReport',
         'Get-Compl8PlanOrder',
-        'Invoke-Compl8Assess'
+        'Invoke-Compl8Assess',
+        'New-Compl8Plan',
+        'Test-Compl8PlanCurrent'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

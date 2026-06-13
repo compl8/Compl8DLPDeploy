@@ -283,3 +283,318 @@ Describe 'Get-Compl8PlanOrder — determinism' {
         $a | Should -Be $b
     }
 }
+
+# =====================================================================================
+# Task 5 — New-Compl8Plan / Test-Compl8PlanCurrent / Compare-Compl8Plan (PHASE 4B).
+# New-Compl8Plan turns an assessment (+ reference graph) into a compl8.plan/v1 object:
+#   * orders + gate-wires steps via Get-Compl8PlanOrder (Task 4);
+#   * stamps each step's impact from the assessment's impact[] / graph;
+#   * prepends a generated snapshotBeforeDestroy Step 0.5 that EVERY destructive step
+#     (remove / dereference) depends on, WHENEVER the plan has any destructive step;
+#   * marks policy-scope steps that carry external references with an externalRefs gate;
+#   * builds via Model's New-PlanObject / Add-PlanStep (passes Test-PlanSchema);
+#   * writes history/plans/<id>.json + <id>.sha256 sidecar atomically (deterministic id +
+#     timestamp are PARAMETERS — Get-Date / Get-Random are banned in the function).
+# Test-Compl8PlanCurrent generalises the refit <=24h rule from age to CONTENT hash:
+#   false when resolveManifest OR inventory hash drifts, naming which (with -Detail).
+# Compare-Compl8Plan is a pure diff: added / removed / changed steps between two plans.
+# =====================================================================================
+
+Describe 'Task 5 — module surface' {
+    It 'exports New-Compl8Plan, Test-Compl8PlanCurrent and Compare-Compl8Plan from Compl8.Engine' {
+        foreach ($fn in 'New-Compl8Plan', 'Test-Compl8PlanCurrent', 'Compare-Compl8Plan') {
+            (Get-Command -Name $fn -Module Compl8.Engine -ErrorAction SilentlyContinue) |
+                Should -Not -BeNullOrEmpty -Because "$fn must be exported"
+        }
+    }
+}
+
+Describe 'New-Compl8Plan — drives a real assessment + graph into a compl8.plan/v1' {
+    BeforeAll {
+        $script:FixtureRoot   = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'assess'
+        $script:InventoryPath = Join-Path $script:FixtureRoot 'actual' 'inventory.json'
+        $script:ExpectedRoot  = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'expected'
+
+        $script:planAssessment = Invoke-Compl8Assess `
+            -WorkspacePath $script:FixtureRoot -InventoryPath $script:InventoryPath `
+            -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z'
+
+        # Rebuild the reference graph exactly as assess does (desired packages + actual rules).
+        $resolvedDir = Join-Path $script:FixtureRoot 'desired' 'resolved'
+        $manifest = Get-Content -LiteralPath (Join-Path $resolvedDir 'resolve-manifest.json') -Raw | ConvertFrom-Json
+        $script:planInventory = Get-Content -LiteralPath $script:InventoryPath -Raw | ConvertFrom-Json
+        $graphPackages = @(foreach ($pkg in @($manifest.packages)) {
+            $pkgFile = Join-Path $resolvedDir ([string]$pkg.file)
+            if (-not $pkg.file -or -not (Test-Path -LiteralPath $pkgFile)) { continue }
+            [pscustomobject]@{
+                Identity = [string]$pkg.name; Name = [string]$pkg.name; Publisher = 'Compl8'
+                SerializedClassificationRuleCollection = (Get-Content -LiteralPath $pkgFile -Raw)
+            }
+        })
+        $graphRules = @(foreach ($rule in @($script:planInventory.objects.dlpRules)) {
+            [pscustomobject]@{
+                Name = [string]$rule.name; Identity = [string]$rule.identity; Policy = [string]$rule.policy
+                ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
+            }
+        })
+        $script:planGraph = Get-DeploymentReferenceGraph -SitPackages $graphPackages -DlpRules $graphRules
+
+        # A scratch workspace root the plan can write history/plans/ under.
+        $script:WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("compl8plan-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:WorkRoot -Force | Out-Null
+
+        $script:Plan = New-Compl8Plan `
+            -Assessment $script:planAssessment -Graph $script:planGraph -Inventory $script:planInventory `
+            -Workspace 'nonprod' -Id 'plan-20260613-000000' -GeneratedUtc '2026-06-13T00:00:00Z' `
+            -WorkspacePath $script:WorkRoot
+
+        $script:PlanFile     = Join-Path $script:WorkRoot 'history' 'plans' 'plan-20260613-000000.json'
+        $script:SidecarFile  = Join-Path $script:WorkRoot 'history' 'plans' 'plan-20260613-000000.sha256'
+    }
+
+    AfterAll {
+        if ($script:WorkRoot -and (Test-Path -LiteralPath $script:WorkRoot)) {
+            Remove-Item -LiteralPath $script:WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns a compl8.plan/v1 object that passes Test-PlanSchema' {
+        $script:Plan.schemaVersion | Should -Be 'compl8.plan/v1'
+        $script:Plan.id            | Should -Be 'plan-20260613-000000'
+        $script:Plan.workspace     | Should -Be 'nonprod'
+        $r = Test-PlanSchema -Plan $script:Plan
+        $r.Valid | Should -BeTrue -Because (@($r.Errors) -join '; ')
+    }
+
+    It 'carries the resolveManifest + inventory hashes from the assessment and an assessment hash' {
+        $script:Plan.inputs.resolveManifest | Should -Be $script:planAssessment.inputs.resolveManifest
+        $script:Plan.inputs.inventory       | Should -Be $script:planAssessment.inputs.inventory
+        $script:Plan.inputs.assessment      | Should -Match '^sha256:[0-9a-f]{64}$'
+    }
+
+    It 'writes the plan to history/plans/<id>.json with a matching <id>.sha256 sidecar' {
+        Test-Path -LiteralPath $script:PlanFile    | Should -BeTrue
+        Test-Path -LiteralPath $script:SidecarFile | Should -BeTrue
+
+        $actualHash = (Get-FileHash -LiteralPath $script:PlanFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sidecarRaw = Get-Content -LiteralPath $script:SidecarFile -Raw
+        # Sidecar line format EXACTLY: '<64-hex>  <filename>' (two spaces), like the refit plan.
+        $sidecarRaw.TrimEnd("`r", "`n") | Should -Be "$actualHash  plan-20260613-000000.json"
+    }
+
+    It 'stamps impact on the rule-package step that contains an impacted classifier' {
+        # name-dict (in QGISCF-test-01) is referenced by QGISCF-QLD-Medium-Email-07 in the
+        # assessment impact[]; the update step on QGISCF-test-01 must carry that impact.
+        $pkgStep = @($script:Plan.steps | Where-Object { $_.objectType -eq 'rulePackage' -and $_.objectRef -eq 'QGISCF-test-01' })[0]
+        $pkgStep | Should -Not -BeNullOrEmpty
+        @($pkgStep.impact) -join '; ' | Should -Match 'QGISCF-QLD-Medium-Email-07'
+    }
+
+    It 'prepends a snapshotBeforeDestroy Step 0.5 that every destructive step depends on' {
+        $snap = @($script:Plan.steps | Where-Object { $_.action -eq 'snapshot' })
+        $snap.Count | Should -Be 1
+        $snap[0].objectType        | Should -Be 'tenant'
+        $snap[0].objectRef         | Should -Be '*'
+        $snap[0].gate.type         | Should -Be 'snapshotBeforeDestroy'
+        # The snapshot step is FIRST (Step 0.5).
+        $script:Plan.steps[0].action | Should -Be 'snapshot'
+
+        $destructive = @($script:Plan.steps | Where-Object { $_.action -in 'remove', 'dereference' })
+        $destructive.Count | Should -BeGreaterThan 0
+        foreach ($d in $destructive) {
+            @($d.dependsOn) | Should -Contain $snap[0].id -Because "destructive step '$($d.objectRef)' must depend on the snapshot"
+        }
+    }
+}
+
+Describe 'New-Compl8Plan — no snapshot when the plan has no destructive step' {
+    It 'omits the snapshotBeforeDestroy step when nothing is removed/dereferenced' {
+        $sitGuid = '22222222-aaaa-4bbb-8ccc-000000000002'
+        $pkg = [pscustomobject]@{ Identity = 'QGISCF-test-01'; Name = 'QGISCF-test-01'; Publisher = 'Compl8'
+            SerializedClassificationRuleCollection = (New-PkgXml -EntityId $sitGuid -DictGuid $null) }
+        $graph = New-TestGraph -SitPackages @($pkg)
+        $assessment = New-TestAssessment -Buckets @{
+            'create'          = @(New-BucketEntry -ObjectType 'dictionary' -Ref '{{DICT_X}}')
+            'update-in-place' = @(New-BucketEntry -ObjectType 'rulePackage' -Ref 'QGISCF-test-01')
+        }
+        $plan = New-Compl8Plan -Assessment $assessment -Graph $graph `
+            -Workspace 'nonprod' -Id 'plan-nosnap' -GeneratedUtc '2026-06-13T00:00:00Z'
+        @($plan.steps | Where-Object { $_.action -eq 'snapshot' }).Count | Should -Be 0
+        $r = Test-PlanSchema -Plan $plan
+        $r.Valid | Should -BeTrue -Because (@($r.Errors) -join '; ')
+    }
+}
+
+Describe 'New-Compl8Plan — externalRefs gate on a policy-scope step' {
+    It 'marks a policy-scope step that carries external references with an externalRefs gate' {
+        # A dlpPolicy create whose desired content carries a scope/recipient external ref.
+        $assessment = New-TestAssessment -Buckets @{
+            'create' = @(
+                New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'QGISCF-Policy-Ext' -Extra @{ scope = 'group:Legal-Team@contoso.com' }
+            )
+        }
+        $graph = New-TestGraph
+        $plan = New-Compl8Plan -Assessment $assessment -Graph $graph `
+            -Workspace 'nonprod' -Id 'plan-extref' -GeneratedUtc '2026-06-13T00:00:00Z'
+        $policyStep = @($plan.steps | Where-Object { $_.objectType -eq 'dlpPolicy' -and $_.objectRef -eq 'QGISCF-Policy-Ext' })[0]
+        $policyStep | Should -Not -BeNullOrEmpty
+        $policyStep.gate.type | Should -Be 'externalRefs'
+        $r = Test-PlanSchema -Plan $plan
+        $r.Valid | Should -BeTrue -Because (@($r.Errors) -join '; ')
+    }
+
+    It 'does NOT mark a policy-scope step with no external reference' {
+        $assessment = New-TestAssessment -Buckets @{
+            'create' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'QGISCF-Policy-Plain')
+        }
+        $plan = New-Compl8Plan -Assessment $assessment -Graph (New-TestGraph) `
+            -Workspace 'nonprod' -Id 'plan-noextref' -GeneratedUtc '2026-06-13T00:00:00Z'
+        $policyStep = @($plan.steps | Where-Object { $_.objectRef -eq 'QGISCF-Policy-Plain' })[0]
+        $policyStep.gate | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'New-Compl8Plan — determinism + golden plan' {
+    BeforeAll {
+        $script:FixtureRoot   = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'assess'
+        $script:InventoryPath = Join-Path $script:FixtureRoot 'actual' 'inventory.json'
+        $script:ExpectedRoot  = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'expected'
+
+        $script:gAssessment = Invoke-Compl8Assess `
+            -WorkspacePath $script:FixtureRoot -InventoryPath $script:InventoryPath `
+            -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z'
+        $resolvedDir = Join-Path $script:FixtureRoot 'desired' 'resolved'
+        $manifest = Get-Content -LiteralPath (Join-Path $resolvedDir 'resolve-manifest.json') -Raw | ConvertFrom-Json
+        $script:gInventory = Get-Content -LiteralPath $script:InventoryPath -Raw | ConvertFrom-Json
+        $graphPackages = @(foreach ($pkg in @($manifest.packages)) {
+            $pkgFile = Join-Path $resolvedDir ([string]$pkg.file)
+            if (-not $pkg.file -or -not (Test-Path -LiteralPath $pkgFile)) { continue }
+            [pscustomobject]@{ Identity = [string]$pkg.name; Name = [string]$pkg.name; Publisher = 'Compl8'
+                SerializedClassificationRuleCollection = (Get-Content -LiteralPath $pkgFile -Raw) }
+        })
+        $graphRules = @(foreach ($rule in @($script:gInventory.objects.dlpRules)) {
+            [pscustomobject]@{ Name = [string]$rule.name; Identity = [string]$rule.identity; Policy = [string]$rule.policy
+                ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation }
+        })
+        $script:gGraph = Get-DeploymentReferenceGraph -SitPackages $graphPackages -DlpRules $graphRules
+
+        function New-GoldenPlanJson {
+            (New-Compl8Plan -Assessment $script:gAssessment -Graph $script:gGraph -Inventory $script:gInventory `
+                -Workspace 'nonprod' -Id 'plan-20260613-000000' -GeneratedUtc '2026-06-13T00:00:00Z') |
+                ConvertTo-Json -Depth 12
+        }
+    }
+
+    It 'produces byte-identical plan JSON on repeated runs (same inputs + id + timestamp)' {
+        (New-GoldenPlanJson) | Should -Be (New-GoldenPlanJson)
+    }
+
+    It 'matches the pinned golden plan JSON' {
+        $goldenPath = Join-Path $script:ExpectedRoot 'plan-nonprod.json'
+        $actual = New-GoldenPlanJson
+        if (-not (Test-Path -LiteralPath $goldenPath)) {
+            $dir = Split-Path -Parent $goldenPath
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            Set-Content -LiteralPath $goldenPath -Value $actual -Encoding UTF8 -NoNewline
+        }
+        $expected = Get-Content -LiteralPath $goldenPath -Raw
+        $actual | Should -Be $expected.TrimEnd("`r", "`n")
+    }
+}
+
+Describe 'New-Compl8Plan — determinism guard (Get-Date / Get-Random banned)' {
+    It 'never calls Get-Date or Get-Random in the executable body (comments stripped)' {
+        $src = Get-Content -LiteralPath (Join-Path $script:EngineDir 'Public' 'New-Compl8Plan.ps1') -Raw
+        # Strip block comments <# ... #> and line comments so only executable code is checked —
+        # the bans are on CALLS, not on documentation that names the banned cmdlets.
+        $code = [regex]::Replace($src, '(?s)<#.*?#>', '')
+        $code = ($code -split "`n" | ForEach-Object { ($_ -replace '#.*$', '') }) -join "`n"
+        $code | Should -Not -Match 'Get-Date'
+        $code | Should -Not -Match 'Get-Random'
+    }
+}
+
+Describe 'Test-Compl8PlanCurrent — content-hash freshness' {
+    BeforeAll {
+        $script:tcAssessment = New-TestAssessment -Buckets @{
+            'create' = @(New-BucketEntry -ObjectType 'dictionary' -Ref '{{DICT_X}}')
+        }
+        # New-TestAssessment stamps inputs.resolveManifest='sha256:aa', inventory='sha256:bb'.
+        $script:tcPlan = New-Compl8Plan -Assessment $script:tcAssessment -Graph (New-TestGraph) `
+            -Workspace 'nonprod' -Id 'plan-fresh' -GeneratedUtc '2026-06-13T00:00:00Z'
+    }
+
+    It 'returns true when both input hashes still match' {
+        Test-Compl8PlanCurrent -Plan $script:tcPlan `
+            -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:bb' | Should -BeTrue
+    }
+
+    It 'returns false and names inventory when the inventory hash drifts' {
+        Test-Compl8PlanCurrent -Plan $script:tcPlan `
+            -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:CHANGED' | Should -BeFalse
+        $d = Test-Compl8PlanCurrent -Plan $script:tcPlan `
+            -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:CHANGED' -Detail
+        $d.Current | Should -BeFalse
+        $d.Stale   | Should -Contain 'inventory'
+        $d.Stale   | Should -Not -Contain 'resolveManifest'
+    }
+
+    It 'returns false and names resolveManifest when the manifest hash drifts' {
+        $d = Test-Compl8PlanCurrent -Plan $script:tcPlan `
+            -ResolveManifestHash 'sha256:CHANGED' -InventoryHash 'sha256:bb' -Detail
+        $d.Current | Should -BeFalse
+        $d.Stale   | Should -Contain 'resolveManifest'
+        $d.Stale   | Should -Not -Contain 'inventory'
+    }
+}
+
+Describe 'Compare-Compl8Plan — pure plan diff (added / removed / changed)' {
+    BeforeAll {
+        function New-DiffStep {
+            param([string]$Id, [string]$Action, [string]$ObjectType, [string]$ObjectRef,
+                  [string[]]$DependsOn = @(), [string[]]$Impact = @(), [pscustomobject]$Gate = $null)
+            [pscustomobject]@{ id = $Id; action = $Action; objectType = $ObjectType; objectRef = $ObjectRef
+                dependsOn = @($DependsOn); impact = @($Impact); gate = $Gate }
+        }
+        function New-DiffPlan {
+            param([object[]]$Steps)
+            $p = New-PlanObject -Workspace 'nonprod' -Id 'p'
+            $p.steps = @($Steps)
+            $p
+        }
+
+        # base plan: create dict, update package (no gate), remove sit.
+        $script:planA = New-DiffPlan -Steps @(
+            New-DiffStep -Id 's01' -Action 'create' -ObjectType 'dictionary'  -ObjectRef '{{DICT_X}}'
+            New-DiffStep -Id 's02' -Action 'update' -ObjectType 'rulePackage' -ObjectRef 'QGISCF-test-01'
+            New-DiffStep -Id 's03' -Action 'remove' -ObjectType 'sit'         -ObjectRef 'shared-b'
+        )
+        # new plan: SAME dict step; CHANGED package step (now carries a propagation gate);
+        # REMOVED the remove-sit step; ADDED a create-sit step.
+        $script:planB = New-DiffPlan -Steps @(
+            New-DiffStep -Id 's01' -Action 'create' -ObjectType 'dictionary'  -ObjectRef '{{DICT_X}}'
+            New-DiffStep -Id 's02' -Action 'update' -ObjectType 'rulePackage' -ObjectRef 'QGISCF-test-01' -Gate ([pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 })
+            New-DiffStep -Id 's04' -Action 'create' -ObjectType 'sit'         -ObjectRef 'custom-incident-ref'
+        )
+        $script:diff = Compare-Compl8Plan -ReferencePlan $script:planA -DifferencePlan $script:planB
+    }
+
+    It 'reports the added step (create sit) by objectRef+action' {
+        @($script:diff.Added | ForEach-Object { "$($_.action)|$($_.objectRef)" }) | Should -Contain 'create|custom-incident-ref'
+    }
+
+    It 'reports the removed step (remove sit) by objectRef+action' {
+        @($script:diff.Removed | ForEach-Object { "$($_.action)|$($_.objectRef)" }) | Should -Contain 'remove|shared-b'
+    }
+
+    It 'reports the changed step (same ref+action, different gate)' {
+        @($script:diff.Changed | ForEach-Object { "$($_.action)|$($_.objectRef)" }) | Should -Contain 'update|QGISCF-test-01'
+    }
+
+    It 'does NOT report an unchanged step' {
+        foreach ($coll in 'Added', 'Removed', 'Changed') {
+            @($script:diff.$coll | ForEach-Object { "$($_.action)|$($_.objectRef)" }) |
+                Should -Not -Contain 'create|{{DICT_X}}'
+        }
+    }
+}

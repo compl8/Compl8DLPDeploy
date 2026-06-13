@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "compl8.plan/v1",
+  "id": "plan-20260613-000000",
+  "workspace": "nonprod",
+  "generatedUtc": "2026-06-13T00:00:00Z",
+  "inputs": {
+    "resolveManifest": "sha256:3cfd7a32d2722a92c30abf9754291385d204b7018946cb0d60c6874a5e064892",
+    "inventory": "sha256:9caf3e0c156a003fb75313e854cc65fc7678b247d4bbd64142c0c09c141a026e",
+    "assessment": "sha256:0881fff67dfe2b981a43e24c677679a38505dc10f776c9ad28b129778d0942e1"
+  },
+  "steps": [
+    {
+      "id": "s00",
+      "action": "snapshot",
+      "objectType": "tenant",
+      "objectRef": "*",
+      "dependsOn": [],
+      "impact": [],
+      "gate": {
+        "type": "snapshotBeforeDestroy"
+      }
+    },
+    {
+      "id": "s01",
+      "action": "create",
+      "objectType": "dictionary",
+      "objectRef": "{{DICT_AU_FORENAMES}}",
+      "dependsOn": [],
+      "impact": [],
+      "gate": null
+    },
+    {
+      "id": "s02",
+      "action": "create",
+      "objectType": "sit",
+      "objectRef": "custom-incident-ref",
+      "dependsOn": [],
+      "impact": [],
+      "gate": null
+    },
+    {
+      "id": "s03",
+      "action": "remove",
+      "objectType": "sit",
+      "objectRef": "shared-b",
+      "dependsOn": [
+        "s00"
+      ],
+      "impact": [],
+      "gate": null
+    },
+    {
+      "id": "s04",
+      "action": "repack-move",
+      "objectType": "sit",
+      "objectRef": "bail-note",
+      "dependsOn": [],
+      "impact": [],
+      "gate": null
+    },
+    {
+      "id": "s05",
+      "action": "update",
+      "objectType": "rulePackage",
+      "objectRef": "QGISCF-test-01",
+      "dependsOn": [],
+      "impact": [
+        "dlp-rule: QGISCF-QLD-Medium-Email-07"
+      ],
+      "gate": null
+    }
+  ],
+  "ordering": "graph-derived",
+  "warnings": []
+}
