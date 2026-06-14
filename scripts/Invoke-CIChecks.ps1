@@ -5,7 +5,11 @@
 
 [CmdletBinding()]
 param(
-    [switch]$SkipPester
+    [switch]$SkipPester,
+    # Fast dev loop: exclude the slow "shadow parity" tests (Describe blocks tagged 'Slow'
+    # that run the real Deploy-*.ps1 leaf scripts). DEFAULT (no switch) runs EVERYTHING so
+    # CI stays unchanged.
+    [switch]$Fast
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +76,18 @@ if (-not $SkipPester) {
         if (-not (Test-Path -LiteralPath $testPath)) {
             throw "No tests directory found"
         }
-        $result = Invoke-Pester -Path $testPath -PassThru
+        # Ensure Pester 5+ (the inbox v3 ships alongside on Windows).
+        Import-Module Pester -MinimumVersion 5.0
+        $pesterConfig = New-PesterConfiguration
+        $pesterConfig.Run.Path = $testPath
+        $pesterConfig.Run.PassThru = $true
+        if ($Fast) {
+            # Fast dev loop: skip the slow shadow-parity Describes. DEFAULT leaves the filter
+            # empty so every test still runs (CI behaviour is unchanged).
+            $pesterConfig.Filter.ExcludeTag = 'Slow'
+            Write-Host "  (-Fast) excluding tests tagged 'Slow'" -ForegroundColor Yellow
+        }
+        $result = Invoke-Pester -Configuration $pesterConfig
         if ($result.FailedCount -gt 0) {
             throw "$($result.FailedCount) Pester test(s) failed"
         }

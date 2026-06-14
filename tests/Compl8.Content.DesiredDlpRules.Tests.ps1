@@ -174,7 +174,7 @@ Describe 'Resolve-DesiredDlpRules — shape + source injectability' {
     }
 }
 
-Describe 'Resolve-DesiredDlpRules — SHADOW PARITY vs Deploy-DLPRules.ps1 (GENUINE, committed config)' {
+Describe 'Resolve-DesiredDlpRules — SHADOW PARITY vs Deploy-DLPRules.ps1 (GENUINE, committed config)' -Tag 'Slow' {
     BeforeAll {
         Import-Module Pester -MinimumVersion 5.0 -ErrorAction SilentlyContinue
         # OLD side: run the WHOLE real Deploy-DLPRules.ps1 against the committed config (empty tenant

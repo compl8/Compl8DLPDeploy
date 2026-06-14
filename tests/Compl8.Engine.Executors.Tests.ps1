@@ -831,7 +831,7 @@ Describe 'Invoke-Compl8LabelExecutor — planned ops (-WhatIf / plan mode)' {
     }
 }
 
-Describe 'Invoke-Compl8LabelExecutor — SHADOW PARITY vs Deploy-Labels.ps1 -WhatIf (GENUINE)' {
+Describe 'Invoke-Compl8LabelExecutor — SHADOW PARITY vs Deploy-Labels.ps1 -WhatIf (GENUINE)' -Tag 'Slow' {
     It 'executor planned ops MATCH the REAL Deploy-Labels.ps1 ops (Get-Compl8ShadowDiff.Match = $true)' {
         # OLD side: genuinely run Deploy-Labels.ps1 against the committed config fixture, with the
         # connection/session boundary + SCC cmdlets replaced by GLOBAL recording stubs. The recorded
@@ -1055,7 +1055,7 @@ Describe 'Invoke-Compl8RulePackageExecutor — fixtures' {
     }
 }
 
-Describe 'Invoke-Compl8RulePackageExecutor — SHADOW PARITY vs Deploy-Classifiers.ps1 upload (GENUINE)' {
+Describe 'Invoke-Compl8RulePackageExecutor — SHADOW PARITY vs Deploy-Classifiers.ps1 upload (GENUINE)' -Tag 'Slow' {
   BeforeAll {
     # The GENUINE old-side recorder: load Deploy-Classifiers.ps1's REAL functions via AST (no main
     # body runs) and invoke the genuine Invoke-ClassifierUploadPlan with recording SCC stubs.
@@ -1385,7 +1385,7 @@ Describe 'Invoke-Compl8DlpRuleExecutor — DEREFERENCE (D5: strip removed SITs /
     }
 }
 
-Describe 'Invoke-Compl8DlpRuleExecutor — SHADOW PARITY vs Deploy-DLPRules.ps1 (GENUINE)' {
+Describe 'Invoke-Compl8DlpRuleExecutor — SHADOW PARITY vs Deploy-DLPRules.ps1 (GENUINE)' -Tag 'Slow' {
   BeforeAll {
     # GENUINE old-side recorder: run the WHOLE real Deploy-DLPRules.ps1 against a committed per-tenant
     # config fixture, with the connection/session/fingerprint boundary + the SCC cmdlets replaced by
@@ -1657,7 +1657,7 @@ Describe 'Invoke-Compl8AutoLabelExecutor — 125-classifier CHUNKING (Split-Clas
     }
 }
 
-Describe 'Invoke-Compl8AutoLabelExecutor — SHADOW PARITY vs Deploy-AutoLabeling.ps1 (GENUINE)' {
+Describe 'Invoke-Compl8AutoLabelExecutor — SHADOW PARITY vs Deploy-AutoLabeling.ps1 (GENUINE)' -Tag 'Slow' {
   BeforeAll {
     # GENUINE old-side recorder: run the WHOLE real Deploy-AutoLabeling.ps1 against the REAL global
     # config, stubbing Get-DlpCompliancePolicy (the Assert-DLPSession probe) + a nonexistent
