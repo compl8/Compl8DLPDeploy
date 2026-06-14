@@ -79,14 +79,17 @@ function Invoke-Compl8Assess {
         Optional. When set, the assessment is also written as JSON to this path.
 
     .PARAMETER ConfigRoot
-        Optional. The config source for the DESIRED DLP rule/policy set (DR-4). When supplied, assess
-        calls Resolve-DesiredDlpRules -ConfigPath <ConfigRoot> and buckets the actual dlpRules/
-        dlpPolicies (from the inventory) against that desired set. THIS IS THE CONFIG-BRIDGE SEAM:
-        in a future stage it re-points to a desired/resolved rule projection; only this parameter
-        (and the loader it feeds) changes. When -ConfigRoot is absent, assess derives it from the
-        workspace (<WorkspacePath>/desired/config, then <WorkspacePath>/config). If NEITHER an
-        explicit -ConfigRoot NOR a workspace config directory exists, assess emits NO dlpRule/
-        dlpPolicy buckets — so SIT-only fixtures/workspaces that carry no rule config are unaffected.
+        Optional. The config source for the DESIRED DLP rule/policy set (DR-4) — now the FALLBACK
+        after the Stage-5 re-point (D7). DESIRED-RULE SOURCE ORDER:
+          1. <WorkspacePath>/desired/resolved/dlp-rules.json — the persisted desired rule set written
+             by Resolve-DesiredContent (the re-point; makes the workspace self-contained). When this
+             file is present assess reads it verbatim and does NOT re-resolve any config.
+          2. else -ConfigRoot (if supplied) -> Resolve-DesiredDlpRules -ConfigPath <ConfigRoot>.
+          3. else the workspace config dir (<WorkspacePath>/desired/config, then <WorkspacePath>/config).
+        If NONE of these yield a desired set, assess emits NO dlpRule/dlpPolicy buckets — so SIT-only
+        fixtures/workspaces that carry no rule config are unaffected, and the existing DR-4 fixtures
+        (which pass -ConfigRoot but write no dlp-rules.json) keep working via the config-bridge fallback.
+        The bucketing logic (create/drift/orphan/foreign) is UNCHANGED — only the desired SOURCE moved.
 
     .OUTPUTS
         A compl8.assessment/v1 object (see New-AssessmentObject / Test-AssessmentSchema).
@@ -234,42 +237,57 @@ function Invoke-Compl8Assess {
     }
 
     # ----------------------------------------------------------------- desired DLP rules/policies (DR-4)
-    # The CONFIG-BRIDGE SEAM. Resolve the desired rule/policy set from config, the same content the
-    # deploy path constructs (Resolve-DesiredDlpRules is shadow-proven against Deploy-DLPRules). The
-    # source is -ConfigRoot if supplied, else derived from the workspace; if no config dir exists at
-    # all we leave the desired set EMPTY so SIT-only fixtures emit no dlpRule/dlpPolicy buckets.
+    # DESIRED-RULE SOURCE (Stage-5 re-point, D7). The desired rule/policy set now comes FIRST from the
+    # persisted workspace projection desired/resolved/dlp-rules.json (written by Resolve-DesiredContent);
+    # the config bridge (Resolve-DesiredDlpRules) is the FALLBACK only when that file is absent. Either
+    # way the content is the same shape the deploy path constructs (Resolve-DesiredDlpRules is
+    # shadow-proven against Deploy-DLPRules). If neither yields a set we leave the desired set EMPTY so
+    # SIT-only fixtures emit no dlpRule/dlpPolicy buckets.
     #
-    # DRIFT-VS-UPDATE NOTE: assess cannot tell "desired (config) changed" from "tenant hand-edited"
-    # by content hash alone — both surface as a rule/policy that is ours, present in both, content
-    # differs. We bucket BOTH as 'drift' (matching the SIT drift semantics: ours + content-differs
-    # out-of-band vs desired/resolved); the reconciliation in either case is the same — push the
-    # desired content. There is no separate update-in-place bucket for rules/policies: a rule has no
-    # entity-GUID identity to "refit" the way a SIT rule package does, so an ours rule whose content
-    # diverges is uniformly drift.
+    # DRIFT-VS-UPDATE NOTE: assess cannot tell "desired changed" from "tenant hand-edited" by content
+    # hash alone — both surface as a rule/policy that is ours, present in both, content differs. We
+    # bucket BOTH as 'drift' (matching the SIT drift semantics: ours + content-differs out-of-band vs
+    # desired/resolved); the reconciliation in either case is the same — push the desired content.
+    # There is no separate update-in-place bucket for rules/policies: a rule has no entity-GUID identity
+    # to "refit" the way a SIT rule package does, so an ours rule whose content diverges is uniformly drift.
     $desiredRuleHashByName   = @{}
     $desiredPolicyByName     = @{}
-    $configSource = $null
-    if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
-        $configSource = $ConfigRoot
-    } else {
-        foreach ($candidate in @((Join-Path $WorkspacePath 'desired' 'config'), (Join-Path $WorkspacePath 'config'))) {
-            if (Test-Path -LiteralPath $candidate -PathType Container) { $configSource = $candidate; break }
-        }
-    }
-    # Did we resolve a desired DLP rule/policy set? When NO config source exists, assess does NOT
-    # bucket dlpRules/dlpPolicies AT ALL — not even foreign — so SIT-only fixtures/workspaces that
-    # carry no rule config produce an identical assessment to before DR-4 (the existing golden is
-    # untouched). Foreign rules only become asserted-never-actionable once we are actually diffing
-    # the rule layer (i.e. a desired set is present).
-    $haveDesiredRuleConfig = $false
-    if ($configSource -and (Test-Path -LiteralPath $configSource -PathType Container)) {
+    $haveDesiredRuleConfig   = $false
+
+    # SOURCE 1 — the persisted workspace projection (the re-point). Read it verbatim; no config touch.
+    $dlpRulesFile = Join-Path $resolvedDir 'dlp-rules.json'
+    if (Test-Path -LiteralPath $dlpRulesFile -PathType Leaf) {
         $haveDesiredRuleConfig = $true
-        $desired = Resolve-DesiredDlpRules -ConfigPath $configSource
-        foreach ($r in @($desired.Rules)) {
+        $dlpRulesDoc = Get-Content -LiteralPath $dlpRulesFile -Raw | ConvertFrom-Json
+        foreach ($r in @($dlpRulesDoc.rules)) {
             if ($r.ruleName) { $desiredRuleHashByName[[string]$r.ruleName] = [string]$r.contentHash }
         }
-        foreach ($p in @($desired.Policies)) {
+        foreach ($p in @($dlpRulesDoc.policies)) {
             if ($p.policyName) { $desiredPolicyByName[[string]$p.policyName] = $p }
+        }
+    } else {
+        # SOURCE 2/3 — config-bridge fallback: explicit -ConfigRoot, else a workspace config dir.
+        $configSource = $null
+        if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
+            $configSource = $ConfigRoot
+        } else {
+            foreach ($candidate in @((Join-Path $WorkspacePath 'desired' 'config'), (Join-Path $WorkspacePath 'config'))) {
+                if (Test-Path -LiteralPath $candidate -PathType Container) { $configSource = $candidate; break }
+            }
+        }
+        # When NO config source exists, assess does NOT bucket dlpRules/dlpPolicies AT ALL — not even
+        # foreign — so SIT-only fixtures/workspaces that carry no rule config produce an identical
+        # assessment to before DR-4. Foreign rules only become asserted-never-actionable once we are
+        # actually diffing the rule layer (i.e. a desired set is present).
+        if ($configSource -and (Test-Path -LiteralPath $configSource -PathType Container)) {
+            $haveDesiredRuleConfig = $true
+            $desired = Resolve-DesiredDlpRules -ConfigPath $configSource
+            foreach ($r in @($desired.Rules)) {
+                if ($r.ruleName) { $desiredRuleHashByName[[string]$r.ruleName] = [string]$r.contentHash }
+            }
+            foreach ($p in @($desired.Policies)) {
+                if ($p.policyName) { $desiredPolicyByName[[string]$p.policyName] = $p }
+            }
         }
     }
 

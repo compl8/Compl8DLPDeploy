@@ -16,6 +16,15 @@ function Resolve-DesiredContent {
         composed package over the 150 KB hard limit, or Test-SITRulePackageXml rejection.
         Soft signals (recorded in manifest warnings): merge conflicts, budget warnings,
         items dropped at the tenant package cap.
+
+        DLP-RULE DESIRED RE-POINT (Stage-5 D7). When -ConfigRoot is supplied, resolve ALSO projects
+        the DESIRED DLP rule/policy set from that config (via Resolve-DesiredDlpRules) and persists it
+        as desired/resolved/dlp-rules.json (schemaVersion compl8.dlp-rules/v1: the rule/policy list,
+        each rule carrying its Get-DlpRuleContentHash content hash). It is written into the SAME
+        atomic staging swap as the packages + manifest, so the workspace becomes self-contained:
+        Invoke-Compl8Assess reads the desired rules from this file instead of re-resolving config.
+        When -ConfigRoot is absent, no dlp-rules.json is written (SIT-only workspaces are unaffected,
+        and assess keeps its config-bridge fallback for the existing DR-4 fixtures).
     #>
     [CmdletBinding()]
     param(
@@ -26,7 +35,12 @@ function Resolve-DesiredContent {
         [string]$Prefix,
 
         [Parameter(Mandatory)]
-        [string]$Publisher
+        [string]$Publisher,
+
+        # The config source for the DESIRED DLP rule/policy set (the Stage-5 re-point seam). When
+        # supplied, the resolved desired rules are persisted to desired/resolved/dlp-rules.json so the
+        # workspace is self-contained for assess; when absent, no dlp-rules.json is written.
+        [string]$ConfigRoot
     )
 
     $releasePath = Join-Path $WorkspacePath 'desired' 'release'
@@ -171,6 +185,22 @@ function Resolve-DesiredContent {
             warnings      = $warnings
         }
         $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $staging 'resolve-manifest.json')
+
+        # DLP-rule desired re-point (D7): persist the desired DLP rule/policy set into the workspace
+        # so assess reads it from desired/resolved instead of re-resolving config. Written into the
+        # SAME staging swap so it lands atomically with the packages + manifest. Each rule carries its
+        # Get-DlpRuleContentHash content hash (already computed by Resolve-DesiredDlpRules).
+        if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
+            $desiredRules = Resolve-DesiredDlpRules -ConfigPath $ConfigRoot
+            $dlpRulesDoc = [pscustomobject]@{
+                schemaVersion = 'compl8.dlp-rules/v1'
+                generatedUtc  = $manifest.generatedUtc
+                configRoot    = $ConfigRoot
+                rules         = @($desiredRules.Rules)
+                policies      = @($desiredRules.Policies)
+            }
+            $dlpRulesDoc | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $staging 'dlp-rules.json') -Encoding UTF8
+        }
 
         if (Test-Path -LiteralPath $resolvedPath) {
             Remove-Item -LiteralPath $resolvedPath -Recurse -Force -Confirm:$false
