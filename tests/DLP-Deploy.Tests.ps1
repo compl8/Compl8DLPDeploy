@@ -807,8 +807,8 @@ Describe 'Deployment provenance stamps' {
     }
 
     It 'generates a deterministic id from identical inputs' {
-        $a = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'qfd' -Metadata @{ LabelCode='SENS_Fin' }
-        $b = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'qfd' -Metadata @{ LabelCode='SENS_Fin' }
+        $a = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'dev' -Metadata @{ LabelCode='SENS_Fin' }
+        $b = New-DeploymentProvenanceStamp -Prefix 'QGISCF' -Component 'DlpRule' -DeploymentId 'deploy-001' -TargetEnvironment 'dev' -Metadata @{ LabelCode='SENS_Fin' }
         $a | Should -Be $b
     }
 

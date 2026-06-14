@@ -64,19 +64,19 @@ Describe 'Compare-TenantConfigSkew' {
     It 'returns empty when no tenant dir exists' {
         $root = New-SkewRoot
         '{"a":1}' | Set-Content -LiteralPath (Join-Path $root 'config/classifiers.json') -Encoding UTF8
-        @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'ecq').Count | Should -Be 0
+        @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'demo').Count | Should -Be 0
         Remove-Item $root -Recurse -Force
     }
 
     It 'reports a changed value in a tenant override' {
         $root = New-SkewRoot
         $cfg = Join-Path $root 'config'
-        $tenant = Join-Path $cfg 'tenants/ecq'
+        $tenant = Join-Path $cfg 'tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
         '{"namingPrefix":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $cfg 'settings.json') -Encoding UTF8
-        '{"namingPrefix":"ECQ"}'    | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
+        '{"namingPrefix":"DEMO"}'    | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
 
-        $skew = @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'ecq')
+        $skew = @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'demo')
         $skew.Count | Should -Be 1
         $skew[0].file | Should -Be 'settings.json'
         $skew[0].path | Should -Be 'namingPrefix'
@@ -87,13 +87,13 @@ Describe 'Compare-TenantConfigSkew' {
     It 'ignores files the tenant does not override' {
         $root = New-SkewRoot
         $cfg = Join-Path $root 'config'
-        $tenant = Join-Path $cfg 'tenants/ecq'
+        $tenant = Join-Path $cfg 'tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
         '{"a":1}' | Set-Content -LiteralPath (Join-Path $cfg 'labels.json') -Encoding UTF8
         '{"namingPrefix":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $cfg 'settings.json') -Encoding UTF8
         '{"namingPrefix":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
 
-        @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'ecq').Count | Should -Be 0
+        @(Compare-TenantConfigSkew -ProjectRoot $root -Environment 'demo').Count | Should -Be 0
         Remove-Item $root -Recurse -Force
     }
 }
@@ -102,13 +102,13 @@ Describe 'Test-ConfigSkew.ps1' {
     It 'prints a skew line for a changed value and returns differences' {
         $root = Join-Path ([System.IO.Path]::GetTempPath()) ("skewscript-{0}" -f ([guid]::NewGuid().ToString('N')))
         $cfg = Join-Path $root 'config'
-        $tenant = Join-Path $cfg 'tenants/ecq'
+        $tenant = Join-Path $cfg 'tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
         '{"namingPrefix":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $cfg 'settings.json') -Encoding UTF8
-        '{"namingPrefix":"ECQ"}'    | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
+        '{"namingPrefix":"DEMO"}'    | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
 
         $scriptPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts' 'Test-ConfigSkew.ps1'
-        $out = & $scriptPath -ProjectRoot $root -Environment 'ecq' -NoExit
+        $out = & $scriptPath -ProjectRoot $root -Environment 'demo' -NoExit
         ($out -join "`n") | Should -Match 'namingPrefix'
         Remove-Item $root -Recurse -Force
     }

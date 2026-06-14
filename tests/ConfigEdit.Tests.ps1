@@ -40,8 +40,8 @@ Describe 'Set-ConfigValue' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cedit-{0}" -f ([guid]::NewGuid().ToString('N')))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         '{"namingPrefix":"X"}' | Set-Content -LiteralPath (Join-Path $dir 'settings.json') -Encoding UTF8
-        Set-ConfigValue -ConfigDir $dir -File 'settings.json' -Path 'namingPrefix' -Value 'ECQ' | Out-Null
-        (Get-Content -Raw (Join-Path $dir 'settings.json') | ConvertFrom-Json).namingPrefix | Should -Be 'ECQ'
+        Set-ConfigValue -ConfigDir $dir -File 'settings.json' -Path 'namingPrefix' -Value 'DEMO' | Out-Null
+        (Get-Content -Raw (Join-Path $dir 'settings.json') | ConvertFrom-Json).namingPrefix | Should -Be 'DEMO'
         Remove-Item $dir -Recurse -Force
     }
 }
@@ -50,11 +50,11 @@ Describe 'Copy-GlobalConfigToTenant' {
     It 'overwrites the tenant file with the global one' {
         $root = Join-Path ([System.IO.Path]::GetTempPath()) ("cpull-{0}" -f ([guid]::NewGuid().ToString('N')))
         $cfg = Join-Path $root 'config'
-        $tenant = Join-Path $cfg 'tenants/ecq'
+        $tenant = Join-Path $cfg 'tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
         '{"v":"GLOBAL"}' | Set-Content -LiteralPath (Join-Path $cfg 'labels.json') -Encoding UTF8
         '{"v":"OLD"}'    | Set-Content -LiteralPath (Join-Path $tenant 'labels.json') -Encoding UTF8
-        Copy-GlobalConfigToTenant -ProjectRoot $root -Environment 'ecq' -File 'labels.json' | Out-Null
+        Copy-GlobalConfigToTenant -ProjectRoot $root -Environment 'demo' -File 'labels.json' | Out-Null
         (Get-Content -Raw (Join-Path $tenant 'labels.json') | ConvertFrom-Json).v | Should -Be 'GLOBAL'
         Remove-Item $root -Recurse -Force
     }
@@ -63,7 +63,7 @@ Describe 'Copy-GlobalConfigToTenant' {
         $root = Join-Path ([System.IO.Path]::GetTempPath()) ("cpull2-{0}" -f ([guid]::NewGuid().ToString('N')))
         New-Item -ItemType Directory -Path (Join-Path $root 'config') -Force | Out-Null
         '{"v":1}' | Set-Content -LiteralPath (Join-Path $root 'config/labels.json') -Encoding UTF8
-        { Copy-GlobalConfigToTenant -ProjectRoot $root -Environment 'ecq' -File 'labels.json' -ErrorAction Stop } | Should -Throw
+        { Copy-GlobalConfigToTenant -ProjectRoot $root -Environment 'demo' -File 'labels.json' -ErrorAction Stop } | Should -Throw
         Remove-Item $root -Recurse -Force
     }
 }

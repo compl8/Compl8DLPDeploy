@@ -231,7 +231,7 @@ pwsh -File scripts/Deploy-Classifiers.ps1 -Action RefitPlan -Connect -UPN admin@
 For customer rollouts, prefer a single connected chain so the SCC/IPPS login is only requested once and the same tenant fingerprint is carried through each phase:
 
 ```powershell
-pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant ecq.qld.gov.au -TargetEnvironment ecq-qld-gov-au -Prefix ECQ -Phase Classifiers -Greenfield -WhatIf
+pwsh -File scripts/Invoke-FullDeployment.ps1 -Tenant demo.qld.gov.au -TargetEnvironment demo-qld-gov-au -Prefix DEMO -Phase Classifiers -Greenfield -WhatIf
 ```
 
 If the tenant already has custom classifier packages, do not use `-Greenfield` unless the tenant is confirmed clean for this deployment. Generate a refit plan instead:
@@ -289,7 +289,7 @@ The default output is `dist/Compl8DLPDeploy-2026-05-21-refit-rollout.zip`. Gener
 
 ## Rollout Evidence
 
-Operational reports are generated under `reports/` and are intentionally not included in the generic release package. For the current nonprod validation and ECQ dry-run work, see `reports/production-readiness/20260521_classifier-refit-rollout.md`.
+Operational reports are generated under `reports/` and are intentionally not included in the generic release package. For the current nonprod validation and DEMO dry-run work, see `reports/production-readiness/20260521_classifier-refit-rollout.md`.
 
 ## The Input Spreadsheet
 
