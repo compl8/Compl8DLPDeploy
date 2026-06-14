@@ -1779,3 +1779,34 @@ Describe 'Invoke-Compl8AutoLabelExecutor — SHADOW PARITY vs Deploy-AutoLabelin
     }
 }
 
+# =================================================================================================
+# PARAMETER-ORDER GUARD (codex 5A re-review) — the optional -ProvenanceRegistryPath was originally
+# inserted in the MIDDLE of these signatures, which (if any optional param were ever given an explicit
+# position, or callers relied on implicit positional binding) would shift the slots of -SleepAction /
+# -WhatIf and let a positionally-passed sleep scriptblock coerce into the [string] registry path. The
+# fix moved -ProvenanceRegistryPath to the END of every affected param block so NO existing slot moves.
+# This guard LOCKS that invariant: the optional registry-path param must remain the LAST declared
+# (non-common) parameter of each executor, so a re-introduced mid-insertion fails the suite.
+#
+# A direct positional call (e.g. `Invoke-Compl8DictionaryExecutor $step $content $prefix $env $sleep`)
+# is NOT used to assert this: only -Step carries an explicit [Parameter(Position=0)], so these
+# functions expose just one positional slot and a multi-arg positional call cannot bind by design.
+# The declaration-order invariant is the precise, durable check for the slot-stability contract.
+Describe 'parameter-order guard — -ProvenanceRegistryPath stays last (preserve positional slots)' {
+    It '<Function> declares -ProvenanceRegistryPath as its LAST declared parameter' -ForEach @(
+        @{ Function = 'Invoke-Compl8DictionaryExecutor' }
+        @{ Function = 'Invoke-Compl8LabelExecutor' }
+        @{ Function = 'Invoke-Compl8DlpRuleExecutor' }
+        @{ Function = 'Invoke-Compl8AutoLabelExecutor' }
+        @{ Function = 'Get-Compl8ExecutorMap' }
+    ) {
+        # Read declaration order straight from the function AST's param() block — the ground truth for
+        # source order, with NO common-parameter noise (common params are not declared in param()).
+        $cmd = Get-Command -Name $Function -Module Compl8.Engine -ErrorAction Stop
+        $declared = @($cmd.ScriptBlock.Ast.Body.ParamBlock.Parameters |
+            ForEach-Object { $_.Name.VariablePath.UserPath })
+        $declared | Should -Contain 'ProvenanceRegistryPath' -Because 'the param must still exist (no rename/drop)'
+        $declared[-1] | Should -Be 'ProvenanceRegistryPath' -Because 'it must be the LAST declared param so no existing positional slot shifts'
+    }
+}
+

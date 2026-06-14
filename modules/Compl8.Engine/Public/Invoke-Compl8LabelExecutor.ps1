@@ -119,10 +119,6 @@ function Invoke-Compl8LabelExecutor {
 
         [string]$TargetEnvironment,
 
-        # Optional workspace provenance registry path threaded to Add-DeploymentProvenanceStamp
-        # -RegistryPath; absent => repo/env default (unchanged). (Stage 5 D8; codex 5A review.)
-        [string]$ProvenanceRegistryPath,
-
         [hashtable]$ParentGuidCache,
 
         [hashtable]$ExistingState = @{},
@@ -131,7 +127,12 @@ function Invoke-Compl8LabelExecutor {
 
         [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
 
-        [switch]$WhatIf
+        [switch]$WhatIf,
+
+        # Optional workspace provenance registry path threaded to Add-DeploymentProvenanceStamp
+        # -RegistryPath; absent => repo/env default (unchanged). (Stage 5 D8; codex 5A review.)
+        # NOTE: declared LAST so inserting it does not shift any existing positional slot.
+        [string]$ProvenanceRegistryPath
     )
 
     $action     = [string]$Step.action

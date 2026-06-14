@@ -104,15 +104,17 @@ function Invoke-Compl8DictionaryExecutor {
 
         [string]$TargetEnvironment,
 
+        [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
+
+        [switch]$WhatIf,
+
         # Optional provenance registry path (the workspace's history/applies/provenance.json). When
         # supplied it is threaded to Add-DeploymentProvenanceStamp -RegistryPath so this apply's
         # provenance entry is written to the WORKSPACE registry rather than the repo/env default.
         # Absent => unchanged behaviour. (Stage 5 D8; codex 5A review.)
-        [string]$ProvenanceRegistryPath,
-
-        [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
-
-        [switch]$WhatIf
+        # NOTE: declared LAST so inserting it does not shift any existing positional slot (-SleepAction
+        # / -WhatIf keep their positions; a positional sleep scriptblock still binds to -SleepAction).
+        [string]$ProvenanceRegistryPath
     )
 
     $action    = [string]$Step.action

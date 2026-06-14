@@ -136,8 +136,6 @@ function Get-Compl8ExecutorMap {
 
         [string]$TargetEnvironment,
 
-        [string]$ProvenanceRegistryPath,
-
         [object[]]$DictionaryInventory = @(),
 
         [object[]]$TenantSitInventory = @(),
@@ -160,7 +158,11 @@ function Get-Compl8ExecutorMap {
 
         [string]$SnapshotWorkspacePath,
 
-        [string]$SnapshotTimestamp
+        [string]$SnapshotTimestamp,
+
+        # Declared LAST so inserting it does not shift any existing positional slot (see .PARAMETER
+        # ProvenanceRegistryPath above for the full contract). (Stage 5 D8; codex 5A re-review.)
+        [string]$ProvenanceRegistryPath
     )
 
     # ---- RULE-PACKAGE SLOT ACCOUNTING (capacity-gate inputs for the rulePackage closure) ---------
