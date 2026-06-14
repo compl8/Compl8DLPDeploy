@@ -1261,10 +1261,17 @@ function ConvertFrom-DeploymentProvenanceFieldValue {
 function Resolve-DeploymentProvenanceRegistryPath {
     <#
     .SYNOPSIS
-        Resolves the provenance registry file path: explicit override > env var > repo default.
+        Resolves the provenance registry file path: workspace history > explicit override > env var
+        > repo default (Stage-5 re-point D8).
     #>
-    param([string]$RegistryPath)
+    param(
+        [string]$RegistryPath,
+        [string]$WorkspacePath
+    )
 
+    if (-not [string]::IsNullOrWhiteSpace($WorkspacePath)) {
+        return Join-Path (Join-Path (Join-Path $WorkspacePath "history") "applies") "provenance.json"
+    }
     if (-not [string]::IsNullOrWhiteSpace($RegistryPath)) { return $RegistryPath }
     if (-not [string]::IsNullOrWhiteSpace($env:COMPL8_PROVENANCE_REGISTRY)) { return $env:COMPL8_PROVENANCE_REGISTRY }
     return Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "reports") "provenance-registry.json"
