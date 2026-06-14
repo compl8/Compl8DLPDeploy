@@ -119,6 +119,10 @@ function Invoke-Compl8LabelExecutor {
 
         [string]$TargetEnvironment,
 
+        # Optional workspace provenance registry path threaded to Add-DeploymentProvenanceStamp
+        # -RegistryPath; absent => repo/env default (unchanged). (Stage 5 D8; codex 5A review.)
+        [string]$ProvenanceRegistryPath,
+
         [hashtable]$ParentGuidCache,
 
         [hashtable]$ExistingState = @{},
@@ -219,6 +223,7 @@ function Invoke-Compl8LabelExecutor {
             Metadata  = @{ Scope = $scope }
         }
         if ($TargetEnvironment) { $policyStampArgs['TargetEnvironment'] = $TargetEnvironment }
+        if ($ProvenanceRegistryPath) { $policyStampArgs['RegistryPath'] = $ProvenanceRegistryPath }
         $policyComment = Add-DeploymentProvenanceStamp @policyStampArgs
 
         # Existence probe.
@@ -317,6 +322,7 @@ function Invoke-Compl8LabelExecutor {
         Metadata  = @{ LabelCode = $code; LabelName = $name }
     }
     if ($TargetEnvironment) { $stampArgs['TargetEnvironment'] = $TargetEnvironment }
+    if ($ProvenanceRegistryPath) { $stampArgs['RegistryPath'] = $ProvenanceRegistryPath }
     $stampedComment = Add-DeploymentProvenanceStamp @stampArgs
 
     # ---- common label parameters -----------------------------------------------------------------

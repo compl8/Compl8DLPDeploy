@@ -48,6 +48,16 @@ function Get-Compl8ExecutorMap {
     .PARAMETER TargetEnvironment
         Optional environment key forwarded to the executors' provenance stamps.
 
+    .PARAMETER ProvenanceRegistryPath
+        Optional provenance registry path bound into EVERY stamping executor closure (dictionary, label,
+        labelPolicy, dlpRule, dlpPolicy, autoLabelPolicy — the rulePackage / sit / tenant executors do NOT
+        stamp provenance). This is the SEAM the production wiring uses to make a workspace apply write its
+        provenance to the workspace's one-writer history file: pass Context.ProvenanceRegistryPath (from
+        New-Compl8Context, = <ws>/history/applies/provenance.json) and each closure threads it to its
+        executor's -ProvenanceRegistryPath -> Add-DeploymentProvenanceStamp -RegistryPath. When OMITTED the
+        registry resolves via the existing precedence ($env:COMPL8_PROVENANCE_REGISTRY else the repo
+        default) — so every existing caller and test is unaffected. (Stage 5 D8; codex 5A review.)
+
     .PARAMETER DictionaryInventory
         Tenant keyword-dictionary inventory (objects with a Guid), forwarded to the rule-package
         executor's dictionary-reference assertion gate.
@@ -125,6 +135,8 @@ function Get-Compl8ExecutorMap {
         [string]$Prefix,
 
         [string]$TargetEnvironment,
+
+        [string]$ProvenanceRegistryPath,
 
         [object[]]$DictionaryInventory = @(),
 
@@ -235,7 +247,8 @@ function Get-Compl8ExecutorMap {
         dictionary = {
             param($Step)
             Invoke-Compl8DictionaryExecutor -Step $Step -Content (& $resolveContent $Step) `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         rulePackage = {
@@ -293,35 +306,38 @@ function Get-Compl8ExecutorMap {
             param($Step)
             Invoke-Compl8LabelExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -Prefix $Prefix -TargetEnvironment $TargetEnvironment -ParentGuidCache $parentGuidCache `
-                -SleepAction $SleepAction
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         labelPolicy = {
             param($Step)
             Invoke-Compl8LabelExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -Prefix $Prefix -TargetEnvironment $TargetEnvironment -ParentGuidCache $parentGuidCache `
-                -SleepAction $SleepAction
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         dlpRule = {
             param($Step)
             Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         dlpPolicy = {
             param($Step)
             Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         autoLabelPolicy = {
             param($Step)
             Invoke-Compl8AutoLabelExecutor -Step $Step -Content (& $resolveContent $Step) `
                 -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment -SleepAction $SleepAction
+                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
         }.GetNewClosure()
 
         tenant = $snapshotExec

@@ -111,6 +111,26 @@ Describe 'Compl8.Model provenance round-trip (standalone, no DLP-Deploy)' {
         (Get-DeploymentProvenanceRegistryEntry -Id 'abc123' -RegistryPath $explicit).prefix | Should -Be 'P'
     }
 
+    It 'Add-DeploymentProvenanceStamp -RegistryPath writes the entry to THAT path, not the env default (P2)' {
+        # The env-default registry (set in BeforeEach) must stay UNTOUCHED; the explicit -RegistryPath
+        # is where the provenance entry lands — the seam Convert-ToWorkspace/New-Compl8Context threads
+        # so a workspace apply writes provenance into <ws>/history/applies/provenance.json.
+        $envDefault = $script:RegistryPath
+        $explicit   = Join-Path $TestDrive ("ws-prov-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+
+        $stamp = Add-DeploymentProvenanceStamp -Text 'Managed rule' -Prefix 'QGISCF' -Component 'DlpRule' `
+            -DeploymentId 'd-ws' -RegistryPath $explicit
+        $stamp | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]'
+
+        # The entry is in the EXPLICIT registry...
+        Test-Path -LiteralPath $explicit | Should -BeTrue
+        $reg = Read-DeploymentProvenanceRegistry -RegistryPath $explicit
+        @($reg.entries.Keys).Count | Should -BeGreaterThan 0
+
+        # ...and the env-default registry was NOT written (no fall-through to the default).
+        Test-Path -LiteralPath $envDefault | Should -BeFalse
+    }
+
     It 'decodes a legacy long-form marker without a registry (private decode helper resolves)' {
         $legacy = '[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=one;environment=nonprod]]'
         $parsed = Get-DeploymentProvenanceStamp -Text "Human comment`n$legacy"

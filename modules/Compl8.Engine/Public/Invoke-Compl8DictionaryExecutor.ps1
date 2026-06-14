@@ -104,6 +104,12 @@ function Invoke-Compl8DictionaryExecutor {
 
         [string]$TargetEnvironment,
 
+        # Optional provenance registry path (the workspace's history/applies/provenance.json). When
+        # supplied it is threaded to Add-DeploymentProvenanceStamp -RegistryPath so this apply's
+        # provenance entry is written to the WORKSPACE registry rather than the repo/env default.
+        # Absent => unchanged behaviour. (Stage 5 D8; codex 5A review.)
+        [string]$ProvenanceRegistryPath,
+
         [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
 
         [switch]$WhatIf
@@ -205,6 +211,7 @@ function Invoke-Compl8DictionaryExecutor {
         Metadata  = $metadata
     }
     if ($TargetEnvironment) { $stampArgs['TargetEnvironment'] = $TargetEnvironment }
+    if ($ProvenanceRegistryPath) { $stampArgs['RegistryPath'] = $ProvenanceRegistryPath }
     $stampedDescription = Add-DeploymentProvenanceStamp @stampArgs
 
     # The Purview-safe term bytes (UTF-16LE + BOM via a temp file, matching the old path's $toBytes).

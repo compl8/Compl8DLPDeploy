@@ -130,6 +130,10 @@ function Invoke-Compl8DlpRuleExecutor {
 
         [string]$TargetEnvironment,
 
+        # Optional workspace provenance registry path threaded to Add-DeploymentProvenanceStamp
+        # -RegistryPath; absent => repo/env default (unchanged). (Stage 5 D8; codex 5A review.)
+        [string]$ProvenanceRegistryPath,
+
         [hashtable]$ExistingState = @{},
 
         [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
@@ -313,7 +317,8 @@ function Invoke-Compl8DlpRuleExecutor {
         $policyComment = Add-DeploymentProvenanceStamp `
             -Text $(if ($Content.PSObject.Properties['comment']) { [string]$Content.comment } else { '' }) `
             -Prefix $(if ($Prefix) { $Prefix } else { 'UNSCOPED' }) -Component 'DlpPolicy' `
-            -TargetEnvironment $TargetEnvironment -Metadata @{ PolicyName = $name }
+            -TargetEnvironment $TargetEnvironment -Metadata @{ PolicyName = $name } `
+            -RegistryPath $ProvenanceRegistryPath
 
         if ($existing) {
             Invoke-WithRetry -OperationName "Set-Policy $name" -ScriptBlock {
@@ -370,7 +375,8 @@ function Invoke-Compl8DlpRuleExecutor {
     $ruleComment = Add-DeploymentProvenanceStamp `
         -Text $(if ($Content.PSObject.Properties['comment']) { [string]$Content.comment } else { '' }) `
         -Prefix $(if ($Prefix) { $Prefix } else { 'UNSCOPED' }) -Component 'DlpRule' `
-        -TargetEnvironment $TargetEnvironment -Metadata @{ RuleName = $name }
+        -TargetEnvironment $TargetEnvironment -Metadata @{ RuleName = $name } `
+        -RegistryPath $ProvenanceRegistryPath
 
     $condition = if ($Content.PSObject.Properties['condition']) { $Content.condition } else { $null }
     $policyName = if ($Content.PSObject.Properties['policy']) { [string]$Content.policy } else { '' }

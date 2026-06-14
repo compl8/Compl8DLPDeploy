@@ -9,7 +9,13 @@ function New-DeploymentProvenanceStamp {
         [Parameter(Mandatory)][string]$Component,
         [string]$DeploymentId,
         [string]$TargetEnvironment,
-        [hashtable]$Metadata = @{}
+        [hashtable]$Metadata = @{},
+
+        # Optional explicit provenance registry path; forwarded to Set-DeploymentProvenanceRegistryEntry
+        # so the entry lands at THIS registry (e.g. a workspace's history/applies/provenance.json). When
+        # absent the registry resolves via the existing precedence (env var else repo default) — UNCHANGED
+        # for every current caller. (Stage 5 D8 re-point; codex 5A review.)
+        [string]$RegistryPath
     )
 
     if ([string]::IsNullOrWhiteSpace($DeploymentId)) {
@@ -42,7 +48,9 @@ function New-DeploymentProvenanceStamp {
         environment  = if ($fields.Contains('environment')) { $fields.environment } else { $null }
         fields       = $fields
     }
-    Set-DeploymentProvenanceRegistryEntry -Id $id -Entry $entry
+    $setArgs = @{ Id = $id; Entry = $entry }
+    if (-not [string]::IsNullOrWhiteSpace($RegistryPath)) { $setArgs['RegistryPath'] = $RegistryPath }
+    Set-DeploymentProvenanceRegistryEntry @setArgs
 
     return "[[Compl8:$id]]"
 }

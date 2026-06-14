@@ -306,6 +306,38 @@ Describe 'Get-Compl8ExecutorMap — assembles the production map (objectType -> 
         Should -Invoke -ModuleName Compl8.Engine New-DlpKeywordDictionary -Times 1
     }
 
+    It '[P2] threads -ProvenanceRegistryPath so a stamping executor writes provenance to the WORKSPACE registry, not the repo/env default' {
+        # The workspace provenance registry (<ws>/history/applies/provenance.json). The map must thread
+        # this into the executor closures so the dictionary executor's provenance stamp lands HERE — not
+        # in the env-default registry ($env:COMPL8_PROVENANCE_REGISTRY set in BeforeAll).
+        $wsRegistry = Join-Path $TestDrive ("ws-{0}" -f ([guid]::NewGuid().ToString('N'))) |
+            ForEach-Object { Join-Path $_ 'history' 'applies' 'provenance.json' }
+        $envDefault = $env:COMPL8_PROVENANCE_REGISTRY
+
+        Mock -ModuleName Compl8.Engine Get-DlpKeywordDictionary { @() }
+        Mock -ModuleName Compl8.Engine New-DlpKeywordDictionary { [pscustomobject]@{ Identity = 'g-ws'; Name = $Name } }
+        $step = [pscustomobject]@{ id = 's01'; action = 'create'; objectType = 'dictionary'; objectRef = '{{DICT_WS}}'; dependsOn = @(); impact = @(); gate = $null }
+        $content = @{ s01 = [pscustomobject]@{ placeholder = '{{DICT_WS}}'; name = 'QGISCF - WS'; description = 'd'; terms = @('a'); termsBytes = 100 } }
+
+        $map = Get-Compl8ExecutorMap -StepContent $content -Prefix 'QGISCF' -SleepAction { param($s) } `
+            -ProvenanceRegistryPath $wsRegistry
+
+        $result = & $map['dictionary'] $step
+        $result.status | Should -Be 'created'
+        $result.stampedDescription | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]'
+
+        # The provenance entry is in the WORKSPACE registry...
+        Test-Path -LiteralPath $wsRegistry | Should -BeTrue
+        $reg = Read-DeploymentProvenanceRegistry -RegistryPath $wsRegistry
+        @($reg.entries.Keys).Count | Should -BeGreaterThan 0
+
+        # ...and the env-default registry did NOT receive this stamp's entry.
+        if (Test-Path -LiteralPath $envDefault) {
+            $defReg = Read-DeploymentProvenanceRegistry -RegistryPath $envDefault
+            @($defReg.entries.Keys) | Should -Not -Contain @($reg.entries.Keys)[0]
+        }
+    }
+
     It 'the default tenant snapshot executor writes actual/ via the Tenant reader' {
         $wr = Join-Path ([System.IO.Path]::GetTempPath()) ("compl8map-snap-" + [guid]::NewGuid())
         try {

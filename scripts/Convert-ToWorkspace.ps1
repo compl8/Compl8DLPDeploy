@@ -69,6 +69,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ── -Environment safety validation (P1; codex 5A review) ─────────────────────
+# MUST run BEFORE the workspace path is computed and BEFORE ANYTHING destructive (the -Force
+# recursive delete below). A mistyped -Environment that contains a path separator or '..' would make
+# `Join-Path $WorkspaceRoot $Environment` resolve OUTSIDE the intended workspace, and the -Force delete
+# could then remove an UNRELATED directory. So the env key is rejected here unless it is a simple safe
+# token. Reject when it is: empty/whitespace; contains a path separator ('/' or '\'); contains '..';
+# or is not the safe token ^[A-Za-z0-9][A-Za-z0-9._-]*$. The error NAMES the bad value. (A defensive
+# under-WorkspaceRoot check on the resolved path follows once the roots are known, below.)
+if ([string]::IsNullOrWhiteSpace($Environment)) {
+    throw "Convert-ToWorkspace: -Environment is empty/whitespace, which is unsafe (it would not resolve to a per-environment workspace). Supply a simple environment key (e.g. nonprod, ecq)."
+}
+if ($Environment -match '[\\/]') {
+    throw "Convert-ToWorkspace: -Environment '$Environment' is unsafe — it contains a path separator ('/' or '\'). The environment key must be a single path segment so the workspace stays under the workspace root. Supply a simple key (e.g. nonprod)."
+}
+if ($Environment -match '\.\.') {
+    throw "Convert-ToWorkspace: -Environment '$Environment' is unsafe — it contains '..' (parent traversal), which could resolve OUTSIDE the workspace root and let -Force delete an unrelated directory. Supply a simple key (e.g. nonprod)."
+}
+if ($Environment -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "Convert-ToWorkspace: -Environment '$Environment' is unsafe — it is not a simple environment key. Use only letters, digits, '.', '_' and '-' (starting with a letter or digit), e.g. nonprod or ecq-1."
+}
+
 # ── Module load (helpers live in Compl8.Tenant) ──────────────────────────────
 $repoForModules = if ($RepoRoot) { $RepoRoot } else { Split-Path $PSScriptRoot -Parent }
 $tenantModule = Join-Path $repoForModules 'modules' 'Compl8.Tenant'
@@ -84,6 +105,17 @@ if (-not $WorkspaceRoot) {
     $WorkspaceRoot = if ($env:COMPL8_WORKSPACE_ROOT) { $env:COMPL8_WORKSPACE_ROOT } else { Join-Path $RepoRoot 'workspaces' }
 }
 $workspacePath = Join-Path $WorkspaceRoot $Environment
+
+# ── Defensive containment check (P1; belt-and-braces over the token validation above) ────────
+# Confirm the resolved workspace path is STRICTLY under the workspace root before anything destructive
+# can touch it. Compare NORMALISED full paths (GetFullPath collapses any '.'/'..' segments) so even a
+# pathological -WorkspaceRoot/-Environment combination cannot point the -Force delete outside the root.
+$normalizedRoot = [System.IO.Path]::GetFullPath($WorkspaceRoot)
+$normalizedWs   = [System.IO.Path]::GetFullPath($workspacePath)
+$rootPrefix = $normalizedRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+if (-not $normalizedWs.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Convert-ToWorkspace: the resolved workspace path '$normalizedWs' (for -Environment '$Environment') is unsafe — it is NOT strictly under the workspace root '$normalizedRoot'. Refusing before any destructive operation."
+}
 
 $configRoot = Join-Path $RepoRoot 'config'
 

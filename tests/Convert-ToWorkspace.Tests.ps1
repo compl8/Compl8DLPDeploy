@@ -312,6 +312,80 @@ Describe 'Convert-ToWorkspace — helper: ConvertFrom-LegacyTenantSits' {
     }
 }
 
+Describe 'Convert-ToWorkspace — -Environment validation (P1 safety: reject unsafe keys BEFORE any destructive op)' {
+    # An unsafe -Environment must be rejected at the TOP of the script — before the workspace path is
+    # computed or the -Force recursive delete is reachable. A `..` or a path separator could otherwise
+    # make Join-Path $WorkspaceRoot $Environment resolve OUTSIDE the intended workspace and let -Force
+    # delete an unrelated directory. The no-delete proof plants a SENTINEL dir a traversal env would
+    # reach and asserts it (and the real workspace) survive a throwing run with -Force.
+
+    It 'rejects -Environment ".." with a clear error naming the bad value and DELETES NOTHING' {
+        $base   = Join-Path $TestDrive 'p1-dotdot'
+        $repo   = Join-Path $base 'repo'
+        Copy-Item -LiteralPath $script:FixtureSrc -Destination $repo -Recurse -Force
+        $wsRoot = Join-Path $base 'workspaces'
+
+        # SENTINEL: a dir SIBLING to the workspace root that `..` traversal (Join-Path $wsRoot '..')
+        # resolves into — it MUST survive.
+        $sentinel = Join-Path $base 'sentinel-keepme'
+        New-Item -ItemType Directory -Path $sentinel -Force | Out-Null
+        $sentinelFile = Join-Path $sentinel 'precious.txt'
+        Set-Content -LiteralPath $sentinelFile -Value 'do-not-delete' -Encoding UTF8
+
+        # Even WITH -Force the validation must fire first; the message must flag the env as unsafe AND
+        # echo the bad value. (The distinctive 'unsafe' marker proves it is the SAFETY rejection, not an
+        # incidental downstream error such as 'no entry for environment ..'.)
+        { & $script:ScriptPath -Environment '..' -RepoRoot $repo -WorkspaceRoot $wsRoot -GeneratedUtc $script:Stamp -Force } |
+            Should -Throw "*'..' is unsafe*"
+
+        # NO delete happened: the sentinel and its file are untouched.
+        Test-Path -LiteralPath $sentinelFile | Should -BeTrue
+        (Get-Content -LiteralPath $sentinelFile -Raw).Trim() | Should -Be 'do-not-delete'
+    }
+
+    It 'rejects -Environment "a/b" (path separator) with the VALIDATION error and DELETES NOTHING' {
+        $base   = Join-Path $TestDrive 'p1-slash'
+        $repo   = Join-Path $base 'repo'
+        Copy-Item -LiteralPath $script:FixtureSrc -Destination $repo -Recurse -Force
+        $wsRoot = Join-Path $base 'workspaces'
+        $sentinel = Join-Path $wsRoot 'a'
+        New-Item -ItemType Directory -Path $sentinel -Force | Out-Null
+        $sentinelFile = Join-Path $sentinel 'keep.txt'
+        Set-Content -LiteralPath $sentinelFile -Value 'keep' -Encoding UTF8
+
+        # Must be the explicit SAFETY rejection (the 'unsafe' marker + the bad value), NOT an incidental
+        # downstream error such as 'no entry for environment a/b'.
+        { & $script:ScriptPath -Environment 'a/b' -RepoRoot $repo -WorkspaceRoot $wsRoot -GeneratedUtc $script:Stamp -Force } |
+            Should -Throw "*'a/b' is unsafe*"
+
+        Test-Path -LiteralPath $sentinelFile | Should -BeTrue
+    }
+
+    It 'rejects -Environment "a\b" (backslash separator) with the VALIDATION error before any work' {
+        $base   = Join-Path $TestDrive 'p1-backslash'
+        $repo   = Join-Path $base 'repo'
+        Copy-Item -LiteralPath $script:FixtureSrc -Destination $repo -Recurse -Force
+        $wsRoot = Join-Path $base 'workspaces'
+        { & $script:ScriptPath -Environment 'a\b' -RepoRoot $repo -WorkspaceRoot $wsRoot -GeneratedUtc $script:Stamp -Force } |
+            Should -Throw "*is unsafe*path separator*"
+    }
+
+    It 'rejects an empty -Environment with the VALIDATION error' {
+        $base   = Join-Path $TestDrive 'p1-empty'
+        $repo   = Join-Path $base 'repo'
+        Copy-Item -LiteralPath $script:FixtureSrc -Destination $repo -Recurse -Force
+        $wsRoot = Join-Path $base 'workspaces'
+        { & $script:ScriptPath -Environment '   ' -RepoRoot $repo -WorkspaceRoot $wsRoot -GeneratedUtc $script:Stamp -Force } |
+            Should -Throw "*unsafe*"
+    }
+
+    It 'still accepts a normal safe environment key (regression guard)' {
+        $base = Join-Path $TestDrive 'p1-ok'
+        $mig  = Invoke-FixtureMigration -Dest $base -Environment 'nonprod'
+        Test-Path -LiteralPath (Join-Path $mig.WorkspacePath 'tenant.json') | Should -BeTrue
+    }
+}
+
 Describe 'Convert-ToWorkspace — helper: New-WorkspaceTenantJson' {
     BeforeAll {
         Import-Module $script:TenantDir -Force

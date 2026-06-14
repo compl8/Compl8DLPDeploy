@@ -125,6 +125,10 @@ function Invoke-Compl8AutoLabelExecutor {
 
         [string]$TargetEnvironment,
 
+        # Optional workspace provenance registry path threaded to Add-DeploymentProvenanceStamp
+        # -RegistryPath; absent => repo/env default (unchanged). (Stage 5 D8; codex 5A review.)
+        [string]$ProvenanceRegistryPath,
+
         [hashtable]$ExistingState = @{},
 
         [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
@@ -298,7 +302,8 @@ function Invoke-Compl8AutoLabelExecutor {
         $policyComment = Add-DeploymentProvenanceStamp `
             -Text $(if ($Content.PSObject.Properties['comment']) { [string]$Content.comment } else { '' }) `
             -Prefix $(if ($Prefix) { $Prefix } else { 'UNSCOPED' }) -Component 'AutoLabelPolicy' `
-            -TargetEnvironment $TargetEnvironment -Metadata @{ PolicyName = $name }
+            -TargetEnvironment $TargetEnvironment -Metadata @{ PolicyName = $name } `
+            -RegistryPath $ProvenanceRegistryPath
 
         $existing = $null
         try { $existing = Get-AutoSensitivityLabelPolicy -Identity $name -ErrorAction Stop } catch { $existing = $null }
@@ -365,7 +370,8 @@ function Invoke-Compl8AutoLabelExecutor {
         $ruleComment = Add-DeploymentProvenanceStamp `
             -Text $(if ($Content.PSObject.Properties['comment']) { "$([string]$Content.comment)$chunkNote" } else { $chunkNote }) `
             -Prefix $(if ($Prefix) { $Prefix } else { 'UNSCOPED' }) -Component 'AutoLabelRule' `
-            -TargetEnvironment $TargetEnvironment -Metadata @{ RuleName = $ruleName; Chunk = ($i + 1) }
+            -TargetEnvironment $TargetEnvironment -Metadata @{ RuleName = $ruleName; Chunk = ($i + 1) } `
+            -RegistryPath $ProvenanceRegistryPath
 
         $condition = New-Compl8SitCondition -ClassifierChunk $chunk
         $ruleParams = @{

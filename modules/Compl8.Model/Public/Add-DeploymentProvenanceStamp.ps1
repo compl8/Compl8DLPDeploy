@@ -11,10 +11,25 @@ function Add-DeploymentProvenanceStamp {
         [string]$DeploymentId,
         [string]$TargetEnvironment,
         [hashtable]$Metadata = @{},
-        [int]$MaxLength = 1000
+        [int]$MaxLength = 1000,
+
+        # Optional explicit provenance registry path. When supplied it is threaded to
+        # New-DeploymentProvenanceStamp -> Set-DeploymentProvenanceRegistryEntry so the entry is written
+        # to THIS registry (e.g. a workspace's <ws>/history/applies/provenance.json). When ABSENT the
+        # behaviour is UNCHANGED — the registry resolves to $env:COMPL8_PROVENANCE_REGISTRY else the repo
+        # default — so every existing caller is unaffected. (Stage 5 D8 workspace re-point; codex 5A review.)
+        [string]$RegistryPath
     )
 
-    $stamp = New-DeploymentProvenanceStamp -Prefix $Prefix -Component $Component -DeploymentId $DeploymentId -TargetEnvironment $TargetEnvironment -Metadata $Metadata
+    $newStampArgs = @{
+        Prefix            = $Prefix
+        Component         = $Component
+        DeploymentId      = $DeploymentId
+        TargetEnvironment = $TargetEnvironment
+        Metadata          = $Metadata
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RegistryPath)) { $newStampArgs['RegistryPath'] = $RegistryPath }
+    $stamp = New-DeploymentProvenanceStamp @newStampArgs
     $shortPattern = '\[\[Compl8:[0-9a-f]{16}\]\]'
     $longPattern  = '\[\[Compl8DLPDeploy:provenance:v\d+(?:;[A-Za-z][A-Za-z0-9_]*=[^\]\r\n;]*)*\]\]'
     $cleanText = ""
