@@ -1,0 +1,10 @@
+{
+  "defaultEnvironment": "nonprod",
+  "environments": {
+    "nonprod": {
+      "mode": "block",
+      "tenantId": "de93acc9-777c-4ac2-bbd6-262fe9063bf5",
+      "name": "Contoso NonProd"
+    }
+  }
+}
