@@ -59,10 +59,13 @@ BeforeAll {
                 Policy   = 'P01-MED-QGISCF-EXT'
                 Priority = 0
                 Disabled = $false
-                # codex review P1: DLP-rule ownership is the provenance stamp on the Comment, not the
-                # name prefix — carry a real '[[Compl8:...]]' marker so this stays ours under the new
-                # discriminator (Test-OursDlp).
-                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8:0123456789abcdef]]"
+                # codex review (prefix-scoping P1): DLP-rule ownership is the provenance stamp on the
+                # Comment AND its prefix must equal THIS inventory's prefix. A bare short marker
+                # ('[[Compl8:<hex>]]') is registry-resolved and Unresolved without a seeded registry, so
+                # carry a SELF-CONTAINED long-form stamp bearing prefix=QGISCF (the inventory prefix) —
+                # which resolves inline and keeps this rule legitimately ours under the corrected,
+                # prefix-validated discriminator (Test-OursDlp) without depending on a seeded registry.
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=20260614;environment=nonprod]]"
                 AccessScope = 'NotInOrganization'
                 ReportSeverityLevel = 'Low'
                 GenerateIncidentReport = $null
@@ -98,7 +101,37 @@ BeforeAll {
                 Policy   = 'P01-ECH-QGISCF-EXT-ADT'
                 Priority = 1
                 Disabled = $false
-                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8:fedcba9876543210]]"
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=20260614;environment=nonprod]]"
+                AccessScope = 'NotInOrganization'
+                ReportSeverityLevel = 'Low'
+                ContentContainsSensitiveInformation = $null
+            }
+            # codex review (prefix-scoping P1): a FOREIGN rule from a DIFFERENT Compl8 deployment —
+            # its Comment carries a RESOLVED provenance stamp but with prefix=CONTOSO (not this
+            # inventory's QGISCF). Ownership must be PREFIX-SCOPED: a stamp from another deployment's
+            # prefix must NOT be claimed as ours. Template-shaped name but the prefix gates it out.
+            [pscustomobject]@{
+                Name     = 'P01-R01-ECH-OFFI-EXT-ADT-CONTOSO'
+                Identity = 'P01-R01-ECH-OFFI-EXT-ADT-CONTOSO'
+                Policy   = 'P01-ECH-CONTOSO-EXT-ADT'
+                Priority = 1
+                Disabled = $false
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8DLPDeploy:provenance:v1;prefix=CONTOSO;component=DlpRule;deploymentId=20260614;environment=nonprod]]"
+                AccessScope = 'NotInOrganization'
+                ReportSeverityLevel = 'Low'
+                ContentContainsSensitiveInformation = $null
+            }
+            # codex review (prefix-scoping P1): an UNRESOLVED short marker (no seeded registry => the
+            # prefix is unknowable) on a rule whose NAME does NOT match the P-numbered template and
+            # carries no prefix token. The marker cannot confirm ownership (prefix unknown) and the
+            # fallback cannot confirm it either => ours=$false (conservative: never over-claim).
+            [pscustomobject]@{
+                Name     = 'Some unstamped-prefix rule'
+                Identity = 'Some unstamped-prefix rule'
+                Policy   = 'Some policy'
+                Priority = 1
+                Disabled = $false
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8:abcdef0123456789]]"
                 AccessScope = 'NotInOrganization'
                 ReportSeverityLevel = 'Low'
                 ContentContainsSensitiveInformation = $null
@@ -124,17 +157,29 @@ BeforeAll {
                 Name     = 'P01-MED-QGISCF-EXT'
                 Identity = 'P01-MED-QGISCF-EXT'
                 Mode     = 'TestWithoutNotifications'
-                # codex review P1: ownership via the provenance stamp on the Comment.
-                Comment  = "QGISCF DLP Policy for Exchange Online - External Email - Audit Mode`n[[Compl8:0123456789abcdef]]"
+                # codex review (prefix-scoping P1): ownership via the provenance stamp on the Comment,
+                # whose prefix must equal this inventory's prefix. Use a self-contained long-form stamp
+                # bearing prefix=QGISCF so it resolves inline (no seeded registry) and stays ours.
+                Comment  = "QGISCF DLP Policy for Exchange Online - External Email - Audit Mode`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpPolicy;deploymentId=20260614;environment=nonprod]]"
                 ExchangeLocation = @('All')
             }
             # codex review P1: a TEMPLATE-named ours policy ('P01-ECH-QGISCF-EXT-ADT' — prefix in the
-            # MIDDLE) whose Comment carries a provenance stamp => ours=$true via the PRIMARY path.
+            # MIDDLE) whose Comment carries a prefix-matching provenance stamp => ours=$true (PRIMARY).
             [pscustomobject]@{
                 Name     = 'P01-ECH-QGISCF-EXT-ADT'
                 Identity = 'P01-ECH-QGISCF-EXT-ADT'
                 Mode     = 'TestWithoutNotifications'
-                Comment  = "Exchange policy`n[[Compl8:fedcba9876543210]]"
+                Comment  = "Exchange policy`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpPolicy;deploymentId=20260614;environment=nonprod]]"
+                ExchangeLocation = @('All')
+            }
+            # codex review (prefix-scoping P1): a FOREIGN policy from a DIFFERENT Compl8 deployment —
+            # resolved stamp but prefix=CONTOSO (not this inventory's QGISCF) => ours=$false. The
+            # template-shaped name carrying CONTOSO must NOT let another deployment's policy be claimed.
+            [pscustomobject]@{
+                Name     = 'P01-ECH-CONTOSO-EXT-ADT'
+                Identity = 'P01-ECH-CONTOSO-EXT-ADT'
+                Mode     = 'TestWithoutNotifications'
+                Comment  = "Exchange policy`n[[Compl8DLPDeploy:provenance:v1;prefix=CONTOSO;component=DlpPolicy;deploymentId=20260614;environment=nonprod]]"
                 ExchangeLocation = @('All')
             }
             # A foreign policy — non-matching name, non-Compl8 comment => ours=$false.
@@ -252,6 +297,44 @@ Describe 'Get-TenantInventory — DLP rule/policy ownership via provenance stamp
         $pol = @($script:Inv.objects.dlpPolicies | Where-Object { $_.name -eq 'Default DLP policy' })[0]
         $pol         | Should -Not -BeNullOrEmpty
         $pol.ours    | Should -BeFalse
+    }
+}
+
+Describe 'Get-TenantInventory — DLP ownership is PREFIX-SCOPED (codex review: stamp prefix must match)' {
+    # THE FINDING: a tenant can hold objects from a DIFFERENT Compl8 deployment (different prefix /
+    # customer). A provenance stamp resolving to a DIFFERENT prefix must NOT be claimed as ours, or
+    # assess/apply could target another deployment's objects. Ownership is now PREFIX-SCOPED: a
+    # resolved stamp confers ownership ONLY when its prefix equals this inventory's prefix.
+
+    It 'marks a rule whose resolved stamp carries a DIFFERENT prefix ours=$false (foreign deployment)' {
+        # Inventory prefix is QGISCF; this rule's stamp resolves to prefix=CONTOSO => another
+        # deployment's object => ours=$false (NOT claimed, even though it carries a real stamp).
+        $rule = @($script:Inv.objects.dlpRules | Where-Object { $_.name -eq 'P01-R01-ECH-OFFI-EXT-ADT-CONTOSO' })[0]
+        $rule        | Should -Not -BeNullOrEmpty
+        $rule.ours   | Should -BeFalse -Because 'a resolved stamp from a DIFFERENT prefix is another deployment''s object, never ours'
+    }
+
+    It 'marks a policy whose resolved stamp carries a DIFFERENT prefix ours=$false (foreign deployment)' {
+        $pol = @($script:Inv.objects.dlpPolicies | Where-Object { $_.name -eq 'P01-ECH-CONTOSO-EXT-ADT' })[0]
+        $pol         | Should -Not -BeNullOrEmpty
+        $pol.ours    | Should -BeFalse -Because 'a resolved CONTOSO stamp is a foreign deployment''s policy'
+    }
+
+    It 'marks a rule whose long-form stamp carries the MATCHING prefix ours=$true (legitimate ownership)' {
+        # The legitimate-ownership path: a self-contained long-form stamp bearing prefix=QGISCF (this
+        # inventory's prefix) confirms ownership even though the rule NAME carries no prefix token.
+        $rule = @($script:Inv.objects.dlpRules | Where-Object { $_.name -eq 'P01-R01-ECH-OFFI-EXT-ADT' })[0]
+        $rule        | Should -Not -BeNullOrEmpty
+        $rule.ours   | Should -BeTrue -Because 'its resolved stamp prefix equals the inventory prefix (QGISCF)'
+    }
+
+    It 'does NOT claim an UNRESOLVED short marker when the name carries no prefix (conservative under-claim)' {
+        # An unseeded short marker => Resolved=$false => prefix unknowable. We must NOT claim on the
+        # bare marker; we fall through to the prefix-scoped fallback, which cannot confirm a name that
+        # is neither P-numbered nor prefix-bearing => ours=$false (safe: foreign is never touched).
+        $rule = @($script:Inv.objects.dlpRules | Where-Object { $_.name -eq 'Some unstamped-prefix rule' })[0]
+        $rule        | Should -Not -BeNullOrEmpty
+        $rule.ours   | Should -BeFalse -Because 'an unresolved short marker has an unknowable prefix and the name confirms nothing'
     }
 }
 

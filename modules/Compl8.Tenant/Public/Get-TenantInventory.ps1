@@ -103,13 +103,20 @@ function Get-TenantInventory {
             (templates: dlpPolicy 'P{n}-{code}-{prefix}-{suffix}' has the prefix in the MIDDLE;
             dlpRule 'P{n}-R{n}{chunk}-{code}-{labelCode}-{suffix}' has NO prefix), so the prefix-START
             check would mark every deployed Compl8 rule/policy foreign. Ownership is instead the
-            DEPLOYMENT PROVENANCE STAMP that Deploy-DLPRules writes into each rule's/policy's Comment
-            (the '[[Compl8:...]]' marker carried on the record as .comment). PRIMARY: the Comment
-            carries a Compl8 provenance stamp (Get-DeploymentProvenanceStamp returns non-null, or a
-            direct '[[Compl8:...]]' marker match). FALLBACK (stamp-less): the name matches the
-            generated template shape — a P-numbered rule/policy ('^P\d+-' with an optional '-R\d+'
-            rule segment) that carries the prefix as a name token ('-<Prefix>-' or trailing
-            '-<Prefix>'). See Test-OursDlp below.
+            PREFIX-SCOPED DEPLOYMENT PROVENANCE STAMP that Deploy-DLPRules writes into each
+            rule's/policy's Comment (the '[[Compl8:...]]' marker carried on the record as .comment).
+            PRIMARY: Get-DeploymentProvenanceStamp parses the Comment; when it returns a RESOLVED stamp
+            (long form is self-contained; short form is resolved from the local provenance registry)
+            the object is ours ONLY when the stamp's prefix EQUALS this inventory's prefix — a stamp
+            from a DIFFERENT prefix is another deployment's object and is foreign (a tenant may hold
+            objects from a different Compl8 deployment, which must never be claimed). A short marker
+            that this machine's registry cannot resolve (prefix unknowable) is NOT claimed on the
+            marker; it falls through to the FALLBACK. FALLBACK (stamp-less / unresolved): the name
+            matches the generated template shape — a P-numbered rule/policy ('^P\d+-' with an optional
+            '-R\d+' rule segment) that carries the prefix as a name token ('-<Prefix>-' or trailing
+            '-<Prefix>'). Because rule names carry NO prefix token, a stamp-less/unresolved RULE stays
+            ours=$false (a deliberately CONSERVATIVE under-claim: foreign is never touched, whereas
+            over-claiming another deployment's object is the hazard removed here). See Test-OursDlp.
 
         Microsoft / foreign objects have ours=$false and are NEVER touched by later layers.
 
@@ -150,29 +157,49 @@ function Get-TenantInventory {
     # dlpRule = 'P{n}-R{n}{chunk}-{code}-{labelCode}-{suffix}' with the prefix ABSENT). Using
     # Test-Ours there marks every deployed Compl8 rule/policy ours=$false, so assess buckets it
     # 'foreign' and skips ALL drift/create/orphan handling. Ownership here is instead driven by
-    # the DEPLOYMENT PROVENANCE STAMP — the definitive, prefix-independent ownership marker that
-    # Deploy-DLPRules.ps1 writes into each rule's/policy's Comment via Add-DeploymentProvenanceStamp
-    # (the '[[Compl8:...]]' marker). Get-TenantInventory now carries that Comment (DR-3), so:
+    # the DEPLOYMENT PROVENANCE STAMP that Deploy-DLPRules.ps1 writes into each rule's/policy's
+    # Comment via Add-DeploymentProvenanceStamp. Get-TenantInventory carries that Comment (DR-3).
     #
-    #   PRIMARY  : a rule/policy is ours when its Comment carries a Compl8 provenance stamp —
-    #              Get-DeploymentProvenanceStamp returns a non-null stamp object when present
-    #              (corroborated by a direct '[[Compl8:...]]' marker match as a belt-and-braces guard).
-    #   FALLBACK : for the (rare) stamp-less case (an older deploy, or a stripped Comment) the name
-    #              must match the GENERATED TEMPLATE SHAPE for the configured prefix — i.e. it is a
-    #              P-numbered rule/policy ('^P\d+-' optionally with an '-R\d+' rule segment) AND it
-    #              carries the prefix as a name token ('-<Prefix>-' or trailing '-<Prefix>'), which is
-    #              how the policy template embeds the prefix. A foreign rule (e.g. 'Default DLP rule')
-    #              matches neither and stays ours=$false.
+    # OWNERSHIP MUST BE PREFIX-SCOPED (codex review SAFETY P1). A tenant can legitimately hold
+    # objects from a DIFFERENT Compl8 deployment (a different prefix / customer). A bare 'this
+    # Comment carries ANY Compl8 marker => ours' rule would CLAIM another deployment's objects as
+    # ours, and assess/apply could then bucket them drift/orphan and target objects that belong to a
+    # different deployment. The stamp's PREFIX must therefore match THIS inventory's $Prefix.
+    #
+    #   PRIMARY  : Get-DeploymentProvenanceStamp -Text $Comment.
+    #              * $null            => no marker; fall through to the FALLBACK.
+    #              * Found+Resolved+Prefix => the stamp's full fields are known (long form is
+    #                self-contained; short form was resolved from the local provenance registry):
+    #                  - ours=$true  ONLY when $stamp.Prefix equals $Prefix (OrdinalIgnoreCase).
+    #                  - DIFFERENT prefix => return $false DEFINITIVELY (it is another deployment's
+    #                    object; do NOT fall through to the name fallback — the name could otherwise
+    #                    coincidentally match the template shape and re-claim it).
+    #              * Found but NOT Resolved (a short marker absent from THIS machine's registry => the
+    #                prefix is UNKNOWABLE) => do NOT claim on the bare marker; fall through to the
+    #                FALLBACK. (We never claim a marker whose prefix we cannot verify.)
+    #   FALLBACK : prefix-scoped already — the name must be a P-numbered rule/policy
+    #              ('^P\d+-' optionally with an '-R\d+' rule segment) AND carry the prefix as a name
+    #              token ('-<Prefix>-' or trailing '-<Prefix>'), which is how the POLICY template
+    #              embeds the prefix. This confirms our own policies (whose names embed the prefix).
+    #
+    # CONSERVATIVE RULE TRADE-OFF: a dlpRule NAME carries NO prefix token, so a stamp-less or
+    # unresolved-short-marker RULE cannot be confirmed by the fallback and stays ours=$false. This is
+    # deliberate and SAFE: under-detecting OUR OWN rule only means assess leaves it alone (foreign is
+    # never touched), whereas OVER-claiming ANOTHER deployment's rule is the hazard this fix removes.
+    # The mitigation for our own rules is to deploy a self-contained long-form (or registry-resolved)
+    # prefix-bearing stamp, which the PRIMARY path confirms regardless of the name.
     function Test-OursDlp {
         param([string]$Name, [string]$Comment)
-        # PRIMARY: definitive provenance stamp on the carried Comment.
+        # PRIMARY: prefix-scoped provenance stamp on the carried Comment.
         if (-not [string]::IsNullOrWhiteSpace($Comment)) {
-            if ($Comment -match '\[\[Compl8:[0-9a-f]{16}\]\]' -or $Comment -match '\[\[Compl8DLPDeploy:provenance:v\d+') {
-                return $true
+            $stamp = Get-DeploymentProvenanceStamp -Text $Comment
+            if ($null -ne $stamp -and $stamp.Found -and $stamp.Resolved -and $stamp.Prefix) {
+                # Resolved stamp: ownership is decided here and we do NOT fall through either way.
+                return [string]::Equals([string]$stamp.Prefix, [string]$Prefix, [System.StringComparison]::OrdinalIgnoreCase)
             }
-            if ($null -ne (Get-DeploymentProvenanceStamp -Text $Comment)) { return $true }
+            # Found-but-unresolved (prefix unknowable) or no marker => fall through to the FALLBACK.
         }
-        # FALLBACK: stamp-less — match the generated P-numbered template shape carrying the prefix.
+        # FALLBACK: match the generated P-numbered template shape carrying the prefix (prefix-scoped).
         if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
         $isPNumbered = $Name -match '^P\d+(-R\d+[A-Za-z]?)?-'
         if (-not $isPNumbered) { return $false }

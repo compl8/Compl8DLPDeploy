@@ -70,17 +70,20 @@ Describe 'Get-TenantInventory' {
                 [pscustomobject]@{ Name = 'Microsoft Rule Package'; Identity = 'Microsoft Rule Package'; Publisher = 'Microsoft Corporation'; RulePackId = '00000000-0000-0000-0000-000000000001' }
             )
         }
-        # codex review P1: DLP rule/policy ownership is the PROVENANCE STAMP on the Comment, not the
-        # name prefix (a deployed rule's name never starts with '<Prefix>-'). Carry a real
-        # '[[Compl8:...]]' marker so these stay ours=$true under the corrected discriminator.
+        # codex review (prefix-scoping P1): DLP rule/policy ownership is the PROVENANCE STAMP on the
+        # Comment AND its prefix must equal this inventory's prefix (a deployed rule's name never
+        # starts with '<Prefix>-'). A bare short marker is registry-resolved and stays Unresolved
+        # without a seeded registry, so carry a SELF-CONTAINED long-form stamp bearing prefix=QGISCF
+        # (the inventory prefix) so these stay ours=$true under the corrected, prefix-validated
+        # discriminator without depending on a seeded registry.
         Mock -ModuleName Compl8.Tenant Get-DlpComplianceRule {
             @(
-                [pscustomobject]@{ Name = 'QGISCF-QLD-Medium-Email-07'; Identity = 'QGISCF-QLD-Medium-Email-07'; Policy = 'P01-MED-QGISCF-EXT'; Priority = 0; Disabled = $false; Comment = "QLD Medium`n[[Compl8:0123456789abcdef]]" }
+                [pscustomobject]@{ Name = 'QGISCF-QLD-Medium-Email-07'; Identity = 'QGISCF-QLD-Medium-Email-07'; Policy = 'P01-MED-QGISCF-EXT'; Priority = 0; Disabled = $false; Comment = "QLD Medium`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=20260614;environment=nonprod]]" }
             )
         }
         Mock -ModuleName Compl8.Tenant Get-DlpCompliancePolicy {
             @(
-                [pscustomobject]@{ Name = 'P01-MED-QGISCF-EXT'; Identity = 'P01-MED-QGISCF-EXT'; Mode = 'Enable'; Comment = "Medium policy`n[[Compl8:0123456789abcdef]]" }
+                [pscustomobject]@{ Name = 'P01-MED-QGISCF-EXT'; Identity = 'P01-MED-QGISCF-EXT'; Mode = 'Enable'; Comment = "Medium policy`n[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpPolicy;deploymentId=20260614;environment=nonprod]]" }
             )
         }
         Mock -ModuleName Compl8.Tenant Get-Label {

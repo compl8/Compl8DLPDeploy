@@ -107,11 +107,22 @@ BeforeAll {
     }
     $offiSit = '50b8b56b-4ef8-44c2-a924-03374f5831ce'
     $sensSit = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
-    $stamp   = '[[Compl8:0123456789abcdef]]'
+    # codex review (prefix-scoping P1): ownership is the provenance stamp on the Comment AND its
+    # prefix must equal this inventory's prefix (QGISCF). A bare short marker resolves via a seeded
+    # registry and stays Unresolved here, so use a SELF-CONTAINED long-form stamp bearing
+    # prefix=QGISCF — it resolves inline (no seeded registry) and keeps these rules/policies ours
+    # under the corrected, prefix-validated discriminator. (The orphan/template rule names carry no
+    # prefix token, so the stamp is the ONLY thing that can confer ownership on them.)
+    $stamp   = '[[Compl8DLPDeploy:provenance:v1;prefix=QGISCF;component=DlpRule;deploymentId=20260614;environment=nonprod]]'
     $unchangedName = $script:UnchangedRule.ruleName
     $driftName     = $script:DriftRule.ruleName
     $script:OrphanRuleName  = 'P09-R09-ECH-OFFI-EXT-ADT'  # template-shaped, ours via stamp, not desired
     $script:ForeignRuleName = 'Default DLP rule'           # no stamp, non-template name => foreign
+    # codex review (prefix-scoping P1): a foreign-DEPLOYMENT rule — template-shaped name but its
+    # stamp resolves to a DIFFERENT prefix (CONTOSO). Ownership is prefix-scoped, so it must be
+    # foreign (NOT claimed as ours) and never land in an actionable bucket.
+    $contosoStamp = '[[Compl8DLPDeploy:provenance:v1;prefix=CONTOSO;component=DlpRule;deploymentId=20260614;environment=nonprod]]'
+    $script:CrossPrefixRuleName = 'P05-R05-ECH-OFFI-EXT-ADT-CONTOSO'
 
     Mock -ModuleName Compl8.Tenant Get-DlpComplianceRule {
         @(
@@ -145,6 +156,14 @@ BeforeAll {
                 Priority = 0; Disabled = $false; AccessScope = $null; ReportSeverityLevel = $null
                 Comment = 'Built-in Microsoft policy rule'
                 ContentContainsSensitiveInformation = $null
+            }
+            # FOREIGN DEPLOYMENT — template-shaped name, real stamp, but prefix=CONTOSO (not QGISCF).
+            # Ownership is prefix-scoped => ours=$false => must land in foreign, never actionable.
+            [pscustomobject]@{
+                Name = 'P05-R05-ECH-OFFI-EXT-ADT-CONTOSO'; Identity = 'P05-R05-ECH-OFFI-EXT-ADT-CONTOSO'; Policy = 'P05-ECH-CONTOSO-EXT-ADT'
+                Priority = 5; Disabled = $false; AccessScope = 'NotInOrganization'; ReportSeverityLevel = 'Low'
+                Comment = "OFFICIAL (1 classifiers)`n$contosoStamp"
+                ContentContainsSensitiveInformation = (New-ReadbackCcsi -SitId $offiSit -MinConfidence 75)
             }
         )
     }
@@ -275,6 +294,19 @@ Describe 'Invoke-Compl8Assess — DR-4 dlpRule four-bucket logic' {
             Get-DR4Refs $script:Assessment $actionable | Should -Not -Contain $script:ForeignRuleName -Because "$($script:ForeignRuleName) is foreign and must never appear in '$actionable'"
         }
     }
+
+    It 'a DIFFERENT-prefix-stamped rule is foreign and never actionable (prefix-scoping P1)' {
+        # The CONTOSO-stamped rule resolves to another deployment's prefix. Ownership is prefix-scoped,
+        # so the real reader marks it ours=$false; assess must bucket it foreign and never actionable —
+        # otherwise assess/apply could target a DIFFERENT Compl8 deployment's object.
+        $crossActual = @($script:ActualDlpRules | Where-Object { $_.name -eq $script:CrossPrefixRuleName })[0]
+        $crossActual        | Should -Not -BeNullOrEmpty
+        $crossActual.ours   | Should -BeFalse -Because 'a resolved stamp from a DIFFERENT prefix is a foreign deployment''s object'
+        (Get-DR4Entry $script:Assessment 'foreign' $script:CrossPrefixRuleName) | Should -Not -BeNullOrEmpty -Because 'it must land in the foreign bucket'
+        foreach ($actionable in 'create', 'update-in-place', 'repack-move', 'remove', 'orphan', 'drift') {
+            Get-DR4Refs $script:Assessment $actionable | Should -Not -Contain $script:CrossPrefixRuleName -Because "a foreign-deployment rule must never appear in '$actionable'"
+        }
+    }
 }
 
 Describe 'Invoke-Compl8Assess — DR-4 dlpPolicy buckets' {
@@ -302,7 +334,9 @@ Describe 'Invoke-Compl8Assess — DR-4 dlpPolicy buckets' {
         $actual0  = @($script:ActualDlpPolicies | Where-Object { $_.name -eq $polNames[0] })[0]
         $desired0 = @($script:Desired.Policies | Where-Object { $_.policyName -eq $polNames[0] })[0]
         $actual0.ours        | Should -BeTrue -Because 'the stamped policy is ours via the real discriminator'
-        $actual0.comment     | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]' -Because 'the actual comment carries the provenance stamp'
+        # The actual comment carries the provenance stamp (long-form prefix-bearing variant, per the
+        # prefix-scoping fix); assert it carries a Compl8 provenance marker (short OR long form).
+        $actual0.comment     | Should -Match '\[\[Compl8(:[0-9a-f]{16}|DLPDeploy:provenance:v\d+)' -Because 'the actual comment carries the provenance stamp'
         $actual0.comment     | Should -Not -Be $desired0.comment -Because 'the stamped actual comment differs from the raw desired comment'
         Get-DR4Refs $script:Assessment 'drift' | Should -Not -Contain $polNames[0] -Because 'a stamped-comment-only delta is not drift'
     }
