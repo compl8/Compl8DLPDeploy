@@ -8,9 +8,11 @@
     FunctionsToExport = @(
         'Assert-OrchestrationGate'
         'Export-TenantActualSnapshot'
+        'Get-Compl8TenantPin'
         'Get-DeploymentTenantInfo'
         'Get-DlpClassifierRuleReferences'
         'Get-TenantInventory'
+        'New-Compl8Context'
         'Test-DeploymentTenantFingerprint'
         'Test-DlpRulePackageRemovalReferenceGuard'
         'Test-IsInteractive'
