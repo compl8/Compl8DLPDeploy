@@ -22,16 +22,16 @@ Describe 'Get-EffectiveConfigDir' {
 
     It 'returns global config when no tenant dir exists' {
         $root = New-TempRoot
-        $r = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'ecq'
+        $r = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'demo'
         $r | Should -Be (Join-Path $root 'config')
         Remove-Item $root -Recurse -Force
     }
 
     It 'returns the tenant dir when it exists' {
         $root = New-TempRoot
-        $tenant = Join-Path $root 'config/tenants/ecq'
+        $tenant = Join-Path $root 'config/tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
-        $r = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'ecq'
+        $r = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'demo'
         $r | Should -Be $tenant
         Remove-Item $root -Recurse -Force
     }
@@ -40,19 +40,19 @@ Describe 'Get-EffectiveConfigDir' {
 Describe 'Resolve-ConfigFile' {
     It 'returns the tenant file when present' {
         $root = New-TempRoot
-        $tenant = Join-Path $root 'config/tenants/ecq'
+        $tenant = Join-Path $root 'config/tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
-        '{"namingPrefix":"ECQ"}' | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
-        $r = Resolve-ConfigFile -ProjectRoot $root -Environment 'ecq' -Name 'settings.json'
+        '{"namingPrefix":"DEMO"}' | Set-Content -LiteralPath (Join-Path $tenant 'settings.json') -Encoding UTF8
+        $r = Resolve-ConfigFile -ProjectRoot $root -Environment 'demo' -Name 'settings.json'
         $r | Should -Be (Join-Path $tenant 'settings.json')
         Remove-Item $root -Recurse -Force
     }
 
     It 'falls back to global when the tenant dir lacks that file' {
         $root = New-TempRoot
-        $tenant = Join-Path $root 'config/tenants/ecq'
+        $tenant = Join-Path $root 'config/tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
-        $r = Resolve-ConfigFile -ProjectRoot $root -Environment 'ecq' -Name 'labels.json'
+        $r = Resolve-ConfigFile -ProjectRoot $root -Environment 'demo' -Name 'labels.json'
         $r | Should -Be (Join-Path $root 'config/labels.json')
         Remove-Item $root -Recurse -Force
     }
@@ -72,9 +72,9 @@ Describe 'New-TenantConfig.ps1' {
         '{}' | Set-Content -LiteralPath (Join-Path $cfg 'tenant-fingerprints.json') -Encoding UTF8
         '{}' | Set-Content -LiteralPath (Join-Path $cfg 'last-classifier-upload.json') -Encoding UTF8
 
-        & $script:NewTenantScript -ProjectRoot $root -Environment 'ecq' | Out-Null
+        & $script:NewTenantScript -ProjectRoot $root -Environment 'demo' | Out-Null
 
-        $tenant = Join-Path $cfg 'tenants/ecq'
+        $tenant = Join-Path $cfg 'tenants/demo'
         (Test-Path (Join-Path $tenant 'classifiers.json')) | Should -BeTrue
         (Test-Path (Join-Path $tenant 'settings.json'))    | Should -BeTrue
         (Test-Path (Join-Path $tenant 'tenant-fingerprints.json'))   | Should -BeFalse
@@ -84,9 +84,9 @@ Describe 'New-TenantConfig.ps1' {
 
     It 'refuses to overwrite an existing tenant dir without -Force' {
         $root = New-TempRoot
-        $tenant = Join-Path $root 'config/tenants/ecq'
+        $tenant = Join-Path $root 'config/tenants/demo'
         New-Item -ItemType Directory -Path $tenant -Force | Out-Null
-        { & $script:NewTenantScript -ProjectRoot $root -Environment 'ecq' -ErrorAction Stop } | Should -Throw
+        { & $script:NewTenantScript -ProjectRoot $root -Environment 'demo' -ErrorAction Stop } | Should -Throw
         Remove-Item $root -Recurse -Force
     }
 }
@@ -99,17 +99,17 @@ Describe 'Seeded tenant resolves to tenant config' {
             '{}' | Set-Content -LiteralPath (Join-Path $cfg $f) -Encoding UTF8
         }
         $script = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts' 'New-TenantConfig.ps1'
-        & $script -ProjectRoot $root -Environment 'ecq' | Out-Null
+        & $script -ProjectRoot $root -Environment 'demo' | Out-Null
 
         # Tenant-specific edit
-        '{"namingPrefix":"ECQ"}' | Set-Content -LiteralPath (Join-Path $cfg 'tenants/ecq/settings.json') -Encoding UTF8
+        '{"namingPrefix":"DEMO"}' | Set-Content -LiteralPath (Join-Path $cfg 'tenants/demo/settings.json') -Encoding UTF8
 
-        $dir = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'ecq'
-        $dir | Should -Be (Join-Path $cfg 'tenants/ecq')
-        (Get-Content -Raw (Join-Path $dir 'settings.json') | ConvertFrom-Json).namingPrefix | Should -Be 'ECQ'
+        $dir = Get-EffectiveConfigDir -ProjectRoot $root -Environment 'demo'
+        $dir | Should -Be (Join-Path $cfg 'tenants/demo')
+        (Get-Content -Raw (Join-Path $dir 'settings.json') | ConvertFrom-Json).namingPrefix | Should -Be 'DEMO'
 
         # A different env with no tenant dir still resolves to global
-        (Get-EffectiveConfigDir -ProjectRoot $root -Environment 'qfd') | Should -Be $cfg
+        (Get-EffectiveConfigDir -ProjectRoot $root -Environment 'dev') | Should -Be $cfg
         Remove-Item $root -Recurse -Force
     }
 }

@@ -1910,7 +1910,7 @@ function Invoke-TestPatternDriftMenu {
 function Invoke-ConfigSkewReport {
     $env = $script:TargetEnvironment
     if (-not $env) {
-        $env = Read-OptionalValue -Prompt "Environment key to check (e.g. ecq)" -Current ''
+        $env = Read-OptionalValue -Prompt "Environment key to check (e.g. demo)" -Current ''
     }
     if (-not $env) { Write-Host "  No environment selected." -ForegroundColor Yellow; return }
     Invoke-ToolkitScript -ScriptName "Test-ConfigSkew.ps1" -ArgumentList @("-Environment", $env, "-NoExit")
