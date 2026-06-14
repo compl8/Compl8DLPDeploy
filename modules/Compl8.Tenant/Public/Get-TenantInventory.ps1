@@ -27,8 +27,10 @@ function Get-TenantInventory {
                                       entityIds[], sha256, contentHash, sits[] }
                 sits              : { name, identity, ours, package, contentHash }
                 dlpRules          : { name, identity, ours, policy, priority, disabled,
-                                      contentContainsSensitiveInformation }
-                dlpPolicies       : { name, identity, ours, mode }
+                                      contentContainsSensitiveInformation, contentCondition,
+                                      advancedRule, accessScope, generateIncidentReport,
+                                      notifyUser, reportSeverity, contentHash }
+                dlpPolicies       : { name, identity, ours, mode, locations, comment }
                 labels            : { name, identity, ours, guid }
                 labelPolicies     : { name, identity, ours, guid }
                 autoLabelPolicies : { name, identity, ours, mode, label }
@@ -58,6 +60,31 @@ function Get-TenantInventory {
           * dlpRules[].contentContainsSensitiveInformation — the classifier-reference text assess
                                         feeds the reference graph (which live rules name each SIT
                                         GUID), used for per-classifier impact edges.
+
+        ASSESS-CONSUMABLE DLP RULE/POLICY CONTENT (DR-3; the DLP-rule drift feed). The reader also
+        carries enough of each rule's READBACK content that assess can hash it via
+        Get-DlpRuleContentHash -ActualRule and compare it to the DESIRED rule's content hash
+        (Resolve-DesiredDlpRules / Get-DlpRuleContentHash -DesiredParams). The split mirrors how
+        sitPackages carry contentHash — the reader computes a contentHash here so assess never has
+        to re-project the rule, but ALSO carries the structured content so the hash is re-derivable:
+          * dlpRules[].contentCondition       — the STRUCTURED ContentContainsSensitiveInformation
+                                        readback value (the nested Groups/Sensitivetypes object the
+                                        service returns: PascalCased keys, numeric Minconfidence),
+                                        NOT the flattened reference text above. This is the value
+                                        the canonical hash re-projects (sorted SIT id/min/max/conf).
+          * dlpRules[].advancedRule           — the AdvancedRule JSON string (or null).
+          * dlpRules[].accessScope            — AccessScope (or the readback scope value; or null).
+          * dlpRules[].generateIncidentReport — GenerateIncidentReport recipient/flag (or null).
+          * dlpRules[].notifyUser             — NotifyUser (or null).
+          * dlpRules[].reportSeverity         — ReportSeverityLevel (or null).
+          * dlpRules[].contentHash            — Get-DlpRuleContentHash -ActualRule over the rule's
+                                        readback content (the SAME 'sha256:' convention the desired
+                                        side emits). Assess buckets a rule as 'drift' when this
+                                        diverges from the desired rule's contentHash. The flat
+                                        contentContainsSensitiveInformation field is UNCHANGED so
+                                        the impact reference graph keeps working as before.
+          * dlpPolicies[].mode / .locations / .comment — the policy content assess compares for
+                                        policy create/drift/orphan/foreign (mode + locations + comment).
 
         Slug recovery: a deployed entity's slug is recovered from its first IdMatch/Match
         idRef (the resolve pipeline encodes ids as '<Kind>_<...>_<slug>', see
@@ -292,18 +319,91 @@ function Get-TenantInventory {
         return ($parts -join "`n")
     }
 
+    # DR-3: read a rule's readback property by ANY of its candidate names (PascalCase from the
+    # service; tolerant of the build-side casing too). Returns $null when absent/empty.
+    function Get-RuleContentProp {
+        param($Rule, [string[]]$Names)
+        $v = Get-Prop -Object $Rule -Names $Names
+        if ($null -eq $v) { return $null }
+        if (($v -is [string]) -and [string]::IsNullOrWhiteSpace($v)) { return $null }
+        return $v
+    }
+
+    # DR-3: project a readback rule into the canonical actual-rule shape Get-DlpRuleContentHash
+    # -ActualRule reads (PascalCase property names), then compute its content hash. The STRUCTURED
+    # ContentContainsSensitiveInformation value is carried verbatim — the hash canonicalises the
+    # service's re-serialisation (PascalCase keys, numeric Minconfidence, nested groups) so it
+    # compares EQUAL to the desired build hash for the same rule.
+    function Get-RuleActualContentHash {
+        param($Rule, $ContentCondition, $AdvancedRule, $AccessScope, $GenerateIncidentReport, $NotifyUser, $ReportSeverity, [bool]$Disabled)
+        $projection = [pscustomobject][ordered]@{
+            ContentContainsSensitiveInformation = $ContentCondition
+            AdvancedRule                        = $AdvancedRule
+            AccessScope                         = $AccessScope
+            GenerateIncidentReport              = $GenerateIncidentReport
+            NotifyUser                          = $NotifyUser
+            ReportSeverityLevel                 = $ReportSeverity
+            Disabled                            = $Disabled
+        }
+        return (Get-DlpRuleContentHash -ActualRule $projection)
+    }
+
     $dlpRules = @($rawDlpRules | ForEach-Object {
+        # Read the STRUCTURED readback content directly (NOT via Get-Prop's .ToString() coercion,
+        # which would flatten the nested CCSI object). The flat reference text the impact graph
+        # consumes is computed separately by Get-RuleClassifierField and kept under the existing
+        # contentContainsSensitiveInformation field (back-compat, unchanged).
+        $ccsiProp = $_.PSObject.Properties['ContentContainsSensitiveInformation']
+        $contentCondition = if ($ccsiProp -and $null -ne $ccsiProp.Value) { $ccsiProp.Value } else { $null }
+        $advancedRule           = Get-RuleContentProp -Rule $_ -Names @('AdvancedRule')
+        $accessScope            = Get-RuleContentProp -Rule $_ -Names @('AccessScope')
+        $generateIncidentReport = Get-RuleContentProp -Rule $_ -Names @('GenerateIncidentReport')
+        $notifyUser             = Get-RuleContentProp -Rule $_ -Names @('NotifyUser')
+        $reportSeverity         = Get-RuleContentProp -Rule $_ -Names @('ReportSeverityLevel')
+        # Read Disabled as a REAL bool from the raw property — NOT via Get-Prop, which coerces to a
+        # string ('False'), and [bool]'False' is $true. Mis-reading Disabled would corrupt the
+        # canonical content hash (Disabled is part of the rule's semantic content).
+        $disabledProp = $_.PSObject.Properties['Disabled']
+        $disabled     = if ($disabledProp -and $null -ne $disabledProp.Value) {
+            if ($disabledProp.Value -is [bool]) { $disabledProp.Value }
+            else { [string]::Equals([string]$disabledProp.Value, 'true', [System.StringComparison]::OrdinalIgnoreCase) }
+        } else { $false }
+
+        $contentHash = Get-RuleActualContentHash -Rule $_ `
+            -ContentCondition $contentCondition -AdvancedRule $advancedRule -AccessScope $accessScope `
+            -GenerateIncidentReport $generateIncidentReport -NotifyUser $notifyUser `
+            -ReportSeverity $reportSeverity -Disabled $disabled
+
         ConvertTo-Record -Object $_ -Extra @{
             policy   = [string](Get-Prop -Object $_ -Names @('Policy', 'ParentPolicyName'))
             priority = Get-Prop -Object $_ -Names @('Priority')
-            disabled = [bool](Get-Prop -Object $_ -Names @('Disabled'))
+            disabled = $disabled
             contentContainsSensitiveInformation = Get-RuleClassifierField -Rule $_
+            contentCondition       = $contentCondition
+            advancedRule           = if ($null -ne $advancedRule) { [string]$advancedRule } else { $null }
+            accessScope            = if ($null -ne $accessScope) { [string]$accessScope } else { $null }
+            generateIncidentReport = if ($null -ne $generateIncidentReport) { [string]$generateIncidentReport } else { $null }
+            notifyUser             = if ($null -ne $notifyUser) { [string]$notifyUser } else { $null }
+            reportSeverity         = if ($null -ne $reportSeverity) { [string]$reportSeverity } else { $null }
+            contentHash            = $contentHash
         }
     })
 
+    # DR-3: dlpPolicies carry mode + the structured locations object + comment so assess can
+    # compare policy content (mode/locations) for policy create/drift/orphan/foreign.
     $dlpPolicies = @($rawDlpPolicies | ForEach-Object {
+        $locations = [ordered]@{}
+        foreach ($locName in @('ExchangeLocation', 'OneDriveLocation', 'SharePointLocation', 'EndpointDlpLocation', 'TeamsLocation')) {
+            $locProp = $_.PSObject.Properties[$locName]
+            if ($locProp -and $null -ne $locProp.Value) {
+                $locVal = @($locProp.Value | ForEach-Object { [string]$_ }) | Sort-Object
+                if (@($locVal).Count -gt 0) { $locations[$locName] = @($locVal) }
+            }
+        }
         ConvertTo-Record -Object $_ -Extra @{
-            mode = [string](Get-Prop -Object $_ -Names @('Mode'))
+            mode      = [string](Get-Prop -Object $_ -Names @('Mode'))
+            locations = [pscustomobject]$locations
+            comment   = [string](Get-Prop -Object $_ -Names @('Comment'))
         }
     })
 
