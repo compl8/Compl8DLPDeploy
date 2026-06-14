@@ -17,6 +17,7 @@
         'Initialize-EntityLedger'
         'Merge-DesiredContent'
         'Resolve-DesiredContent'
+        'Resolve-DesiredDlpRules'
         'Test-ContentDictionaryBudget'
         'Test-ResolveManifestCurrent'
         'Update-EntityLedger'
