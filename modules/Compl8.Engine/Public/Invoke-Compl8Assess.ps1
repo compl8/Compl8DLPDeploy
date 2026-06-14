@@ -78,6 +78,16 @@ function Invoke-Compl8Assess {
     .PARAMETER OutFile
         Optional. When set, the assessment is also written as JSON to this path.
 
+    .PARAMETER ConfigRoot
+        Optional. The config source for the DESIRED DLP rule/policy set (DR-4). When supplied, assess
+        calls Resolve-DesiredDlpRules -ConfigPath <ConfigRoot> and buckets the actual dlpRules/
+        dlpPolicies (from the inventory) against that desired set. THIS IS THE CONFIG-BRIDGE SEAM:
+        in a future stage it re-points to a desired/resolved rule projection; only this parameter
+        (and the loader it feeds) changes. When -ConfigRoot is absent, assess derives it from the
+        workspace (<WorkspacePath>/desired/config, then <WorkspacePath>/config). If NEITHER an
+        explicit -ConfigRoot NOR a workspace config directory exists, assess emits NO dlpRule/
+        dlpPolicy buckets — so SIT-only fixtures/workspaces that carry no rule config are unaffected.
+
     .OUTPUTS
         A compl8.assessment/v1 object (see New-AssessmentObject / Test-AssessmentSchema).
     #>
@@ -95,7 +105,9 @@ function Invoke-Compl8Assess {
 
         [string]$GeneratedUtc,
 
-        [string]$OutFile
+        [string]$OutFile,
+
+        [string]$ConfigRoot
     )
 
     # Deterministic SHA-256 over UTF-8 text, lowercase hex (no Get-FileHash temp files).
@@ -221,10 +233,52 @@ function Invoke-Compl8Assess {
         }
     }
 
+    # ----------------------------------------------------------------- desired DLP rules/policies (DR-4)
+    # The CONFIG-BRIDGE SEAM. Resolve the desired rule/policy set from config, the same content the
+    # deploy path constructs (Resolve-DesiredDlpRules is shadow-proven against Deploy-DLPRules). The
+    # source is -ConfigRoot if supplied, else derived from the workspace; if no config dir exists at
+    # all we leave the desired set EMPTY so SIT-only fixtures emit no dlpRule/dlpPolicy buckets.
+    #
+    # DRIFT-VS-UPDATE NOTE: assess cannot tell "desired (config) changed" from "tenant hand-edited"
+    # by content hash alone — both surface as a rule/policy that is ours, present in both, content
+    # differs. We bucket BOTH as 'drift' (matching the SIT drift semantics: ours + content-differs
+    # out-of-band vs desired/resolved); the reconciliation in either case is the same — push the
+    # desired content. There is no separate update-in-place bucket for rules/policies: a rule has no
+    # entity-GUID identity to "refit" the way a SIT rule package does, so an ours rule whose content
+    # diverges is uniformly drift.
+    $desiredRuleHashByName   = @{}
+    $desiredPolicyByName     = @{}
+    $configSource = $null
+    if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
+        $configSource = $ConfigRoot
+    } else {
+        foreach ($candidate in @((Join-Path $WorkspacePath 'desired' 'config'), (Join-Path $WorkspacePath 'config'))) {
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $configSource = $candidate; break }
+        }
+    }
+    # Did we resolve a desired DLP rule/policy set? When NO config source exists, assess does NOT
+    # bucket dlpRules/dlpPolicies AT ALL — not even foreign — so SIT-only fixtures/workspaces that
+    # carry no rule config produce an identical assessment to before DR-4 (the existing golden is
+    # untouched). Foreign rules only become asserted-never-actionable once we are actually diffing
+    # the rule layer (i.e. a desired set is present).
+    $haveDesiredRuleConfig = $false
+    if ($configSource -and (Test-Path -LiteralPath $configSource -PathType Container)) {
+        $haveDesiredRuleConfig = $true
+        $desired = Resolve-DesiredDlpRules -ConfigPath $configSource
+        foreach ($r in @($desired.Rules)) {
+            if ($r.ruleName) { $desiredRuleHashByName[[string]$r.ruleName] = [string]$r.contentHash }
+        }
+        foreach ($p in @($desired.Policies)) {
+            if ($p.policyName) { $desiredPolicyByName[[string]$p.policyName] = $p }
+        }
+    }
+
     # ----------------------------------------------------------------- actual side
     $actualPackages   = @($inv.objects.sitPackages)
     $actualSits       = @($inv.objects.sits)
     $actualDicts      = @($inv.objects.dictionaries)
+    $actualDlpRules   = @($inv.objects.dlpRules)
+    $actualDlpPolicies = @($inv.objects.dlpPolicies)
 
     $actualPackageByName = @{}
     foreach ($p in $actualPackages) { if ($p.name) { $actualPackageByName[[string]$p.name] = $p } }
@@ -399,6 +453,86 @@ function Invoke-Compl8Assess {
             Add-Bucket -Bucket 'orphan' -ObjectType 'dictionary' -Ref $ref -Extra @{ reason = 'ours dictionary not in desired and not a planned removal' }
         }
     }
+
+    # --- dlp rules + policies (DR-4) -----------------------------------------------------
+    # create: desired rule/policy name absent from actual; drift: ours, present in both, content
+    # hash differs (the hand-edit OR config-change signal — see the drift-vs-update note above);
+    # orphan: ours actual not in the desired set; foreign: actual not ours (never actionable).
+    # Keyed by NAME (the deterministic Get-RuleName/Get-PolicyName templates Resolve-DesiredDlpRules
+    # emits). The WHOLE block is gated on $haveDesiredRuleConfig so a config-free workspace produces
+    # no dlpRule/dlpPolicy buckets (the pre-DR-4 behaviour SIT-only fixtures depend on).
+    if ($haveDesiredRuleConfig) {
+    $actualRuleByName = @{}
+    foreach ($r in $actualDlpRules) { if ($r.name) { $actualRuleByName[[string]$r.name] = $r } }
+    foreach ($r in $actualDlpRules) {
+        $ref = [string]$r.name
+        if (-not $r.ours) {
+            Add-Bucket -Bucket 'foreign' -ObjectType 'dlpRule' -Ref $ref -Extra @{ reason = 'not ours — never touched' }
+            continue
+        }
+        if ($desiredRuleHashByName.ContainsKey($ref)) {
+            # ours, present in both — drift when the content hash diverges from desired/resolved.
+            $desiredHash = [string]$desiredRuleHashByName[$ref]
+            $actualHash  = if ($r.PSObject.Properties['contentHash']) { [string]$r.contentHash } else { $null }
+            if ($desiredHash -and $actualHash -and ($desiredHash -ne $actualHash)) {
+                Add-Bucket -Bucket 'drift' -ObjectType 'dlpRule' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
+            }
+            continue
+        }
+        # ours, not in the desired set — an unexpected leftover (rules carry no entity ledger).
+        Add-Bucket -Bucket 'orphan' -ObjectType 'dlpRule' -Ref $ref -Extra @{ reason = 'ours rule not in desired and not a planned removal' }
+    }
+    foreach ($ruleName in ($desiredRuleHashByName.Keys | Sort-Object)) {
+        if (-not $actualRuleByName.ContainsKey($ruleName)) {
+            Add-Bucket -Bucket 'create' -ObjectType 'dlpRule' -Ref $ruleName -Extra @{ reason = 'desired rule not present in actual' }
+        }
+    }
+
+    # --- dlp policies (DR-4) -------------------------------------------------------------
+    # Same create/drift/orphan/foreign by policy NAME, comparing a policy content projection
+    # (mode + sorted locations + comment). drift = ours, present in both, content differs.
+    function Get-DlpPolicyContentHash {
+        param($Mode, $Locations, $Comment)
+        $locProjection = ''
+        if ($null -ne $Locations) {
+            $pairs = [System.Collections.Generic.List[string]]::new()
+            if ($Locations -is [System.Collections.IDictionary]) {
+                foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
+            } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
+                foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
+            }
+            $locProjection = (@($pairs) | Sort-Object) -join ';'
+        }
+        $proj = "mode=$([string]$Mode)|locations=$locProjection|comment=$([string]$Comment)"
+        return 'sha256:' + (Get-AssessTextHash -Text $proj)
+    }
+    $actualPolicyByName = @{}
+    foreach ($p in $actualDlpPolicies) { if ($p.name) { $actualPolicyByName[[string]$p.name] = $p } }
+    foreach ($p in $actualDlpPolicies) {
+        $ref = [string]$p.name
+        if (-not $p.ours) {
+            Add-Bucket -Bucket 'foreign' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{ reason = 'not ours — never touched' }
+            continue
+        }
+        if ($desiredPolicyByName.ContainsKey($ref)) {
+            $desiredP = $desiredPolicyByName[$ref]
+            $actualLocations = if ($p.PSObject.Properties['locations']) { $p.locations } else { $null }
+            $actualComment   = if ($p.PSObject.Properties['comment'])   { $p.comment }   else { $null }
+            $desiredHash = Get-DlpPolicyContentHash -Mode $desiredP.mode -Locations $desiredP.locations -Comment $desiredP.comment
+            $actualHash  = Get-DlpPolicyContentHash -Mode $p.mode -Locations $actualLocations -Comment $actualComment
+            if ($desiredHash -ne $actualHash) {
+                Add-Bucket -Bucket 'drift' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
+            }
+            continue
+        }
+        Add-Bucket -Bucket 'orphan' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{ reason = 'ours policy not in desired and not a planned removal' }
+    }
+    foreach ($policyName in ($desiredPolicyByName.Keys | Sort-Object)) {
+        if (-not $actualPolicyByName.ContainsKey($policyName)) {
+            Add-Bucket -Bucket 'create' -ObjectType 'dlpPolicy' -Ref $policyName -Extra @{ reason = 'desired policy not present in actual' }
+        }
+    }
+    } # end if ($haveDesiredRuleConfig)
 
     # ----------------------------------------------------------------- impact (graph-derived)
     $impact = [System.Collections.Generic.List[object]]::new()
