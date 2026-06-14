@@ -490,9 +490,16 @@ function Invoke-Compl8Assess {
 
     # --- dlp policies (DR-4) -------------------------------------------------------------
     # Same create/drift/orphan/foreign by policy NAME, comparing a policy content projection
-    # (mode + sorted locations + comment). drift = ours, present in both, content differs.
+    # (mode + sorted locations). drift = ours, present in both, content differs.
+    #
+    # codex review P2: the projection deliberately EXCLUDES the policy Comment. Deploy-DLPRules wraps
+    # the raw policies.json comment with the provenance stamp at deploy time (Add-DeploymentProvenanceStamp),
+    # whereas Resolve-DesiredDlpRules keeps the RAW comment — so desired.comment != actual.comment for
+    # EVERY owned policy, which falsely reported drift the moment ownership was fixed (P1). The mode and
+    # the sorted locations are the meaningful policy content; the Comment is provenance metadata, not
+    # drift-relevant, so it is dropped from the hash entirely.
     function Get-DlpPolicyContentHash {
-        param($Mode, $Locations, $Comment)
+        param($Mode, $Locations)
         $locProjection = ''
         if ($null -ne $Locations) {
             $pairs = [System.Collections.Generic.List[string]]::new()
@@ -503,7 +510,7 @@ function Invoke-Compl8Assess {
             }
             $locProjection = (@($pairs) | Sort-Object) -join ';'
         }
-        $proj = "mode=$([string]$Mode)|locations=$locProjection|comment=$([string]$Comment)"
+        $proj = "mode=$([string]$Mode)|locations=$locProjection"
         return 'sha256:' + (Get-AssessTextHash -Text $proj)
     }
     $actualPolicyByName = @{}
@@ -517,9 +524,10 @@ function Invoke-Compl8Assess {
         if ($desiredPolicyByName.ContainsKey($ref)) {
             $desiredP = $desiredPolicyByName[$ref]
             $actualLocations = if ($p.PSObject.Properties['locations']) { $p.locations } else { $null }
-            $actualComment   = if ($p.PSObject.Properties['comment'])   { $p.comment }   else { $null }
-            $desiredHash = Get-DlpPolicyContentHash -Mode $desiredP.mode -Locations $desiredP.locations -Comment $desiredP.comment
-            $actualHash  = Get-DlpPolicyContentHash -Mode $p.mode -Locations $actualLocations -Comment $actualComment
+            # codex review P2: Comment is intentionally NOT part of the content hash — the actual side
+            # carries a provenance-stamped Comment while the desired side keeps the raw one.
+            $desiredHash = Get-DlpPolicyContentHash -Mode $desiredP.mode -Locations $desiredP.locations
+            $actualHash  = Get-DlpPolicyContentHash -Mode $p.mode -Locations $actualLocations
             if ($desiredHash -ne $actualHash) {
                 Add-Bucket -Bucket 'drift' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
             }

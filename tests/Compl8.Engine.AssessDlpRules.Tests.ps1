@@ -58,92 +58,141 @@ BeforeAll {
 
     # rule[0] -> UNCHANGED (actual hash == desired => NO bucket); rule[1] -> DRIFT (actual hash
     # mutated => drift). rules[2..] are DESIRED-ONLY (not added to actual) => create.
-    $script:UnchangedRule = $desiredRules[0]
-    $script:DriftRule     = $desiredRules[1]
-
-    $actualDlpRules = New-Object System.Collections.Generic.List[object]
-
-    # UNCHANGED — same name, ours, contentHash == desired contentHash -> NO bucket.
-    $actualDlpRules.Add([pscustomobject]@{
-        name = $script:UnchangedRule.ruleName; identity = $script:UnchangedRule.ruleName
-        ours = $true; policy = $script:UnchangedRule.policyName; priority = 0; disabled = $false
-        contentContainsSensitiveInformation = 'unused-flat-text'
-        contentHash = $script:UnchangedRule.contentHash
-    }) | Out-Null
-
-    # DRIFT — same name, ours, contentHash DIFFERS (a hand-edit in the tenant) -> drift.
-    $actualDlpRules.Add([pscustomobject]@{
-        name = $script:DriftRule.ruleName; identity = $script:DriftRule.ruleName
-        ours = $true; policy = $script:DriftRule.policyName; priority = 0; disabled = $false
-        contentContainsSensitiveInformation = 'unused-flat-text'
-        contentHash = 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
-    }) | Out-Null
-
-    # ORPHAN — an ours actual rule with a QGISCF-prefixed name that is NOT in the desired set.
-    $script:OrphanRuleName = 'P09-R09-XXX-OFFI-EXT-ADT'
-    $actualDlpRules.Add([pscustomobject]@{
-        name = $script:OrphanRuleName; identity = $script:OrphanRuleName
-        ours = $true; policy = 'P09-XXX-QGISCF-EXT-ADT'; priority = 0; disabled = $false
-        contentContainsSensitiveInformation = 'unused'; contentHash = 'sha256:1111111111111111111111111111111111111111111111111111111111111111'
-    }) | Out-Null
-
-    # FOREIGN — a Microsoft rule (ours=false) that must NEVER appear in an actionable bucket.
-    $script:ForeignRuleName = 'Default DLP rule'
-    $actualDlpRules.Add([pscustomobject]@{
-        name = $script:ForeignRuleName; identity = $script:ForeignRuleName
-        ours = $false; policy = 'Default DLP policy'; priority = 0; disabled = $false
-        contentContainsSensitiveInformation = 'unused'; contentHash = 'sha256:2222222222222222222222222222222222222222222222222222222222222222'
-    }) | Out-Null
-
-    # rules[2..] are NOT added to actual => they surface as CREATE (desired, no actual rule).
-    $script:CreateRuleNames = @($desiredRules[2..($desiredRules.Count - 1)] | ForEach-Object { $_.ruleName })
-    # Materialise to a PLAIN array — a List[object] inside a [pscustomobject]@{} cast trips
-    # 'Argument types do not match' in PowerShell, and the inventory shape is a plain array anyway.
-    $script:ActualDlpRules = @($actualDlpRules.ToArray())
-
-    # ---- DLP POLICIES (actual) ----------------------------------------------------------------
-    # Desired policies: P01-ECH-QGISCF-EXT-ADT, P02-ODB-QGISCF-EXT-ADT (mode TestWithoutNotifications).
+    $script:UnchangedRule = $desiredRules[0]   # P01-R01-ECH-OFFI-EXT-ADT (OFFI, Medium/75)
+    $script:DriftRule     = $desiredRules[1]   # P01-R02-ECH-SENS-EXT-ADT (SENS, High/85)
     $desiredPolByName = @{}
     foreach ($p in $desiredPols) { $desiredPolByName[$p.policyName] = $p }
     $polNames = @($desiredPols | ForEach-Object { $_.policyName } | Sort-Object)
 
-    $actualDlpPolicies = New-Object System.Collections.Generic.List[object]
-    # policy[0]: present, ours, SAME mode -> NO bucket.
-    $actualDlpPolicies.Add([pscustomobject]@{
-        name = $polNames[0]; identity = $polNames[0]; ours = $true
-        mode = $desiredPolByName[$polNames[0]].mode
-        locations = $desiredPolByName[$polNames[0]].locations
-        comment = $desiredPolByName[$polNames[0]].comment
-    }) | Out-Null
-    # policy[1]: present, ours, DIFFERENT mode (hand-edited) -> drift.
-    $actualDlpPolicies.Add([pscustomobject]@{
-        name = $polNames[1]; identity = $polNames[1]; ours = $true
-        mode = 'Enable'   # desired is TestWithoutNotifications -> drift
-        locations = $desiredPolByName[$polNames[1]].locations
-        comment = $desiredPolByName[$polNames[1]].comment
-    }) | Out-Null
-    # ORPHAN policy — ours, not desired.
-    $script:OrphanPolName = 'P09-XXX-QGISCF-EXT-ADT'
-    $actualDlpPolicies.Add([pscustomobject]@{ name = $script:OrphanPolName; identity = $script:OrphanPolName; ours = $true; mode = 'Enable'; locations = [pscustomobject]@{}; comment = '' }) | Out-Null
-    # FOREIGN policy.
-    $script:ForeignPolName = 'Default DLP policy'
-    $actualDlpPolicies.Add([pscustomobject]@{ name = $script:ForeignPolName; identity = $script:ForeignPolName; ours = $false; mode = 'Enable'; locations = [pscustomobject]@{}; comment = '' }) | Out-Null
-    $script:ActualDlpPolicies = @($actualDlpPolicies.ToArray())
+    # codex review P1 (end-to-end): the ACTUAL inventory is built by the REAL Get-TenantInventory so
+    # ownership flows through the REAL provenance-stamp discriminator (Test-OursDlp) — NOT a hand-set
+    # ours=$true. The mocked SCC readback uses REALISTIC template names + provenance-stamped Comments,
+    # so a deployed-and-edited rule lands in 'drift' (proving it is NOT skipped as foreign), and a
+    # foreign rule (no stamp, non-template name) lands in 'foreign'. The service re-serialises CCSI
+    # (PascalCase Groups/Sensitivetypes, numeric Minconfidence 75/85), so the readback below mirrors it.
+    $script:TenantDir = Join-Path $script:RepoRoot 'modules' 'Compl8.Tenant'
+    Import-Module $script:TenantDir -Force
 
-    # ---- inventory object (only the dlp record lists matter here) ------------------------------
-    $invObjects = [pscustomobject]@{
-        dictionaries = @(); sitPackages = @(); sits = @()
-        dlpRules     = @($script:ActualDlpRules)
-        dlpPolicies  = @($script:ActualDlpPolicies)
-        labels = @(); labelPolicies = @(); autoLabelPolicies = @(); autoLabelRules = @()
+    function global:Get-DlpKeywordDictionary { [CmdletBinding()] param() }
+    function global:Get-DlpSensitiveInformationTypeRulePackage { [CmdletBinding()] param() }
+    function global:Get-DlpComplianceRule { [CmdletBinding()] param() }
+    function global:Get-DlpCompliancePolicy { [CmdletBinding()] param() }
+    function global:Get-Label { [CmdletBinding()] param() }
+    function global:Get-LabelPolicy { [CmdletBinding()] param() }
+    function global:Get-AutoSensitivityLabelPolicy { [CmdletBinding()] param() }
+    function global:Get-AutoSensitivityLabelRule { [CmdletBinding()] param() }
+
+    Mock -ModuleName Compl8.Tenant Get-DlpKeywordDictionary { @() }
+    Mock -ModuleName Compl8.Tenant Get-DlpSensitiveInformationTypeRulePackage { @() }
+    Mock -ModuleName Compl8.Tenant Get-Label { @() }
+    Mock -ModuleName Compl8.Tenant Get-LabelPolicy { @() }
+    Mock -ModuleName Compl8.Tenant Get-AutoSensitivityLabelPolicy { @() }
+    Mock -ModuleName Compl8.Tenant Get-AutoSensitivityLabelRule { @() }
+
+    # A re-serialised readback CCSI in the SERVICE shape (PascalCase, numeric Minconfidence).
+    function global:New-ReadbackCcsi { param([string]$SitId, [int]$MinConfidence)
+        @(
+            [pscustomobject]@{
+                Operator = 'And'
+                Groups   = @(
+                    [pscustomobject]@{
+                        Operator = 'Or'; Name = 'Default'
+                        Sensitivetypes = @(
+                            [pscustomobject]@{ Name='x'; Id=$SitId; Mincount=1; Maxcount=-1; Minconfidence=$MinConfidence }
+                        )
+                    }
+                )
+            }
+        )
     }
-    $script:Inv = [pscustomobject]@{
-        schemaVersion = 'compl8.inventory/v1'
-        prefix        = 'QGISCF'
-        generatedUtc  = '2026-06-13T00:00:00Z'
-        tenant        = $null
-        objects       = $invObjects
+    $offiSit = '50b8b56b-4ef8-44c2-a924-03374f5831ce'
+    $sensSit = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+    $stamp   = '[[Compl8:0123456789abcdef]]'
+    $unchangedName = $script:UnchangedRule.ruleName
+    $driftName     = $script:DriftRule.ruleName
+    $script:OrphanRuleName  = 'P09-R09-ECH-OFFI-EXT-ADT'  # template-shaped, ours via stamp, not desired
+    $script:ForeignRuleName = 'Default DLP rule'           # no stamp, non-template name => foreign
+
+    Mock -ModuleName Compl8.Tenant Get-DlpComplianceRule {
+        @(
+            # UNCHANGED — OFFI Medium=75 matches desired; provenance-stamped Comment => ours via stamp.
+            [pscustomobject]@{
+                Name = $unchangedName; Identity = $unchangedName; Policy = 'P01-ECH-QGISCF-EXT-ADT'
+                Priority = 1; Disabled = $false; AccessScope = 'NotInOrganization'; ReportSeverityLevel = 'Low'
+                GenerateIncidentReport = $null; NotifyUser = $null; AdvancedRule = $null
+                Comment = "OFFICIAL (1 classifiers)`n$stamp"
+                ContentContainsSensitiveInformation = (New-ReadbackCcsi -SitId $offiSit -MinConfidence 75)
+            }
+            # DRIFT — SENS desired is High=85, but the tenant readback was HAND-EDITED to 75 =>
+            # contentHash diverges. Still ours (provenance stamp) => must land in 'drift', not foreign.
+            [pscustomobject]@{
+                Name = $driftName; Identity = $driftName; Policy = 'P01-ECH-QGISCF-EXT-ADT'
+                Priority = 2; Disabled = $false; AccessScope = 'NotInOrganization'; ReportSeverityLevel = 'Low'
+                GenerateIncidentReport = $null; NotifyUser = $null; AdvancedRule = $null
+                Comment = "SENSITIVE (1 classifiers)`n$stamp"
+                ContentContainsSensitiveInformation = (New-ReadbackCcsi -SitId $sensSit -MinConfidence 75)
+            }
+            # ORPHAN — template-shaped ours rule (stamp) absent from the desired set.
+            [pscustomobject]@{
+                Name = 'P09-R09-ECH-OFFI-EXT-ADT'; Identity = 'P09-R09-ECH-OFFI-EXT-ADT'; Policy = 'P09-ECH-QGISCF-EXT-ADT'
+                Priority = 1; Disabled = $false; AccessScope = 'NotInOrganization'; ReportSeverityLevel = 'Low'
+                Comment = "OFFICIAL (1 classifiers)`n$stamp"
+                ContentContainsSensitiveInformation = (New-ReadbackCcsi -SitId $offiSit -MinConfidence 75)
+            }
+            # FOREIGN — a Microsoft rule: no stamp, non-template name => ours=$false.
+            [pscustomobject]@{
+                Name = 'Default DLP rule'; Identity = 'Default DLP rule'; Policy = 'Default DLP policy'
+                Priority = 0; Disabled = $false; AccessScope = $null; ReportSeverityLevel = $null
+                Comment = 'Built-in Microsoft policy rule'
+                ContentContainsSensitiveInformation = $null
+            }
+        )
     }
+
+    # ---- DLP POLICIES (actual, via the real reader) -------------------------------------------
+    # policy[0]: present, ours (stamp), SAME mode + locations, but its Comment is the RAW comment
+    # WRAPPED WITH THE PROVENANCE STAMP (what Deploy writes) — its ONLY difference from desired.
+    # codex review P2: this must NOT bucket as drift (the comment is provenance metadata, not content).
+    # policy[1]: present, ours (stamp), DIFFERENT mode (Enable) => drift.
+    $p0 = $desiredPolByName[$polNames[0]]
+    $p1 = $desiredPolByName[$polNames[1]]
+    $p0Comment = "$($p0.comment)`n$stamp"   # raw 'Exchange policy' + stamp — the deploy-time form
+    $p1Comment = "$($p1.comment)`n$stamp"
+    $p0Loc = if ($p0.locations.ContainsKey('ExchangeLocation')) { @($p0.locations['ExchangeLocation']) } else { @('All') }
+    $p1Loc = if ($p1.locations.ContainsKey('OneDriveLocation')) { @($p1.locations['OneDriveLocation']) } else { @('All') }
+    $polName0 = $polNames[0]; $polName1 = $polNames[1]
+    $script:OrphanPolName  = 'P09-ECH-QGISCF-EXT-ADT'  # template-shaped ours policy, not desired
+    $script:ForeignPolName = 'Default DLP policy'
+
+    Mock -ModuleName Compl8.Tenant Get-DlpCompliancePolicy {
+        @(
+            # UNCHANGED-but-stamped-comment (P2 proof): same mode/locations, comment = raw + stamp.
+            [pscustomobject]@{
+                Name = $polName0; Identity = $polName0; Mode = 'TestWithoutNotifications'
+                Comment = $p0Comment; ExchangeLocation = @($p0Loc)
+            }
+            # DRIFT: mode hand-edited to Enable (desired is TestWithoutNotifications).
+            [pscustomobject]@{
+                Name = $polName1; Identity = $polName1; Mode = 'Enable'
+                Comment = $p1Comment; OneDriveLocation = @($p1Loc)
+            }
+            # ORPHAN: template-shaped ours policy (stamp) not in desired.
+            [pscustomobject]@{
+                Name = 'P09-ECH-QGISCF-EXT-ADT'; Identity = 'P09-ECH-QGISCF-EXT-ADT'; Mode = 'Enable'
+                Comment = "Some policy`n$stamp"; ExchangeLocation = @('All')
+            }
+            # FOREIGN: no stamp, non-template name => ours=$false.
+            [pscustomobject]@{
+                Name = 'Default DLP policy'; Identity = 'Default DLP policy'; Mode = 'Enable'
+                Comment = 'Built-in Microsoft policy'; ExchangeLocation = @('All')
+            }
+        )
+    }
+
+    # Build the ACTUAL inventory through the REAL reader => real ownership discriminator.
+    $script:Inv = Get-TenantInventory -Prefix 'QGISCF' -GeneratedUtc '2026-06-13T00:00:00Z'
+    $script:ActualDlpRules    = @($script:Inv.objects.dlpRules)
+    $script:ActualDlpPolicies = @($script:Inv.objects.dlpPolicies)
 
     $script:Assessment = Invoke-Compl8Assess -WorkspacePath $script:Ws -Inventory $script:Inv `
         -ConfigRoot $script:ConfigDir -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z'
@@ -155,6 +204,11 @@ BeforeAll {
 AfterAll {
     if ($script:Ws -and (Test-Path -LiteralPath $script:Ws)) {
         Remove-Item -LiteralPath $script:Ws -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($fn in 'Get-DlpKeywordDictionary', 'Get-DlpSensitiveInformationTypeRulePackage',
+        'Get-DlpComplianceRule', 'Get-DlpCompliancePolicy', 'Get-Label', 'Get-LabelPolicy',
+        'Get-AutoSensitivityLabelPolicy', 'Get-AutoSensitivityLabelRule', 'New-ReadbackCcsi') {
+        Remove-Item "function:global:$fn" -ErrorAction SilentlyContinue
     }
 }
 
@@ -170,6 +224,16 @@ Describe 'Invoke-Compl8Assess — DR-4 module surface and ConfigRoot seam' {
 }
 
 Describe 'Invoke-Compl8Assess — DR-4 dlpRule four-bucket logic' {
+    It 'the actual ownership flows through the REAL provenance-stamp discriminator (codex review P1)' {
+        # The deployed-and-edited drift rule is ours because the REAL Get-TenantInventory recognised
+        # its provenance-stamped Comment — NOT because the fixture hand-set ours=$true. This is the
+        # end-to-end proof of the P1 path: a stamped, template-named rule is ours (not foreign).
+        $driftActual = @($script:ActualDlpRules | Where-Object { $_.name -eq $script:DriftRule.ruleName })[0]
+        $driftActual.ours | Should -BeTrue -Because 'ownership came from the real stamp discriminator, not a hand-set flag'
+        $foreignActual = @($script:ActualDlpRules | Where-Object { $_.name -eq $script:ForeignRuleName })[0]
+        $foreignActual.ours | Should -BeFalse -Because 'no provenance stamp + non-template name => foreign'
+    }
+
     It 'drift: an ours rule present in both whose content hash differs (the hand-edit signal)' {
         $entry = Get-DR4Entry $script:Assessment 'drift' $script:DriftRule.ruleName
         $entry | Should -Not -BeNullOrEmpty
@@ -226,6 +290,21 @@ Describe 'Invoke-Compl8Assess — DR-4 dlpPolicy buckets' {
         foreach ($bucket in 'create', 'update-in-place', 'repack-move', 'remove', 'orphan', 'foreign', 'drift') {
             Get-DR4Refs $script:Assessment $bucket | Should -Not -Contain $polNames[0]
         }
+    }
+
+    It 'NOT drift: a deployed policy whose ONLY difference from desired is the provenance-stamped comment (codex review P2)' {
+        # policy[0]'s actual Comment is the RAW desired comment WRAPPED WITH THE PROVENANCE STAMP (what
+        # Deploy-DLPRules writes), while desired keeps the raw comment — same mode + locations otherwise.
+        # Before the P2 fix the policy content hash folded in the comment, so this falsely reported
+        # drift. The stamped-comment-only delta must NOT bucket as drift (the comment is provenance
+        # metadata, not drift-relevant content).
+        $polNames = @($script:Desired.Policies | ForEach-Object { $_.policyName } | Sort-Object)
+        $actual0  = @($script:ActualDlpPolicies | Where-Object { $_.name -eq $polNames[0] })[0]
+        $desired0 = @($script:Desired.Policies | Where-Object { $_.policyName -eq $polNames[0] })[0]
+        $actual0.ours        | Should -BeTrue -Because 'the stamped policy is ours via the real discriminator'
+        $actual0.comment     | Should -Match '\[\[Compl8:[0-9a-f]{16}\]\]' -Because 'the actual comment carries the provenance stamp'
+        $actual0.comment     | Should -Not -Be $desired0.comment -Because 'the stamped actual comment differs from the raw desired comment'
+        Get-DR4Refs $script:Assessment 'drift' | Should -Not -Contain $polNames[0] -Because 'a stamped-comment-only delta is not drift'
     }
 
     It 'orphan: an ours policy absent from the desired set' {

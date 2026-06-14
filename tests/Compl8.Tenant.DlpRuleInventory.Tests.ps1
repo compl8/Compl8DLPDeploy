@@ -59,6 +59,10 @@ BeforeAll {
                 Policy   = 'P01-MED-QGISCF-EXT'
                 Priority = 0
                 Disabled = $false
+                # codex review P1: DLP-rule ownership is the provenance stamp on the Comment, not the
+                # name prefix — carry a real '[[Compl8:...]]' marker so this stays ours under the new
+                # discriminator (Test-OursDlp).
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8:0123456789abcdef]]"
                 AccessScope = 'NotInOrganization'
                 ReportSeverityLevel = 'Low'
                 GenerateIncidentReport = $null
@@ -85,13 +89,29 @@ BeforeAll {
                     }
                 )
             }
-            # A foreign Microsoft rule — opacity-as-safety; never our discriminator.
+            # codex review P1: a TEMPLATE-named ours rule ('P01-R01-ECH-OFFI-EXT-ADT' — the real
+            # dlpRule template shape, which does NOT start with the prefix) whose Comment carries a
+            # provenance stamp => Test-OursDlp must mark it ours=$true via the PRIMARY (stamp) path.
+            [pscustomobject]@{
+                Name     = 'P01-R01-ECH-OFFI-EXT-ADT'
+                Identity = 'P01-R01-ECH-OFFI-EXT-ADT'
+                Policy   = 'P01-ECH-QGISCF-EXT-ADT'
+                Priority = 1
+                Disabled = $false
+                Comment  = "OFFICIAL (1 classifiers)`n[[Compl8:fedcba9876543210]]"
+                AccessScope = 'NotInOrganization'
+                ReportSeverityLevel = 'Low'
+                ContentContainsSensitiveInformation = $null
+            }
+            # A foreign Microsoft rule — opacity-as-safety; never our discriminator. Its name does NOT
+            # match the P-numbered template and its Comment carries no Compl8 stamp => ours=$false.
             [pscustomobject]@{
                 Name     = 'Default rule'
                 Identity = 'Default rule'
                 Policy   = 'Microsoft DLP Policy'
                 Priority = 0
                 Disabled = $false
+                Comment  = 'Built-in Microsoft policy rule'
                 AccessScope = $null
                 ReportSeverityLevel = $null
                 ContentContainsSensitiveInformation = $null
@@ -104,7 +124,25 @@ BeforeAll {
                 Name     = 'P01-MED-QGISCF-EXT'
                 Identity = 'P01-MED-QGISCF-EXT'
                 Mode     = 'TestWithoutNotifications'
-                Comment  = 'QGISCF DLP Policy for Exchange Online - External Email - Audit Mode'
+                # codex review P1: ownership via the provenance stamp on the Comment.
+                Comment  = "QGISCF DLP Policy for Exchange Online - External Email - Audit Mode`n[[Compl8:0123456789abcdef]]"
+                ExchangeLocation = @('All')
+            }
+            # codex review P1: a TEMPLATE-named ours policy ('P01-ECH-QGISCF-EXT-ADT' — prefix in the
+            # MIDDLE) whose Comment carries a provenance stamp => ours=$true via the PRIMARY path.
+            [pscustomobject]@{
+                Name     = 'P01-ECH-QGISCF-EXT-ADT'
+                Identity = 'P01-ECH-QGISCF-EXT-ADT'
+                Mode     = 'TestWithoutNotifications'
+                Comment  = "Exchange policy`n[[Compl8:fedcba9876543210]]"
+                ExchangeLocation = @('All')
+            }
+            # A foreign policy — non-matching name, non-Compl8 comment => ours=$false.
+            [pscustomobject]@{
+                Name     = 'Default DLP policy'
+                Identity = 'Default DLP policy'
+                Mode     = 'Enable'
+                Comment  = 'Built-in Microsoft policy'
                 ExchangeLocation = @('All')
             }
         )
@@ -188,6 +226,32 @@ Describe 'Get-TenantInventory — dlpPolicies carry mode/locations/comment (DR-3
         }
         $pol.mode    | Should -Be 'TestWithoutNotifications'
         $pol.comment | Should -Match 'Exchange'
+    }
+}
+
+Describe 'Get-TenantInventory — DLP rule/policy ownership via provenance stamp (codex review P1)' {
+    It 'marks a TEMPLATE-named rule (no prefix-start) ours=$true when its Comment carries a [[Compl8:...]] stamp' {
+        $rule = @($script:Inv.objects.dlpRules | Where-Object { $_.name -eq 'P01-R01-ECH-OFFI-EXT-ADT' })[0]
+        $rule        | Should -Not -BeNullOrEmpty -Because 'the template-named ours rule must be in the inventory'
+        $rule.ours   | Should -BeTrue -Because 'its Comment carries a Compl8 provenance stamp (the definitive ownership marker)'
+    }
+
+    It 'marks a rule with a non-Compl8 comment and a non-matching name ours=$false (foreign)' {
+        $rule = @($script:Inv.objects.dlpRules | Where-Object { $_.name -eq 'Default rule' })[0]
+        $rule        | Should -Not -BeNullOrEmpty
+        $rule.ours   | Should -BeFalse -Because 'no provenance stamp and the name does not match the P-numbered template'
+    }
+
+    It 'marks a TEMPLATE-named policy (prefix in the middle) ours=$true when its Comment carries a stamp' {
+        $pol = @($script:Inv.objects.dlpPolicies | Where-Object { $_.name -eq 'P01-ECH-QGISCF-EXT-ADT' })[0]
+        $pol         | Should -Not -BeNullOrEmpty
+        $pol.ours    | Should -BeTrue -Because 'the policy name never starts with the prefix; ownership is the provenance stamp'
+    }
+
+    It 'marks a non-Compl8 policy ours=$false (foreign)' {
+        $pol = @($script:Inv.objects.dlpPolicies | Where-Object { $_.name -eq 'Default DLP policy' })[0]
+        $pol         | Should -Not -BeNullOrEmpty
+        $pol.ours    | Should -BeFalse
     }
 }
 

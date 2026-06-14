@@ -26,7 +26,7 @@ function Get-TenantInventory {
                 sitPackages       : { name, identity, ours, publisher, rulePackId,
                                       entityIds[], sha256, contentHash, sits[] }
                 sits              : { name, identity, ours, package, contentHash }
-                dlpRules          : { name, identity, ours, policy, priority, disabled,
+                dlpRules          : { name, identity, ours, policy, priority, disabled, comment,
                                       contentContainsSensitiveInformation, contentCondition,
                                       advancedRule, accessScope, generateIncidentReport,
                                       notifyUser, reportSeverity, contentHash }
@@ -92,10 +92,26 @@ function Get-TenantInventory {
         When no idRef is present the slug falls back to the LocalizedStrings display name,
         then the entity GUID. This is the same join key the desired assignment slugs use.
 
-        Every record has at minimum name, identity and ours (boolean). `ours` is true when
-        the object name carries the '<Prefix>-' marker (D6: prefix is the primary signal,
-        corroborated by the provenance stamp; here the prefix is authoritative). Microsoft /
-        foreign objects have ours=$false and are NEVER touched by later layers.
+        Every record has at minimum name, identity and ours (boolean). The OWNERSHIP DISCRIMINATOR
+        differs by object family:
+
+          * dictionaries / sitPackages / sits / labels / labelPolicies / autoLabel* — `ours` is true
+            when the object NAME carries the '<Prefix>-' START marker (D6: prefix is authoritative;
+            these names are generated to begin with the prefix). Driven by Remove-DeploymentNamePrefix.
+
+          * dlpRules / dlpPolicies (codex review P1) — their names DO NOT start with '<Prefix>-'
+            (templates: dlpPolicy 'P{n}-{code}-{prefix}-{suffix}' has the prefix in the MIDDLE;
+            dlpRule 'P{n}-R{n}{chunk}-{code}-{labelCode}-{suffix}' has NO prefix), so the prefix-START
+            check would mark every deployed Compl8 rule/policy foreign. Ownership is instead the
+            DEPLOYMENT PROVENANCE STAMP that Deploy-DLPRules writes into each rule's/policy's Comment
+            (the '[[Compl8:...]]' marker carried on the record as .comment). PRIMARY: the Comment
+            carries a Compl8 provenance stamp (Get-DeploymentProvenanceStamp returns non-null, or a
+            direct '[[Compl8:...]]' marker match). FALLBACK (stamp-less): the name matches the
+            generated template shape — a P-numbered rule/policy ('^P\d+-' with an optional '-R\d+'
+            rule segment) that carries the prefix as a name token ('-<Prefix>-' or trailing
+            '-<Prefix>'). See Test-OursDlp below.
+
+        Microsoft / foreign objects have ours=$false and are NEVER touched by later layers.
 
     .PARAMETER Prefix
         Naming prefix (e.g. 'QGISCF') driving the ours-discriminator via Remove-DeploymentNamePrefix.
@@ -121,10 +137,48 @@ function Get-TenantInventory {
 
     # --- Discriminator: an object is 'ours' when its name starts with '<Prefix>-' (D6). ---
     # Remove-DeploymentNamePrefix strips the marker; if the name changed, it carried the prefix.
+    # CORRECT for SITs / packages / dictionaries / labels — those names START with the prefix.
     function Test-Ours {
         param([string]$Name)
         if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
         return (Remove-DeploymentNamePrefix -Name $Name -Prefix $Prefix) -ne $Name
+    }
+
+    # --- DLP rule/policy discriminator (codex review P1): the prefix-START check above is WRONG
+    # for DLP rules and policies, whose NAMES DO NOT start with '<Prefix>-' (the templates are
+    # dlpPolicy = 'P{n}-{code}-{prefix}-{suffix}' with the prefix in the MIDDLE, and
+    # dlpRule = 'P{n}-R{n}{chunk}-{code}-{labelCode}-{suffix}' with the prefix ABSENT). Using
+    # Test-Ours there marks every deployed Compl8 rule/policy ours=$false, so assess buckets it
+    # 'foreign' and skips ALL drift/create/orphan handling. Ownership here is instead driven by
+    # the DEPLOYMENT PROVENANCE STAMP — the definitive, prefix-independent ownership marker that
+    # Deploy-DLPRules.ps1 writes into each rule's/policy's Comment via Add-DeploymentProvenanceStamp
+    # (the '[[Compl8:...]]' marker). Get-TenantInventory now carries that Comment (DR-3), so:
+    #
+    #   PRIMARY  : a rule/policy is ours when its Comment carries a Compl8 provenance stamp —
+    #              Get-DeploymentProvenanceStamp returns a non-null stamp object when present
+    #              (corroborated by a direct '[[Compl8:...]]' marker match as a belt-and-braces guard).
+    #   FALLBACK : for the (rare) stamp-less case (an older deploy, or a stripped Comment) the name
+    #              must match the GENERATED TEMPLATE SHAPE for the configured prefix — i.e. it is a
+    #              P-numbered rule/policy ('^P\d+-' optionally with an '-R\d+' rule segment) AND it
+    #              carries the prefix as a name token ('-<Prefix>-' or trailing '-<Prefix>'), which is
+    #              how the policy template embeds the prefix. A foreign rule (e.g. 'Default DLP rule')
+    #              matches neither and stays ours=$false.
+    function Test-OursDlp {
+        param([string]$Name, [string]$Comment)
+        # PRIMARY: definitive provenance stamp on the carried Comment.
+        if (-not [string]::IsNullOrWhiteSpace($Comment)) {
+            if ($Comment -match '\[\[Compl8:[0-9a-f]{16}\]\]' -or $Comment -match '\[\[Compl8DLPDeploy:provenance:v\d+') {
+                return $true
+            }
+            if ($null -ne (Get-DeploymentProvenanceStamp -Text $Comment)) { return $true }
+        }
+        # FALLBACK: stamp-less — match the generated P-numbered template shape carrying the prefix.
+        if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+        $isPNumbered = $Name -match '^P\d+(-R\d+[A-Za-z]?)?-'
+        if (-not $isPNumbered) { return $false }
+        if ([string]::IsNullOrWhiteSpace($Prefix)) { return $false }
+        $escapedPrefix = [regex]::Escape($Prefix)
+        return ($Name -match "-$escapedPrefix(-|$)")
     }
 
     function Get-Prop {
@@ -374,10 +428,16 @@ function Get-TenantInventory {
             -GenerateIncidentReport $generateIncidentReport -NotifyUser $notifyUser `
             -ReportSeverity $reportSeverity -Disabled $disabled
 
-        ConvertTo-Record -Object $_ -Extra @{
+        # codex review P1: a DLP rule's name never starts with '<Prefix>-', so ownership is the
+        # provenance stamp on its Comment (with the template-shape fallback) — NOT the prefix-START
+        # check ConvertTo-Record applies. Compute it here and OVERRIDE the record's 'ours'.
+        $ruleName    = [string](Get-Prop -Object $_ -Names @('Name'))
+        $ruleComment = [string](Get-Prop -Object $_ -Names @('Comment'))
+        $record = ConvertTo-Record -Object $_ -Extra @{
             policy   = [string](Get-Prop -Object $_ -Names @('Policy', 'ParentPolicyName'))
             priority = Get-Prop -Object $_ -Names @('Priority')
             disabled = $disabled
+            comment  = $ruleComment
             contentContainsSensitiveInformation = Get-RuleClassifierField -Rule $_
             contentCondition       = $contentCondition
             advancedRule           = if ($null -ne $advancedRule) { [string]$advancedRule } else { $null }
@@ -387,6 +447,8 @@ function Get-TenantInventory {
             reportSeverity         = if ($null -ne $reportSeverity) { [string]$reportSeverity } else { $null }
             contentHash            = $contentHash
         }
+        $record.ours = [bool](Test-OursDlp -Name $ruleName -Comment $ruleComment)
+        $record
     })
 
     # DR-3: dlpPolicies carry mode + the structured locations object + comment so assess can
@@ -400,11 +462,18 @@ function Get-TenantInventory {
                 if (@($locVal).Count -gt 0) { $locations[$locName] = @($locVal) }
             }
         }
-        ConvertTo-Record -Object $_ -Extra @{
+        # codex review P1: a DLP policy's name carries the prefix in the MIDDLE (not at the start),
+        # so ownership is the provenance stamp on its Comment (with the template-shape fallback) —
+        # NOT the prefix-START check ConvertTo-Record applies. Override the record's 'ours'.
+        $policyName    = [string](Get-Prop -Object $_ -Names @('Name'))
+        $policyComment = [string](Get-Prop -Object $_ -Names @('Comment'))
+        $record = ConvertTo-Record -Object $_ -Extra @{
             mode      = [string](Get-Prop -Object $_ -Names @('Mode'))
             locations = [pscustomobject]$locations
-            comment   = [string](Get-Prop -Object $_ -Names @('Comment'))
+            comment   = $policyComment
         }
+        $record.ours = [bool](Test-OursDlp -Name $policyName -Comment $policyComment)
+        $record
     })
 
     $labels = @($rawLabels | ForEach-Object {

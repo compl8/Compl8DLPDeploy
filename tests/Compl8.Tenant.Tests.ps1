@@ -70,14 +70,17 @@ Describe 'Get-TenantInventory' {
                 [pscustomobject]@{ Name = 'Microsoft Rule Package'; Identity = 'Microsoft Rule Package'; Publisher = 'Microsoft Corporation'; RulePackId = '00000000-0000-0000-0000-000000000001' }
             )
         }
+        # codex review P1: DLP rule/policy ownership is the PROVENANCE STAMP on the Comment, not the
+        # name prefix (a deployed rule's name never starts with '<Prefix>-'). Carry a real
+        # '[[Compl8:...]]' marker so these stay ours=$true under the corrected discriminator.
         Mock -ModuleName Compl8.Tenant Get-DlpComplianceRule {
             @(
-                [pscustomobject]@{ Name = 'QGISCF-QLD-Medium-Email-07'; Identity = 'QGISCF-QLD-Medium-Email-07'; Policy = 'P01-MED-QGISCF-EXT'; Priority = 0; Disabled = $false }
+                [pscustomobject]@{ Name = 'QGISCF-QLD-Medium-Email-07'; Identity = 'QGISCF-QLD-Medium-Email-07'; Policy = 'P01-MED-QGISCF-EXT'; Priority = 0; Disabled = $false; Comment = "QLD Medium`n[[Compl8:0123456789abcdef]]" }
             )
         }
         Mock -ModuleName Compl8.Tenant Get-DlpCompliancePolicy {
             @(
-                [pscustomobject]@{ Name = 'P01-MED-QGISCF-EXT'; Identity = 'P01-MED-QGISCF-EXT'; Mode = 'Enable' }
+                [pscustomobject]@{ Name = 'P01-MED-QGISCF-EXT'; Identity = 'P01-MED-QGISCF-EXT'; Mode = 'Enable'; Comment = "Medium policy`n[[Compl8:0123456789abcdef]]" }
             )
         }
         Mock -ModuleName Compl8.Tenant Get-Label {
