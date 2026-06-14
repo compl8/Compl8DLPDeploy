@@ -11,12 +11,22 @@
 # modules/Compl8.Model and modules/Compl8.Tenant and dot-sourced here so every
 # existing `Import-Module ...DLP-Deploy.psm1` site — and every Pester mock
 # scoped `-ModuleName DLP-Deploy` — keeps working unchanged during migration.
+#
+# Each layer's Private/ is dot-sourced BEFORE its Public/ (mirroring the layer
+# psm1 load order) so the moved provenance helpers — Resolve-DeploymentProvenance-
+# RegistryPath and ConvertFrom-DeploymentProvenanceFieldValue — have a SINGLE
+# canonical definition under Compl8.Model/Private that resolves both standalone
+# (Import-Module Compl8.Model) and via this facade (Stage-5 D8 helper dedup). They
+# stay UNEXPORTED (Export-ModuleMember below does not list them), preserving the
+# internal-helper contract the standalone Compl8.Model tests assert.
 # ---------------------------------------------------------------------------
 foreach ($compl8Layer in @('Compl8.Model', 'Compl8.Tenant')) {
-    $compl8LayerPublic = Join-Path $PSScriptRoot $compl8Layer 'Public'
-    if (Test-Path -LiteralPath $compl8LayerPublic) {
-        foreach ($compl8Fn in (Get-ChildItem -Path $compl8LayerPublic -Filter '*.ps1' -File | Sort-Object Name)) {
-            . $compl8Fn.FullName
+    foreach ($compl8Subdir in @('Private', 'Public')) {
+        $compl8LayerDir = Join-Path $PSScriptRoot $compl8Layer $compl8Subdir
+        if (Test-Path -LiteralPath $compl8LayerDir) {
+            foreach ($compl8Fn in (Get-ChildItem -Path $compl8LayerDir -Filter '*.ps1' -File | Sort-Object Name)) {
+                . $compl8Fn.FullName
+            }
         }
     }
 }
@@ -1251,31 +1261,9 @@ function ConvertTo-DeploymentProvenanceFieldValue {
     return [System.Uri]::EscapeDataString($Value)
 }
 
-function ConvertFrom-DeploymentProvenanceFieldValue {
-    param([string]$Value)
-
-    if ($null -eq $Value) { return $null }
-    return [System.Uri]::UnescapeDataString($Value)
-}
-
-function Resolve-DeploymentProvenanceRegistryPath {
-    <#
-    .SYNOPSIS
-        Resolves the provenance registry file path: workspace history > explicit override > env var
-        > repo default (Stage-5 re-point D8).
-    #>
-    param(
-        [string]$RegistryPath,
-        [string]$WorkspacePath
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($WorkspacePath)) {
-        return Join-Path (Join-Path (Join-Path $WorkspacePath "history") "applies") "provenance.json"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($RegistryPath)) { return $RegistryPath }
-    if (-not [string]::IsNullOrWhiteSpace($env:COMPL8_PROVENANCE_REGISTRY)) { return $env:COMPL8_PROVENANCE_REGISTRY }
-    return Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "reports") "provenance-registry.json"
-}
+# ConvertFrom-DeploymentProvenanceFieldValue and Resolve-DeploymentProvenanceRegistryPath are now
+# defined ONCE under modules/Compl8.Model/Private and dot-sourced in by the layered facade loop at
+# the top of this module (Stage-5 D8 helper dedup). They remain unexported internal helpers.
 
 function Test-DeploymentProvenanceOwnership {
     <#
