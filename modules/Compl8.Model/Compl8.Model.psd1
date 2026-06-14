@@ -26,6 +26,7 @@
         'Get-DlpEntityClosureContentHash'
         'Get-DlpEntityContentHash'
         'Get-DlpRuleClassifierReferenceText'
+        'Get-DlpRuleContentHash'
         'Get-DlpRulePackageEntityIds'
         'Get-DlpRulePolicyNames'
         'Get-PolicyName'
