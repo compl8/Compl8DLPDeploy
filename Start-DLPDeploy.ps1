@@ -473,6 +473,16 @@ function Invoke-Compl8EnginePhase {
     $scoped = $ctx.PSObject.Copy()
     $scoped.EngineRoutes = $scopedRoutes
 
+    # SAFETY (codex 5B P1): until a type's Stage-5C slice wires its per-step desired content, a routed
+    # REAL apply would hand the executors $null content (broken create/update). So when NO DesiredContent
+    # is supplied, force PLAN-ONLY (preview) regardless of -WhatIf; a 5C slice enables real apply by
+    # passing -DesiredContent. (Routes default off, so this only matters once an operator flips one.)
+    $planOnly = [bool]$WhatIf
+    if (-not $planOnly -and @($DesiredContent.Keys).Count -eq 0) {
+        Write-Host "  No desired content wired for '$RouteKey' yet — Engine runs PLAN-ONLY (preview). Real apply lands in this type's Stage-5C cutover." -ForegroundColor Yellow
+        $planOnly = $true
+    }
+
     $deployArgs = @{
         Context        = $scoped
         PlanId         = "deploy-$($ctx.Environment)-$RouteKey-$($script:DeployStamp)"
@@ -480,7 +490,7 @@ function Invoke-Compl8EnginePhase {
         ProjectRoot    = $ProjectRoot
         DesiredContent = $DesiredContent
     }
-    if ($WhatIf) { $deployArgs["WhatIf"] = $true }
+    if ($planOnly) { $deployArgs["WhatIf"] = $true }
     $result = Invoke-Compl8Deploy @deployArgs
     if ($result.render) { Write-Host $result.render }
     $result

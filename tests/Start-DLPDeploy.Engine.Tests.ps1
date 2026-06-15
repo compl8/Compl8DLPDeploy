@@ -116,3 +116,34 @@ Describe 'Test-Compl8PhaseRoutesToEngine — the TUI routing GATE (behavioural)'
         Test-Compl8PhaseRoutesToEngine 'rulePackage' | Should -BeFalse
     }
 }
+
+Describe 'Invoke-Compl8EnginePhase — plan-only safety until content is wired (codex 5B P1)' {
+    BeforeAll {
+        . ([scriptblock]::Create((Get-ScriptFunctionText -Name 'Get-Compl8DeployContext')))
+        . ([scriptblock]::Create((Get-ScriptFunctionText -Name 'Invoke-Compl8EnginePhase')))
+        function New-Compl8Context { param([string]$TargetEnvironment, [string]$WorkspaceRoot, [string]$Prefix, [string]$UPN, [switch]$Delegated) }
+        function Invoke-Compl8Deploy { param($Context, $PlanId, $GeneratedUtc, $ProjectRoot, $DesiredContent, [switch]$WhatIf) }
+        $script:DeployStamp = '20260615000000'
+        $script:DeployGeneratedUtc = '2026-06-15T00:00:00Z'
+        $ProjectRoot = $script:ProjectRoot
+    }
+
+    It 'forces -WhatIf (plan-only) when NO desired content is supplied' {
+        $UseEngine = $true
+        $script:TargetEnvironment = 'nonprod'
+        Mock New-Compl8Context { [pscustomobject]@{ Environment = 'nonprod'; EngineRoutes = [pscustomobject]@{ rulePackage = $true } } }
+        Mock Invoke-Compl8Deploy { [pscustomobject]@{ render = '' } }
+        Invoke-Compl8EnginePhase -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' | Out-Null
+        Should -Invoke Invoke-Compl8Deploy -Times 1 -ParameterFilter { $WhatIf -eq $true }
+    }
+
+    It 'allows a REAL apply (no forced -WhatIf) once desired content IS supplied' {
+        $UseEngine = $true
+        $script:TargetEnvironment = 'nonprod'
+        Mock New-Compl8Context { [pscustomobject]@{ Environment = 'nonprod'; EngineRoutes = [pscustomobject]@{ rulePackage = $true } } }
+        Mock Invoke-Compl8Deploy { [pscustomobject]@{ render = '' } }
+        $content = @{ 'rulePackage|QGISCF-test-01' = [pscustomobject]@{ name = 'QGISCF-test-01' } }
+        Invoke-Compl8EnginePhase -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' -DesiredContent $content | Out-Null
+        Should -Invoke Invoke-Compl8Deploy -Times 1 -ParameterFilter { -not $WhatIf }
+    }
+}

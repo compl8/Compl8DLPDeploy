@@ -112,3 +112,27 @@ Describe 'Test-Compl8PhaseRoutesToEngine — the routing GATE (behavioural)' {
         Test-Compl8PhaseRoutesToEngine 'dictionary' | Should -BeFalse
     }
 }
+
+Describe 'Invoke-Compl8EnginePhase — plan-only safety until content is wired (codex 5B P1)' {
+    BeforeAll {
+        . ([scriptblock]::Create((Get-ScriptFunctionText -Name 'Invoke-Compl8EnginePhase')))
+        function Invoke-Compl8Deploy { param($Context, $PlanId, $GeneratedUtc, $ProjectRoot, $DesiredContent, [switch]$WhatIf) }
+        $script:DeployStamp = '20260615000000'
+        $script:DeployGeneratedUtc = '2026-06-15T00:00:00Z'
+        $ProjectRoot = $script:ProjectRoot
+        $script:Ctx = [pscustomobject]@{ Environment = 'nonprod'; EngineRoutes = [pscustomobject]@{ dictionary = $true } }
+    }
+
+    It 'forces -WhatIf (plan-only) when NO desired content is supplied and not already -WhatIf' {
+        Mock Invoke-Compl8Deploy { [pscustomobject]@{ render = '' } }
+        Invoke-Compl8EnginePhase -Context $script:Ctx -RouteKey 'dictionary' -PhaseLabel 'Dictionaries' | Out-Null
+        Should -Invoke Invoke-Compl8Deploy -Times 1 -ParameterFilter { $WhatIf -eq $true }
+    }
+
+    It 'allows a REAL apply (no forced -WhatIf) once desired content IS supplied' {
+        Mock Invoke-Compl8Deploy { [pscustomobject]@{ render = '' } }
+        $content = @{ 'dictionary|{{DICT_X}}' = [pscustomobject]@{ name = 'X' } }
+        Invoke-Compl8EnginePhase -Context $script:Ctx -RouteKey 'dictionary' -PhaseLabel 'Dictionaries' -DesiredContent $content | Out-Null
+        Should -Invoke Invoke-Compl8Deploy -Times 1 -ParameterFilter { -not $WhatIf }
+    }
+}
