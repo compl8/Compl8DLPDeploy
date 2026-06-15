@@ -90,10 +90,11 @@ function Invoke-Compl8Reconcile {
         A compl8.reconciliation/v1 object:
         { schemaVersion; workspace; generatedUtc; status; iterationCount; iterations = @({ index; phase;
           actions = @({objectType; ref; resolution}); plan = <compl8.plan/v1>; blastRadius = @(<R3 records>);
-          remainingConflicts = @(<projected name-collisions>) }); unresolvedConflicts; unreconciled;
-          unclaimable }. status is 'converged' only when unresolvedConflicts AND unreconciled are both
-        empty; unreconciled lists entries the planner could not turn into a step (e.g. non-dlpRule drift),
-        surfaced rather than silently dropped.
+          remainingConflicts = @(<projected name-collisions>) }); iterationCapHit; unresolvedConflicts;
+          pendingWork; unreconciled; unclaimable }. status is 'converged' ONLY when unresolvedConflicts,
+        unreconciled AND pendingWork are all empty — otherwise 'blocked'. pendingWork lists actionable
+        entries the loop never planned (e.g. -MaxIterations truncated it; iterationCapHit flags that
+        case). unreconciled lists entries the planner could not turn into a step (e.g. non-dlpRule drift).
     #>
     [CmdletBinding()]
     param(
@@ -168,26 +169,32 @@ function Invoke-Compl8Reconcile {
         foreach ($x in $toRemove) { $conflicts.Remove($x) | Out-Null }
     }
 
-    # Name-collision claimable candidates: foreign entries whose name matches a name-collision conflict.
+    # Claim candidates: FOREIGN entries only (codex R4 P2). Claiming ADOPTS a NOT-ours object by
+    # re-stamping provenance — an orphan is ALREADY ours, so claim is a no-op for it (handled below as
+    # unclaimable). `isCollision` = this foreign object squats a DESIRED name (a name-collision), so a
+    # desired counterpart exists and claiming it can be reconciled by the update path (project -> drift).
+    # A foreign object NOT squatting a desired name, claimed, is adopted only (no desired content to
+    # update toward — projecting it to drift would emit an update step the executor can't fulfil).
     function Get-PendingClaims {
         $pending = [System.Collections.Generic.List[object]]::new()
-        # Sources: name-collision conflicts (matched to their foreign entry for the objectType), and any
-        # foreign/orphan entry explicitly resolved 'claim'. Dedup by composite key; claims-only here.
-        $candidates = [System.Collections.Generic.List[object]]::new()
         $collisionRefs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($c in $conflicts) { if ([string]$c.kind -eq 'name-collision') { $collisionRefs.Add([string]$c.slug) | Out-Null } }
-        foreach ($bn in 'foreign', 'orphan') {
-            foreach ($e in $bk[$bn]) {
-                $candidates.Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = $bn; isCollision = ($bn -eq 'foreign' -and $collisionRefs.Contains([string]$e.ref)) }) | Out-Null
-            }
-        }
-        foreach ($cand in $candidates) {
+        foreach ($e in $bk['foreign']) {
+            $cand = [pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = 'foreign'; isCollision = $collisionRefs.Contains([string]$e.ref) }
             $key = "$($cand.objectType)|$($cand.ref)"
             if ($claimedKeys.Contains($key)) { continue }
             if ((Get-Res -Type $cand.objectType -Ref $cand.ref) -ne 'claim') { continue }
             $pending.Add($cand) | Out-Null
         }
         @($pending | Sort-Object @{ Expression = { $_.objectType } }, @{ Expression = { $_.ref } })
+    }
+
+    # An orphan resolved 'claim' is a no-op (it is already ours) — surface it so it is not silently
+    # ignored. It is left in the orphan bucket; a 'remove'/'keep' resolution is the meaningful choice.
+    foreach ($e in @($bk['orphan'])) {
+        if ((Get-Res -Type ([string]$e.objectType) -Ref ([string]$e.ref)) -eq 'claim') {
+            $unclaimable.Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; reason = 'orphan is already ours — claim adopts a foreign object; use remove or keep' }) | Out-Null
+        }
     }
 
     # ------------------------------------------------------------------ the loop
@@ -217,11 +224,16 @@ function Invoke-Compl8Reconcile {
                 $plan = Add-PlanStep -Plan $plan -Id ('c{0:D2}' -f $n) -Action 'claim' `
                     -ObjectType $cand.objectType -ObjectRef $cand.ref -DependsOn @() -Impact @() -Gate $null
                 $actions.Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; resolution = 'claim' }) | Out-Null
-                # PROJECT: foreign/orphan -> ours; the collision clears; it becomes drift for the next pass.
+                # PROJECT: the claimed foreign object is now ours; the collision clears. Project it to
+                # `drift` for the next (update) pass ONLY when a DESIRED counterpart exists (it squatted a
+                # desired name). A foreign object with no desired counterpart is adopted ONLY — projecting
+                # it to drift would queue an update with no resolved content to apply (codex R4 P2).
                 $claimedKeys.Add($key) | Out-Null
                 Remove-BucketEntry -Bucket $cand.bucket -Type $cand.objectType -Ref $cand.ref
                 Remove-Collision -Ref $cand.ref
-                $bk['drift'].Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; reason = 'claimed — re-stamped ours; content reconciled by the update path' }) | Out-Null
+                if ($cand.isCollision) {
+                    $bk['drift'].Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; reason = 'claimed — re-stamped ours; content reconciled by the update path' }) | Out-Null
+                }
             }
 
             if ($n -eq 0) {
@@ -328,12 +340,31 @@ function Invoke-Compl8Reconcile {
         foreach ($e in $unplannable) { Add-Unreconciled -Bucket $e.bucket -Type $e.objectType -Ref $e.ref; Remove-BucketEntry -Bucket $e.bucket -Type $e.objectType -Ref $e.ref }
     }
 
+    # ------------------------------------------------------------------ remaining actionable work
+    # Whatever is STILL actionable after the loop — a claim the cap never reached, or claimed->drift work
+    # left unplanned when -MaxIterations truncated the loop mid-reconcile (codex R4 P2). 'leave'/'keep'
+    # entries are deliberate skips, NOT pending. This is what stops a CAPPED run reporting false success.
+    $pending = [System.Collections.Generic.List[object]]::new()
+    foreach ($cand in @(Get-PendingClaims)) { $pending.Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; bucket = 'foreign'; wouldBe = 'claim' }) | Out-Null }
+    foreach ($bn in 'create', 'update-in-place', 'repack-move', 'remove', 'drift') {
+        foreach ($e in $bk[$bn]) {
+            if ((Get-Res -Type ([string]$e.objectType) -Ref ([string]$e.ref)) -in 'leave', 'keep') { continue }
+            $pending.Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = $bn; wouldBe = $bn }) | Out-Null
+        }
+    }
+    foreach ($e in $bk['orphan']) {
+        if ((Get-Res -Type ([string]$e.objectType) -Ref ([string]$e.ref)) -eq 'remove') {
+            $pending.Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = 'orphan'; wouldBe = 'remove' }) | Out-Null
+        }
+    }
+    $iterationCapHit = ($iterIndex -ge $MaxIterations) -and ($pending.Count -gt 0)
+
     # ------------------------------------------------------------------ terminal status
-    # Converged ONLY when no name-collision is left unresolved AND nothing was left unreconciled (a
-    # planner gap). Either makes the run `blocked` so the operator is never told "done" while an object
-    # is still squatting a name or carrying un-pushed drift.
+    # Converged ONLY when nothing is left: no unresolved name-collision, nothing unreconciled (a planner
+    # gap), AND no actionable work still pending (the cap-truncation guard). Any of these makes the run
+    # `blocked` so the operator is never told "done" while work remains.
     $unresolved = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
-    $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0) { 'converged' } else { 'blocked' }
+    $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0 -and $pending.Count -eq 0) { 'converged' } else { 'blocked' }
 
     [pscustomobject]@{
         schemaVersion       = 'compl8.reconciliation/v1'
@@ -341,8 +372,10 @@ function Invoke-Compl8Reconcile {
         generatedUtc        = $GeneratedUtc
         status              = $status
         iterationCount      = $iterations.Count
+        iterationCapHit     = $iterationCapHit
         iterations          = @($iterations)
         unresolvedConflicts = @($unresolved)
+        pendingWork         = @($pending)
         unreconciled        = @($unreconciled)
         unclaimable         = @($unclaimable)
     }
