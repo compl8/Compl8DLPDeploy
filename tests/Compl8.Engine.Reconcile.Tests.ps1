@@ -141,6 +141,21 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
         @($ri.plan.steps | Where-Object { $_.action -eq 'remove' -and $_.objectRef -eq 'OldPkg' }).Count | Should -Be 1
     }
+    It 'does NOT falsely converge on non-dlpRule drift the planner cannot step (codex R4 P1)' {
+        # The planner (Get-Compl8PlanOrder) only turns dlpRule drift into a step; a drifted dlpPolicy
+        # produces NO step. Reconcile must surface it (unreconciled) and report blocked — never clear it
+        # and claim converged while the policy is unchanged.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.drift = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; reason = 'ours — content changed out-of-band' })
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions @() `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $r.status                       | Should -Be 'blocked'
+        @($r.unreconciled).Count        | Should -Be 1
+        $r.unreconciled[0].objectType   | Should -Be 'dlpPolicy'
+        $r.unreconciled[0].ref          | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
+        # And it did NOT record a bogus iteration with an empty plan.
+        @($r.iterations | Where-Object { @($_.plan.steps).Count -eq 0 }).Count | Should -Be 0
+    }
     It 'a no-op resolution set (nothing actionable, no conflicts) converges in zero iterations' {
         $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions @() `

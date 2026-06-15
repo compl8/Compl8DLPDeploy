@@ -90,7 +90,10 @@ function Invoke-Compl8Reconcile {
         A compl8.reconciliation/v1 object:
         { schemaVersion; workspace; generatedUtc; status; iterationCount; iterations = @({ index; phase;
           actions = @({objectType; ref; resolution}); plan = <compl8.plan/v1>; blastRadius = @(<R3 records>);
-          remainingConflicts = @(<projected name-collisions>) }); unresolvedConflicts; unclaimable }.
+          remainingConflicts = @(<projected name-collisions>) }); unresolvedConflicts; unreconciled;
+          unclaimable }. status is 'converged' only when unresolvedConflicts AND unreconciled are both
+        empty; unreconciled lists entries the planner could not turn into a step (e.g. non-dlpRule drift),
+        surfaced rather than silently dropped.
     #>
     [CmdletBinding()]
     param(
@@ -136,6 +139,20 @@ function Invoke-Compl8Reconcile {
 
     $claimedKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $unclaimable = [System.Collections.Generic.List[object]]::new()
+    # Entries reconcile WANTED to act on but the planner produced NO step for (codex R4 P1): e.g.
+    # non-dlpRule `drift` (dlpPolicy/sit/dictionary/autoLabelPolicy), which Get-Compl8PlanOrder does
+    # not yet turn into an update step. These must be SURFACED — never silently cleared — or the run
+    # would report `converged` while the tenant object is unchanged (false convergence).
+    $unreconciled = [System.Collections.Generic.List[object]]::new()
+    function Add-Unreconciled { param([string]$Bucket, [string]$Type, [string]$Ref)
+        $key = "$Type|$Ref"
+        if (-not @($unreconciled | Where-Object { "$([string]$_.objectType)|$([string]$_.ref)" -eq $key })) {
+            $unreconciled.Add([pscustomobject]@{
+                objectType = $Type; ref = $Ref; bucket = $Bucket
+                reason = "no plan step produced — the current planner cannot reconcile this state (e.g. non-dlpRule drift); surfaced rather than falsely reported reconciled"
+            }) | Out-Null
+        }
+    }
 
     function Remove-BucketEntry { param([string]$Bucket, [string]$Type, [string]$Ref)
         $keep = [System.Collections.Generic.List[object]]::new()
@@ -252,7 +269,8 @@ function Invoke-Compl8Reconcile {
         $hasWork = ($actionable.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum -gt 0
         if (-not $hasWork) { break }   # nothing actionable and no pending claims => terminal
 
-        $iterIndex++
+        # Plan against a CANDIDATE index; only commit the increment once we know the plan made progress.
+        $candidateIndex = $iterIndex + 1
         $iterAssessment = New-AssessmentObject -Workspace $Workspace -GeneratedUtc $GeneratedUtc -ResolveManifestHash $rmHash -InventoryHash $invHash
         $out = [ordered]@{}
         foreach ($name in $bucketNames) { $out[$name] = @($actionable[$name]) }
@@ -261,15 +279,37 @@ function Invoke-Compl8Reconcile {
         $iterAssessment.upgradeConflicts = @($conflicts)
 
         $plan = New-Compl8Plan -Assessment $iterAssessment -Graph $Graph -Inventory $Inventory `
-            -Workspace $Workspace -Id "$PlanIdPrefix-i$iterIndex" -GeneratedUtc $GeneratedUtc
+            -Workspace $Workspace -Id "$PlanIdPrefix-i$candidateIndex" -GeneratedUtc $GeneratedUtc
+
+        # Which acted entries ACTUALLY became a plan step? The planner is SELECTIVE (e.g. it turns only
+        # dlpRule drift into an update step), so map each non-generated step back to its (type|ref).
+        # Generated dereference + the snapshot 0.5 are NOT object steps — exclude them.
+        $plannedActionByKey = @{}
+        foreach ($s in @($plan.steps)) {
+            if ([string]$s.action -in 'snapshot', 'dereference') { continue }
+            $plannedActionByKey["$([string]$s.objectType)|$([string]$s.objectRef)"] = [string]$s.action
+        }
+        $stepBacked  = @($actedEntries | Where-Object { $plannedActionByKey.ContainsKey("$($_.objectType)|$($_.ref)") })
+        $unplannable = @($actedEntries | Where-Object { -not $plannedActionByKey.ContainsKey("$($_.objectType)|$($_.ref)") })
+
+        if (@($stepBacked).Count -eq 0) {
+            # No actionable entry produced a plan step — the loop can make no further progress. Surface
+            # them as unreconciled (NOT converged) and stop WITHOUT recording an empty iteration. Clear
+            # them from the working buckets so the terminal scan doesn't double-count (codex R4 P1).
+            foreach ($e in $actedEntries) { Add-Unreconciled -Bucket $e.bucket -Type $e.objectType -Ref $e.ref; Remove-BucketEntry -Bucket $e.bucket -Type $e.objectType -Ref $e.ref }
+            break
+        }
+
+        $iterIndex = $candidateIndex
 
         # Blast-radius preview for each removal in this plan (R3).
         $removeTargets = @($plan.steps | Where-Object { [string]$_.action -eq 'remove' } |
             ForEach-Object { [pscustomobject]@{ objectType = [string]$_.objectType; ref = [string]$_.objectRef } })
         $blast = if ($removeTargets.Count -gt 0) { @(Get-Compl8RemovalImpact -Graph $Graph -Target $removeTargets) } else { @() }
 
-        $actions = @($actedEntries | ForEach-Object {
-            [pscustomobject]@{ objectType = $_.objectType; ref = $_.ref; resolution = (Get-Res -Type $_.objectType -Ref $_.ref) }
+        # Actions reflect what the plan WILL do (the planned step action per object), not the raw request.
+        $actions = @($stepBacked | ForEach-Object {
+            [pscustomobject]@{ objectType = $_.objectType; ref = $_.ref; resolution = $plannedActionByKey["$($_.objectType)|$($_.ref)"] }
         })
 
         $iterations.Add([pscustomobject]@{
@@ -281,14 +321,19 @@ function Invoke-Compl8Reconcile {
             remainingConflicts = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
         }) | Out-Null
 
-        # PROJECT: every acted entry is now reconciled — clear it so the loop terminates.
-        foreach ($a in $actedEntries) { Remove-BucketEntry -Bucket $a.bucket -Type $a.objectType -Ref $a.ref }
-        # A reconcile pass consumes all currently-actionable work; without new claims the next pass is empty.
+        # PROJECT: a step-backed entry is now reconciled — clear it. An entry we wanted to act on but the
+        # planner emitted NO step for is UNPLANNABLE: surface it (unreconciled) and clear it too, so it is
+        # neither silently dropped (false convergence) nor re-tried forever.
+        foreach ($e in $stepBacked)  { Remove-BucketEntry -Bucket $e.bucket -Type $e.objectType -Ref $e.ref }
+        foreach ($e in $unplannable) { Add-Unreconciled -Bucket $e.bucket -Type $e.objectType -Ref $e.ref; Remove-BucketEntry -Bucket $e.bucket -Type $e.objectType -Ref $e.ref }
     }
 
     # ------------------------------------------------------------------ terminal status
+    # Converged ONLY when no name-collision is left unresolved AND nothing was left unreconciled (a
+    # planner gap). Either makes the run `blocked` so the operator is never told "done" while an object
+    # is still squatting a name or carrying un-pushed drift.
     $unresolved = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
-    $status = if (@($unresolved).Count -eq 0) { 'converged' } else { 'blocked' }
+    $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0) { 'converged' } else { 'blocked' }
 
     [pscustomobject]@{
         schemaVersion       = 'compl8.reconciliation/v1'
@@ -298,6 +343,7 @@ function Invoke-Compl8Reconcile {
         iterationCount      = $iterations.Count
         iterations          = @($iterations)
         unresolvedConflicts = @($unresolved)
+        unreconciled        = @($unreconciled)
         unclaimable         = @($unclaimable)
     }
 }
