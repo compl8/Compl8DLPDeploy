@@ -91,6 +91,12 @@ function Invoke-Compl8Assess {
         (which pass -ConfigRoot but write no dlp-rules.json) keep working via the config-bridge fallback.
         The bucketing logic (create/drift/orphan/foreign) is UNCHANGED — only the desired SOURCE moved.
 
+        ConfigRoot (and the workspace config-dir fallback) ALSO drives the DESIRED auto-label policy
+        set via Resolve-DesiredAutoLabel, so assess buckets autoLabelPolicy create/drift/orphan/foreign
+        the same way it does dlpRule/dlpPolicy. Auto-label has no persisted desired/resolved projection
+        yet (the dlp-rules.json re-point is DLP-only), so it is always sourced from config here; a
+        config that does not define the autoLabelPolicy name template yields no auto-label buckets.
+
     .OUTPUTS
         A compl8.assessment/v1 object (see New-AssessmentObject / Test-AssessmentSchema).
     #>
@@ -291,12 +297,44 @@ function Invoke-Compl8Assess {
         }
     }
 
+    # ----------------------------------------------------------------- desired auto-label policies (config bridge)
+    # The autoLabelPolicy analogue of the DR-4 DLP rule/policy desired source above. Auto-label
+    # policies are resolved from the SAME config (settings/labels/policies/classifiers) via
+    # Resolve-DesiredAutoLabel, sourced from -ConfigRoot or a workspace config dir. (There is no
+    # persisted desired/resolved projection for auto-label yet — the dlp-rules.json re-point is
+    # DLP-only; persisting auto-label is future Stage-5 work. Until then auto-label drift uses the
+    # config bridge.) Gated on $haveDesiredAutoLabel so a config-free workspace (and any config that
+    # does not define the autoLabelPolicy name template) emits NO autoLabelPolicy buckets.
+    $desiredAutoLabelByName = @{}
+    $haveDesiredAutoLabel   = $false
+    $alConfigSource = $null
+    if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
+        $alConfigSource = $ConfigRoot
+    } else {
+        foreach ($candidate in @((Join-Path $WorkspacePath 'desired' 'config'), (Join-Path $WorkspacePath 'config'))) {
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $alConfigSource = $candidate; break }
+        }
+    }
+    if ($alConfigSource -and (Test-Path -LiteralPath $alConfigSource -PathType Container)) {
+        # This block triggers on ANY config dir (broader than the DLP source, which skips config when
+        # the dlp-rules.json re-point is present), so a partial/non-auto-label config must NOT break
+        # assess: treat a resolve failure as "auto-label not managed here" rather than throwing.
+        try {
+            $desiredAL = Resolve-DesiredAutoLabel -ConfigPath $alConfigSource
+            foreach ($p in @($desiredAL.Policies)) { if ($p.policyName) { $desiredAutoLabelByName[[string]$p.policyName] = $p } }
+        } catch { $desiredAutoLabelByName = @{} }
+        # A config without auto-label naming returns no policies (Resolve-DesiredAutoLabel gates on the
+        # autoLabelPolicy template); only treat auto-label as MANAGED when a desired set was produced.
+        $haveDesiredAutoLabel = (@($desiredAutoLabelByName.Keys).Count -gt 0)
+    }
+
     # ----------------------------------------------------------------- actual side
     $actualPackages   = @($inv.objects.sitPackages)
     $actualSits       = @($inv.objects.sits)
     $actualDicts      = @($inv.objects.dictionaries)
     $actualDlpRules   = @($inv.objects.dlpRules)
     $actualDlpPolicies = @($inv.objects.dlpPolicies)
+    $actualAutoLabelPolicies = @($inv.objects.autoLabelPolicies)
 
     $actualPackageByName = @{}
     foreach ($p in $actualPackages) { if ($p.name) { $actualPackageByName[[string]$p.name] = $p } }
@@ -559,6 +597,62 @@ function Invoke-Compl8Assess {
         }
     }
     } # end if ($haveDesiredRuleConfig)
+
+    # --- auto-label policies (auto-label drift) ------------------------------------------
+    # create: desired auto-label policy name absent from actual; drift: ours, present in both, content
+    # hash differs (mode + applied label + locations — the hand-edit OR config-change signal); orphan:
+    # ours actual not in the desired set; foreign: actual not ours (never actionable). Keyed by the
+    # AL-numbered NAME the autoLabelPolicy template emits. The WHOLE block is gated on
+    # $haveDesiredAutoLabel so a config-free workspace (or a config that does not define auto-label
+    # naming) produces NO autoLabelPolicy buckets — the SIT/DLP-only fixtures are unaffected.
+    #
+    # The policy content hash deliberately EXCLUDES the Comment (mirrors the dlpPolicy P2 fix): Deploy-
+    # AutoLabeling wraps the raw comment with the provenance stamp, so the actual comment never equals
+    # the raw desired comment; the mode, applied label, and locations are the drift-relevant content.
+    # There is no update-in-place bucket for auto-label policies (no entity-GUID identity to refit) — an
+    # ours policy whose content diverges is uniformly drift, exactly as for DLP rules/policies.
+    if ($haveDesiredAutoLabel) {
+    function Get-AutoLabelPolicyContentHash {
+        param($Mode, $Label, $Locations)
+        $locProjection = ''
+        if ($null -ne $Locations) {
+            $pairs = [System.Collections.Generic.List[string]]::new()
+            if ($Locations -is [System.Collections.IDictionary]) {
+                foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
+            } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
+                foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
+            }
+            $locProjection = (@($pairs) | Sort-Object) -join ';'
+        }
+        $proj = "mode=$([string]$Mode)|label=$([string]$Label)|locations=$locProjection"
+        return 'sha256:' + (Get-AssessTextHash -Text $proj)
+    }
+    $actualAlByName = @{}
+    foreach ($p in $actualAutoLabelPolicies) { if ($p.name) { $actualAlByName[[string]$p.name] = $p } }
+    foreach ($p in $actualAutoLabelPolicies) {
+        $ref = [string]$p.name
+        if (-not $p.ours) {
+            Add-Bucket -Bucket 'foreign' -ObjectType 'autoLabelPolicy' -Ref $ref -Extra @{ reason = 'not ours — never touched' }
+            continue
+        }
+        if ($desiredAutoLabelByName.ContainsKey($ref)) {
+            $desiredP = $desiredAutoLabelByName[$ref]
+            $actualLocations = if ($p.PSObject.Properties['locations']) { $p.locations } else { $null }
+            $desiredHash = Get-AutoLabelPolicyContentHash -Mode $desiredP.mode -Label $desiredP.label -Locations $desiredP.locations
+            $actualHash  = Get-AutoLabelPolicyContentHash -Mode $p.mode -Label $p.label -Locations $actualLocations
+            if ($desiredHash -ne $actualHash) {
+                Add-Bucket -Bucket 'drift' -ObjectType 'autoLabelPolicy' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
+            }
+            continue
+        }
+        Add-Bucket -Bucket 'orphan' -ObjectType 'autoLabelPolicy' -Ref $ref -Extra @{ reason = 'ours auto-label policy not in desired and not a planned removal' }
+    }
+    foreach ($policyName in ($desiredAutoLabelByName.Keys | Sort-Object)) {
+        if (-not $actualAlByName.ContainsKey($policyName)) {
+            Add-Bucket -Bucket 'create' -ObjectType 'autoLabelPolicy' -Ref $policyName -Extra @{ reason = 'desired auto-label policy not present in actual' }
+        }
+    }
+    } # end if ($haveDesiredAutoLabel)
 
     # ----------------------------------------------------------------- impact (graph-derived)
     $impact = [System.Collections.Generic.List[object]]::new()

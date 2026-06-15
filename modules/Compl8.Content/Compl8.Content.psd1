@@ -16,6 +16,7 @@
         'Import-ContentRelease'
         'Initialize-EntityLedger'
         'Merge-DesiredContent'
+        'Resolve-DesiredAutoLabel'
         'Resolve-DesiredContent'
         'Resolve-DesiredDlpRules'
         'Test-ContentDictionaryBudget'

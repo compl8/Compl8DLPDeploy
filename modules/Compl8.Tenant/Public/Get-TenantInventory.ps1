@@ -33,7 +33,7 @@ function Get-TenantInventory {
                 dlpPolicies       : { name, identity, ours, mode, locations, comment }
                 labels            : { name, identity, ours, guid }
                 labelPolicies     : { name, identity, ours, guid }
-                autoLabelPolicies : { name, identity, ours, mode, label }
+                autoLabelPolicies : { name, identity, ours, mode, label, locations, comment }
                 autoLabelRules    : { name, identity, ours, policy, workload }
 
         ASSESS-CONSUMABLE SIT SHAPE (Stage 4 PHASE 4A; closes codex 4A P1). The deployed SIT
@@ -85,6 +85,10 @@ function Get-TenantInventory {
                                         the impact reference graph keeps working as before.
           * dlpPolicies[].mode / .locations / .comment — the policy content assess compares for
                                         policy create/drift/orphan/foreign (mode + locations + comment).
+          * autoLabelPolicies[].mode / .label / .locations / .comment — the auto-label policy content
+                                        assess compares for autoLabelPolicy create/drift/orphan/foreign
+                                        (mode + applied label + locations; the comment is provenance
+                                        metadata, carried for the ownership stamp but NOT hashed).
 
         Slug recovery: a deployed entity's slug is recovered from its first IdMatch/Match
         idRef (the resolve pipeline encodes ids as '<Kind>_<...>_<slug>', see
@@ -95,12 +99,13 @@ function Get-TenantInventory {
         Every record has at minimum name, identity and ours (boolean). The OWNERSHIP DISCRIMINATOR
         differs by object family:
 
-          * dictionaries / sitPackages / sits / labels / labelPolicies / autoLabel* — `ours` is true
-            when the object NAME carries the '<Prefix>-' START marker (D6: prefix is authoritative;
+          * dictionaries / sitPackages / sits / labels / labelPolicies / autoLabelRules — `ours` is
+            true when the object NAME carries the '<Prefix>-' START marker (D6: prefix is authoritative;
             these names are generated to begin with the prefix). Driven by Remove-DeploymentNamePrefix.
 
-          * dlpRules / dlpPolicies (codex review P1) — their names DO NOT start with '<Prefix>-'
-            (templates: dlpPolicy 'P{n}-{code}-{prefix}-{suffix}' has the prefix in the MIDDLE;
+          * dlpRules / dlpPolicies / autoLabelPolicies — their names DO NOT start with '<Prefix>-'
+            (templates: dlpPolicy 'P{n}-{code}-{prefix}-{suffix}' and autoLabelPolicy
+            'AL{n}-{labelCode}-{prefix}-{suffix}' both carry the prefix in the MIDDLE;
             dlpRule 'P{n}-R{n}{chunk}-{code}-{labelCode}-{suffix}' has NO prefix), so the prefix-START
             check would mark every deployed Compl8 rule/policy foreign. Ownership is instead the
             PREFIX-SCOPED DEPLOYMENT PROVENANCE STAMP that Deploy-DLPRules writes into each
@@ -177,10 +182,12 @@ function Get-TenantInventory {
     #              * Found but NOT Resolved (a short marker absent from THIS machine's registry => the
     #                prefix is UNKNOWABLE) => do NOT claim on the bare marker; fall through to the
     #                FALLBACK. (We never claim a marker whose prefix we cannot verify.)
-    #   FALLBACK : prefix-scoped already — the name must be a P-numbered rule/policy
-    #              ('^P\d+-' optionally with an '-R\d+' rule segment) AND carry the prefix as a name
-    #              token ('-<Prefix>-' or trailing '-<Prefix>'), which is how the POLICY template
-    #              embeds the prefix. This confirms our own policies (whose names embed the prefix).
+    #   FALLBACK : prefix-scoped already — the name must be a P-numbered (DLP) or AL-numbered
+    #              (auto-label) rule/policy ('^(P|AL)\d+-' optionally with an '-R\d+' rule segment) AND
+    #              carry the prefix as a name token ('-<Prefix>-' or trailing '-<Prefix>'), which is how
+    #              the dlpPolicy ('P{n}-{code}-{prefix}-{suffix}') and autoLabelPolicy
+    #              ('AL{n}-{labelCode}-{prefix}-{suffix}') templates embed the prefix. This confirms our
+    #              own policies (whose names embed the prefix); auto-label RULE names embed it too.
     #
     # CONSERVATIVE RULE TRADE-OFF: a dlpRule NAME carries NO prefix token, so a stamp-less or
     # unresolved-short-marker RULE cannot be confirmed by the fallback and stays ours=$false. This is
@@ -199,10 +206,11 @@ function Get-TenantInventory {
             }
             # Found-but-unresolved (prefix unknowable) or no marker => fall through to the FALLBACK.
         }
-        # FALLBACK: match the generated P-numbered template shape carrying the prefix (prefix-scoped).
+        # FALLBACK: match the generated P-numbered (DLP) or AL-numbered (auto-label) template shape
+        # carrying the prefix (prefix-scoped).
         if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
-        $isPNumbered = $Name -match '^P\d+(-R\d+[A-Za-z]?)?-'
-        if (-not $isPNumbered) { return $false }
+        $isNumberedTemplate = $Name -match '^(P|AL)\d+(-R\d+[A-Za-z]?)?-'
+        if (-not $isNumberedTemplate) { return $false }
         if ([string]::IsNullOrWhiteSpace($Prefix)) { return $false }
         $escapedPrefix = [regex]::Escape($Prefix)
         return ($Name -match "-$escapedPrefix(-|$)")
@@ -515,11 +523,31 @@ function Get-TenantInventory {
         }
     })
 
+    # Auto-label drift: autoLabelPolicies carry mode + applied label + the structured locations object
+    # + comment so assess can compare auto-label policy content (mode + label + locations) for
+    # autoLabelPolicy create/drift/orphan/foreign. Ownership is the provenance stamp on the Comment
+    # (with the AL-numbered template-shape fallback) — NOT the prefix-START check ConvertTo-Record
+    # applies, because an auto-label policy name carries the prefix in the MIDDLE
+    # ('AL{n}-{labelCode}-{prefix}-{suffix}'), exactly like a dlpPolicy. Override the record's 'ours'.
     $autoLabelPolicies = @($rawAlPolicies | ForEach-Object {
-        ConvertTo-Record -Object $_ -Extra @{
-            mode  = [string](Get-Prop -Object $_ -Names @('Mode'))
-            label = [string](Get-Prop -Object $_ -Names @('ApplySensitivityLabel'))
+        $locations = [ordered]@{}
+        foreach ($locName in @('ExchangeLocation', 'OneDriveLocation', 'SharePointLocation', 'EndpointDlpLocation', 'TeamsLocation')) {
+            $locProp = $_.PSObject.Properties[$locName]
+            if ($locProp -and $null -ne $locProp.Value) {
+                $locVal = @($locProp.Value | ForEach-Object { [string]$_ }) | Sort-Object
+                if (@($locVal).Count -gt 0) { $locations[$locName] = @($locVal) }
+            }
         }
+        $alPolicyName    = [string](Get-Prop -Object $_ -Names @('Name'))
+        $alPolicyComment = [string](Get-Prop -Object $_ -Names @('Comment'))
+        $record = ConvertTo-Record -Object $_ -Extra @{
+            mode      = [string](Get-Prop -Object $_ -Names @('Mode'))
+            label     = [string](Get-Prop -Object $_ -Names @('ApplySensitivityLabel'))
+            locations = [pscustomobject]$locations
+            comment   = $alPolicyComment
+        }
+        $record.ours = [bool](Test-OursDlp -Name $alPolicyName -Comment $alPolicyComment)
+        $record
     })
 
     $autoLabelRules = @($rawAlRules | ForEach-Object {
