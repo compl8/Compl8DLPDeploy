@@ -259,6 +259,10 @@ function Invoke-Compl8Assess {
     $desiredRuleHashByName   = @{}
     $desiredPolicyByName     = @{}
     $haveDesiredRuleConfig   = $false
+    # Initialised here (not only in the SOURCE 2/3 fallback below) so the R1 graph-label lookup can read
+    # it even when SOURCE 1 (dlp-rules.json) is taken and the fallback is skipped — otherwise a
+    # Set-StrictMode caller throws on the unassigned variable (codex R1 review).
+    $configSource = $null
 
     # SOURCE 1 — the persisted workspace projection (the re-point). Read it verbatim; no config touch.
     $dlpRulesFile = Join-Path $resolvedDir 'dlp-rules.json'
@@ -273,7 +277,7 @@ function Invoke-Compl8Assess {
         }
     } else {
         # SOURCE 2/3 — config-bridge fallback: explicit -ConfigRoot, else a workspace config dir.
-        $configSource = $null
+        # ($configSource was initialised above.)
         if ($PSBoundParameters.ContainsKey('ConfigRoot') -and -not [string]::IsNullOrWhiteSpace($ConfigRoot)) {
             $configSource = $ConfigRoot
         } else {
@@ -365,7 +369,24 @@ function Invoke-Compl8Assess {
             ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
         }
     })
-    $graph = Get-DeploymentReferenceGraph -SitPackages $graphPackages -DlpRules $graphRules
+    # R1 (graph completeness): feed the graph the FULL object set so the whole reference chain
+    # (dictionary -> sit -> rule -> policy -> label) is built, not just packages+rules. Dictionaries +
+    # policies come from the actual inventory; labels from the desired config when a source is available.
+    # This does NOT change impact (still derived from sitReferencedByRule below), so the assessment is
+    # byte-stable — it completes the graph the removal-cascade planner + reconciliation reason over.
+    $graphDicts    = @($inv.objects.dictionaries)
+    $graphPolicies = @($inv.objects.dlpPolicies)
+    $graphLabels   = @()
+    foreach ($cand in @($alConfigSource, $configSource, (Join-Path $WorkspacePath 'desired' 'config'), (Join-Path $WorkspacePath 'config'))) {
+        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+        $labelsPath = Join-Path $cand 'labels.json'
+        if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
+            try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
+            break
+        }
+    }
+    $graph = Get-DeploymentReferenceGraph -Dictionaries $graphDicts -SitPackages $graphPackages `
+        -DlpRules $graphRules -DlpPolicies $graphPolicies -Labels $graphLabels
 
     # Index nodes and sitReferencedByRule edges by sit entity GUID -> referencing rule names.
     $nodesById = @{}

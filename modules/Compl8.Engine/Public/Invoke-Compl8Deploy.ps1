@@ -158,7 +158,20 @@ function Invoke-Compl8Deploy {
                 ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
             }
         })
-        Get-DeploymentReferenceGraph -SitPackages $graphPackages -DlpRules $graphRules
+        # R1: feed the full object set so the complete chain (dict -> sit -> rule -> policy -> label)
+        # is built (dicts + policies from the inventory; labels from <ws>/config when present). The
+        # workspace root is ResolvedDir's grandparent (<ws>/desired/resolved -> <ws>).
+        $wsRoot = Split-Path (Split-Path $ResolvedDir -Parent) -Parent
+        $graphLabels = @()
+        foreach ($cand in @((Join-Path (Join-Path $wsRoot 'desired') 'config'), (Join-Path $wsRoot 'config'))) {
+            $labelsPath = Join-Path $cand 'labels.json'
+            if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
+                try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
+                break
+            }
+        }
+        Get-DeploymentReferenceGraph -Dictionaries @($Inventory.objects.dictionaries) -SitPackages $graphPackages `
+            -DlpRules $graphRules -DlpPolicies @($Inventory.objects.dlpPolicies) -Labels $graphLabels
     }
 
     # Deterministic snapshot folder timestamp derived from -GeneratedUtc (Get-Date is BANNED).

@@ -76,4 +76,15 @@ Describe 'Invoke-Compl8Assess — name-collision against a foreign object' {
         (Conflicts $a 'name-collision') | Should -BeNullOrEmpty
         (Refs $a 'create')              | Should -Contain 'P01-R01-ECH-OFFI'
     }
+
+    It 'runs under Set-StrictMode against a persisted dlp-rules.json (SOURCE 1) workspace without throwing (R1 graph-label lookup)' {
+        # codex R1 review: the R1 graph-label lookup reads $configSource, which is only assigned in the
+        # SOURCE 2/3 fallback. On a SOURCE-1 (dlp-rules.json) workspace a Set-StrictMode caller would throw
+        # on the unassigned variable. This guards the hoisted initialisation.
+        $script:ws = New-CollisionWorkspace
+        $inv = New-Inv -DlpRules @()
+        { & { Set-StrictMode -Version Latest
+              Invoke-Compl8Assess -WorkspacePath $script:ws -Inventory $inv -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z' | Out-Null } } |
+            Should -Not -Throw
+    }
 }
