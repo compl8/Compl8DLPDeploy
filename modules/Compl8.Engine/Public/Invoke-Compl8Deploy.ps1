@@ -1,0 +1,390 @@
+function Invoke-Compl8Deploy {
+    <#
+    .SYNOPSIS
+        The holistic Engine deploy workflow: context -> assess -> plan -> render -> confirm ->
+        apply, behind ONE verb, honouring the context's per-type EngineRoutes. (Stage 5 PHASE 5B,
+        Task 5B-1; arch design §5/§6; decisions D1/D4/D6.)
+
+    .DESCRIPTION
+        Stage 4 built the three verbs (assess / plan / apply) and the production executor map.
+        Stage 5B composes them into the single workflow the Surface (TUI + CLI) calls — so the
+        Surface carries NO business logic, only render + confirm. The flow:
+
+          1. ASSESS the whole workspace (Invoke-Compl8Assess) — the FULL, type-agnostic delta.
+          2. BUILD the reference graph over the desired packages + actual rules (the same graph
+             assess builds internally; New-Compl8Plan requires it for ordering/impact/dereference).
+          3. ROUTE (D4/D6). Compute which object types are routed THROUGH THE ENGINE from
+             Context.EngineRoutes (default ALL FALSE = leaf). Filter the assessment buckets to the
+             routed object types and plan ONLY those (New-Compl8Plan) — so the routed plan contains
+             only what the engine will apply this run; everything else is reported DEFERRED to the
+             still-live leaf path and is never mutated here. (Old paths stay live until each type's
+             nonprod shadow trial passes and an operator flips its route — Stage 5C, D5.)
+          4. RENDER the full assessment + a routing/plan summary (Get-Compl8AssessmentReport plus
+             the engine-routes call-out) for the operator.
+          5. CONFIRM via the injected callback (the Surface's interactive gate). A callback that
+             returns falsey DEFERS the apply (phase 'planned'); no callback => proceed.
+          6. APPLY the routed plan (Invoke-Compl8Apply) with the production executor map
+             (Get-Compl8ExecutorMap), the apply layer doing all gating / snapshot-before-destroy /
+             checkpoint-resume. As a backstop, the executor map is route-wrapped: any step whose
+             objectType is NOT routed (e.g. a planner-generated cross-type dereference) is DEFERRED
+             (no-op) rather than mutated — the 'tenant' snapshot step is always allowed.
+
+        -WhatIf is plan-only (assess + plan + render, NO apply). When NO type is routed the routed
+        plan has zero steps and apply is skipped entirely ("assess + plan only").
+
+        DETERMINISM: -PlanId and -GeneratedUtc are injected (Get-Date / Get-Random are BANNED). The
+        snapshot timestamp is derived from -GeneratedUtc. -Now is the injected gate clock.
+
+    .PARAMETER Context
+        A New-Compl8Context object (Compl8.Tenant). The verb reads WorkspacePath, Environment,
+        Prefix, ProvenanceRegistryPath and EngineRoutes from it.
+
+    .PARAMETER InventoryPath
+        Path to the actual/inventory.json. Defaults to <WorkspacePath>/actual/inventory.json.
+
+    .PARAMETER Inventory
+        An already-parsed inventory object (alternative to -InventoryPath).
+
+    .PARAMETER PlanId
+        Deterministic plan id (Get-Date banned) — the Surface stamps it.
+
+    .PARAMETER GeneratedUtc
+        Deterministic generated-at stamp written verbatim into the assessment + plan, and the source
+        of the snapshot folder timestamp.
+
+    .PARAMETER DesiredContent
+        Hashtable keyed by 'objectType|objectRef' -> the resolved desired content that type's executor
+        needs (e.g. 'dictionary|{{DICT_X}}' -> { placeholder; name; terms; ... }). This is the
+        caller-knowable key (the plan step ids are not known until planning); the verb re-maps it to
+        the stepId -> content map Get-Compl8ExecutorMap / Invoke-Compl8Apply consume after planning.
+
+    .PARAMETER ExecutorMap
+        Optional override for the production executor map. When omitted, Get-Compl8ExecutorMap builds
+        it from the context + DesiredContent + inventory. Either way the map is route-wrapped before
+        apply (un-routed types deferred).
+
+    .PARAMETER ConfirmCallback
+        Optional scriptblock invoked as `& $ConfirmCallback $Assessment $Plan $RenderText` before any
+        apply; a falsey return DEFERS the apply. Omitted => proceed (the Surface owns confirmation).
+
+    .PARAMETER ProjectRoot
+        Repository root forwarded to apply's fingerprint gate. Defaults to the repo root.
+
+    .PARAMETER DictionaryInventory
+        Tenant keyword-dictionary inventory forwarded to the rule-package executor's dictionary-ref gate.
+
+    .PARAMETER TenantSitInventory
+        Tenant SIT inventory forwarded to the dlpRule / auto-label executors' SIT-validation gate.
+
+    .PARAMETER ConfirmNameConflicts
+        Forwarded to the dlpRule / auto-label executors' name-conflict pre-flight.
+
+    .PARAMETER SleepAction
+        Injectable sleep forwarded to the executor map (retry / verify paths). Defaults to Start-Sleep.
+
+    .PARAMETER Now
+        Injected gate clock ([datetime]) forwarded to apply. Defaults to [datetime]::UtcNow.
+
+    .PARAMETER ConfirmExternalRefs
+        Forwarded to apply (operator confirmation for externalRefs gates).
+
+    .PARAMETER ContinueOnBlock
+        Forwarded to apply (continue past a blocked step to independent steps).
+
+    .PARAMETER WhatIf
+        Plan-only: assess + plan + render, NO apply.
+
+    .OUTPUTS
+        A compl8.deploy-result/v1 object:
+          { schemaVersion; workspace; environment; phase ('planned'|'applied'); confirmed;
+            routedTypes; deferredTypes; assessment; plan; render; deferred[]; apply (or $null) }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$Context,
+
+        [string]$InventoryPath,
+
+        [pscustomobject]$Inventory,
+
+        [Parameter(Mandatory)]
+        [string]$PlanId,
+
+        [string]$GeneratedUtc,
+
+        [hashtable]$DesiredContent = @{},
+
+        [hashtable]$ExecutorMap,
+
+        [scriptblock]$ConfirmCallback,
+
+        [string]$ProjectRoot,
+
+        [object[]]$DictionaryInventory = @(),
+
+        [object[]]$TenantSitInventory = @(),
+
+        [switch]$ConfirmNameConflicts,
+
+        [scriptblock]$SleepAction = { param($s) Start-Sleep -Seconds $s },
+
+        [datetime]$Now = [datetime]::UtcNow,
+
+        [switch]$ConfirmExternalRefs,
+
+        [switch]$ContinueOnBlock,
+
+        [switch]$WhatIf
+    )
+
+    # ------------------------------------------------------------------ nested helpers (private)
+    # Reference graph over DESIRED packages + ACTUAL rules — IDENTICAL to Invoke-Compl8Assess so the
+    # planner sees the same graph (ordering / impact roll-up / dereference generation).
+    function Get-Compl8DeployReferenceGraph {
+        param([string]$ResolvedDir, [pscustomobject]$Inventory)
+        $manifest = Get-Content -LiteralPath (Join-Path $ResolvedDir 'resolve-manifest.json') -Raw | ConvertFrom-Json
+        $graphPackages = @(foreach ($pkg in @($manifest.packages)) {
+            $pkgFile = Join-Path $ResolvedDir ([string]$pkg.file)
+            if (-not $pkg.file -or -not (Test-Path -LiteralPath $pkgFile -PathType Leaf)) { continue }
+            [pscustomobject]@{
+                Identity = [string]$pkg.name; Name = [string]$pkg.name; Publisher = 'Compl8'
+                SerializedClassificationRuleCollection = (Get-Content -LiteralPath $pkgFile -Raw)
+            }
+        })
+        $graphRules = @(foreach ($rule in @($Inventory.objects.dlpRules)) {
+            [pscustomobject]@{
+                Name = [string]$rule.name; Identity = [string]$rule.identity; Policy = [string]$rule.policy
+                ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
+            }
+        })
+        Get-DeploymentReferenceGraph -SitPackages $graphPackages -DlpRules $graphRules
+    }
+
+    # Deterministic snapshot folder timestamp derived from -GeneratedUtc (Get-Date is BANNED).
+    function ConvertTo-Compl8SnapshotTimestamp {
+        param([string]$GeneratedUtc)
+        if (-not [string]::IsNullOrWhiteSpace($GeneratedUtc)) {
+            $dto = [datetimeoffset]::MinValue
+            $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+            if ([datetimeoffset]::TryParse($GeneratedUtc, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$dto)) {
+                return $dto.UtcDateTime.ToString('yyyyMMdd_HHmmss')
+            }
+        }
+        '00000000_000000'
+    }
+
+    # Operator-facing render: the full assessment report + an engine-routes / routed-plan call-out.
+    function Get-Compl8DeployRender {
+        param([pscustomobject]$Assessment, [pscustomobject]$Plan, [pscustomobject]$EngineRoutes, [string[]]$RoutedTypes, [string[]]$DeferredTypes)
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lines.Add((Get-Compl8AssessmentReport -Assessment $Assessment)) | Out-Null
+        $lines.Add('') | Out-Null
+        $routePairs = [System.Collections.Generic.List[string]]::new()
+        if ($EngineRoutes) {
+            foreach ($p in ($EngineRoutes.PSObject.Properties | Sort-Object Name)) {
+                $routePairs.Add(("{0}={1}" -f $p.Name, $(if ([bool]$p.Value) { 'ON' } else { 'off' }))) | Out-Null
+            }
+        }
+        $lines.Add("Engine routes: $((@($routePairs)) -join '  ')") | Out-Null
+        $lines.Add("  routed through Engine: $(if (@($RoutedTypes).Count) { (@($RoutedTypes)) -join ', ' } else { '(none)' })") | Out-Null
+        $lines.Add("  deferred to leaf:      $(if (@($DeferredTypes).Count) { (@($DeferredTypes)) -join ', ' } else { '(none)' })") | Out-Null
+        $lines.Add('') | Out-Null
+        $lines.Add("Routed plan '$($Plan.id)': $(@($Plan.steps).Count) step(s).") | Out-Null
+        ($lines -join [Environment]::NewLine)
+    }
+
+    # ------------------------------------------------------------------ context + paths
+    $workspacePath = [string]$Context.WorkspacePath
+    if ([string]::IsNullOrWhiteSpace($workspacePath)) { throw "Invoke-Compl8Deploy: Context.WorkspacePath is required." }
+    $environment = [string]$Context.Environment
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        # This file lives at modules/Compl8.Engine/Public/ — repo root is three levels up.
+        $ProjectRoot = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent
+    }
+    $resolvedDir = Join-Path (Join-Path $workspacePath 'desired') 'resolved'
+
+    # ------------------------------------------------------------------ inventory (object + path)
+    if ($PSBoundParameters.ContainsKey('Inventory') -and $Inventory) {
+        $inv = $Inventory
+        $invPathForAssess = $null
+    } else {
+        $invPathForAssess = if ($InventoryPath) { $InventoryPath } else { Join-Path (Join-Path $workspacePath 'actual') 'inventory.json' }
+        if (-not (Test-Path -LiteralPath $invPathForAssess -PathType Leaf)) {
+            throw "Invoke-Compl8Deploy: inventory not found at '$invPathForAssess' (supply -Inventory / -InventoryPath)."
+        }
+        $inv = Get-Content -LiteralPath $invPathForAssess -Raw | ConvertFrom-Json
+    }
+
+    # ------------------------------------------------------------------ 1. ASSESS (full)
+    $assessArgs = @{ WorkspacePath = $workspacePath; Workspace = $environment }
+    if ($GeneratedUtc) { $assessArgs['GeneratedUtc'] = $GeneratedUtc }
+    if ($invPathForAssess) { $assessArgs['InventoryPath'] = $invPathForAssess } else { $assessArgs['Inventory'] = $inv }
+    $assessment = Invoke-Compl8Assess @assessArgs
+
+    # ------------------------------------------------------------------ 2. reference graph
+    # Built over the DESIRED packages (their XML carries the entity GUIDs) + the ACTUAL dlp rules
+    # (their classifier-reference text names the GUIDs) — IDENTICALLY to Invoke-Compl8Assess, so the
+    # planner's ordering / impact roll-up / dereference generation see the same graph assess did.
+    $graph = Get-Compl8DeployReferenceGraph -ResolvedDir $resolvedDir -Inventory $inv
+
+    # ------------------------------------------------------------------ 3. ROUTE (D4/D6)
+    # objectType -> route key. A route ON admits its object type(s) to the engine path.
+    $routeToTypes = [ordered]@{
+        dictionary  = @('dictionary')
+        label       = @('label', 'labelPolicy')
+        rulePackage = @('rulePackage', 'sit')
+        dlpRule     = @('dlpRule', 'dlpPolicy')
+        autoLabel   = @('autoLabelPolicy')
+    }
+    $routedTypeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($routeKey in $routeToTypes.Keys) {
+        $prop = if ($Context.EngineRoutes) { $Context.EngineRoutes.PSObject.Properties[$routeKey] } else { $null }
+        if ($prop -and [bool]$prop.Value) {
+            foreach ($t in $routeToTypes[$routeKey]) { $routedTypeSet.Add($t) | Out-Null }
+        }
+    }
+    $routedTypes = @($routedTypeSet | Sort-Object)
+
+    # Filter the assessment buckets to the routed object types -> the routed assessment the engine
+    # plans + applies. (Clone via JSON round-trip so the original full assessment is untouched.)
+    $routedAssessment = $assessment | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $newBuckets = [ordered]@{}
+    foreach ($bucket in (Get-Compl8EngineSchemaEnums).Buckets) {
+        $entries = @(@($routedAssessment.buckets.$bucket) | Where-Object { $_ -and $routedTypeSet.Contains([string]$_.objectType) })
+        $newBuckets[$bucket] = @($entries)
+    }
+    $routedAssessment.buckets = [pscustomobject]$newBuckets
+
+    # Deferred = full actionable items (every bucket except foreign — never-touch) whose objectType
+    # is NOT routed this run; they remain the leaf path's job and are reported, never mutated.
+    $deferred = [System.Collections.Generic.List[object]]::new()
+    $deferredTypeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($bucket in (Get-Compl8EngineSchemaEnums).Buckets) {
+        if ($bucket -eq 'foreign') { continue }
+        foreach ($entry in @($assessment.buckets.$bucket)) {
+            if ($entry -and -not $routedTypeSet.Contains([string]$entry.objectType)) {
+                $deferred.Add([pscustomobject]@{ bucket = $bucket; objectType = [string]$entry.objectType; ref = [string]$entry.ref }) | Out-Null
+                $deferredTypeSet.Add([string]$entry.objectType) | Out-Null
+            }
+        }
+    }
+
+    # ------------------------------------------------------------------ plan the routed delta
+    $plan = New-Compl8Plan -Assessment $routedAssessment -Graph $graph -Inventory $inv `
+        -Workspace $environment -Id $PlanId -GeneratedUtc $GeneratedUtc -WorkspacePath $workspacePath
+    $planPath = Join-Path (Join-Path (Join-Path $workspacePath 'history') 'plans') "$PlanId.json"
+
+    # ------------------------------------------------------------------ 4. RENDER
+    $render = Get-Compl8DeployRender -Assessment $assessment -Plan $plan `
+        -EngineRoutes $Context.EngineRoutes -RoutedTypes $routedTypes -DeferredTypes (@($deferredTypeSet | Sort-Object))
+
+    $planned = {
+        param([bool]$Confirmed)
+        [pscustomobject]([ordered]@{
+            schemaVersion = 'compl8.deploy-result/v1'
+            workspace     = $environment
+            environment   = $environment
+            phase         = 'planned'
+            confirmed     = $Confirmed
+            routedTypes   = $routedTypes
+            deferredTypes = @($deferredTypeSet | Sort-Object)
+            assessment    = $assessment
+            plan          = $plan
+            render        = $render
+            deferred      = @($deferred)
+            apply         = $null
+        })
+    }
+
+    # ------------------------------------------------------------------ 5. plan-only short-circuits
+    if ($WhatIf) { return (& $planned $true) }
+
+    $confirmed = $true
+    if ($ConfirmCallback) { $confirmed = [bool](& $ConfirmCallback $assessment $plan $render) }
+    if (-not $confirmed) { return (& $planned $false) }
+
+    # Nothing routed (or no actionable routed delta) => assess + plan only, no apply.
+    if (@($plan.steps).Count -eq 0) { return (& $planned $true) }
+
+    # ------------------------------------------------------------------ 6. APPLY the routed plan
+    # Re-key the caller's 'objectType|objectRef' content to the plan step ids the executor map +
+    # apply's reference-guard consume.
+    $contentById = @{}
+    foreach ($step in @($plan.steps)) {
+        $key = "$([string]$step.objectType)|$([string]$step.objectRef)"
+        if ($DesiredContent.ContainsKey($key)) { $contentById[[string]$step.id] = $DesiredContent[$key] }
+    }
+
+    # The executor map: injected override, else the production map bound to the context.
+    if ($ExecutorMap) {
+        $baseMap = $ExecutorMap
+    } else {
+        $snapTs = ConvertTo-Compl8SnapshotTimestamp -GeneratedUtc $GeneratedUtc
+        $mapArgs = @{
+            StepContent            = $contentById
+            Prefix                 = [string]$Context.Prefix
+            TargetEnvironment      = $environment
+            DictionaryInventory    = $DictionaryInventory
+            TenantSitInventory     = $TenantSitInventory
+            ConfirmNameConflicts   = [bool]$ConfirmNameConflicts
+            Inventory              = $inv
+            Plan                   = $plan
+            SleepAction            = $SleepAction
+            SnapshotInventory      = $inv
+            SnapshotWorkspacePath  = $workspacePath
+            SnapshotTimestamp      = $snapTs
+        }
+        if ($Context.ProvenanceRegistryPath) { $mapArgs['ProvenanceRegistryPath'] = [string]$Context.ProvenanceRegistryPath }
+        $baseMap = Get-Compl8ExecutorMap @mapArgs
+    }
+
+    # Route-wrap (backstop): defer any step whose objectType is not routed (e.g. a planner-generated
+    # cross-type dereference). The 'tenant' snapshot step is infrastructure and always allowed.
+    $deferExecutor = {
+        param($Step)
+        [pscustomobject]@{
+            stepId     = [string]$Step.id
+            action     = [string]$Step.action
+            objectType = [string]$Step.objectType
+            objectRef  = [string]$Step.objectRef
+            status     = 'deferred'
+            reason     = "objectType '$([string]$Step.objectType)' is not routed through the Engine (EngineRoutes off) — left to the leaf path."
+        }
+    }
+    $map = @{}
+    foreach ($type in $baseMap.Keys) {
+        if ($type -eq 'tenant' -or $routedTypeSet.Contains([string]$type)) {
+            $map[$type] = $baseMap[$type]
+        } else {
+            $map[$type] = $deferExecutor
+        }
+    }
+
+    $applyArgs = @{
+        PlanPath          = $planPath
+        ProjectRoot       = $ProjectRoot
+        TargetEnvironment = $environment
+        ExecutorMap       = $map
+        StepContent       = $contentById
+        Now               = $Now
+    }
+    if ($ConfirmExternalRefs) { $applyArgs['ConfirmExternalRefs'] = $true }
+    if ($ContinueOnBlock)     { $applyArgs['ContinueOnBlock'] = $true }
+    $applyResult = Invoke-Compl8Apply @applyArgs
+
+    [pscustomobject]([ordered]@{
+        schemaVersion = 'compl8.deploy-result/v1'
+        workspace     = $environment
+        environment   = $environment
+        phase         = 'applied'
+        confirmed     = $true
+        routedTypes   = $routedTypes
+        deferredTypes = @($deferredTypeSet | Sort-Object)
+        assessment    = $assessment
+        plan          = $plan
+        render        = $render
+        deferred      = @($deferred)
+        apply         = $applyResult
+    })
+}
