@@ -15,6 +15,7 @@
         'Invoke-Compl8Assess',
         'Invoke-Compl8Deploy',
         'Invoke-Compl8AutoLabelExecutor',
+        'Invoke-Compl8ClaimExecutor',
         'Invoke-Compl8DictionaryExecutor',
         'Invoke-Compl8DlpRuleExecutor',
         'Invoke-Compl8LabelExecutor',

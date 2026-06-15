@@ -320,18 +320,30 @@ function Get-Compl8ExecutorMap {
 
         dlpRule = {
             param($Step)
-            Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
-                -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
-                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            # A `claim` step adopts an existing not-ours rule (re-stamp provenance); any other action
+            # is the normal create/update/remove/dereference path (R2).
+            if ([string]$Step.action -eq 'claim') {
+                Invoke-Compl8ClaimExecutor -Step $Step -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                    -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            } else {
+                Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
+                    -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
+                    -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                    -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            }
         }.GetNewClosure()
 
         dlpPolicy = {
             param($Step)
-            Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
-                -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
-                -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
-                -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            if ([string]$Step.action -eq 'claim') {
+                Invoke-Compl8ClaimExecutor -Step $Step -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                    -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            } else {
+                Invoke-Compl8DlpRuleExecutor -Step $Step -Content (& $resolveContent $Step) `
+                    -TenantSitInventory $TenantSitInventory -ConfirmNameConflicts:$ConfirmNameConflicts `
+                    -Prefix $Prefix -TargetEnvironment $TargetEnvironment `
+                    -ProvenanceRegistryPath $ProvenanceRegistryPath -SleepAction $SleepAction
+            }
         }.GetNewClosure()
 
         autoLabelPolicy = {

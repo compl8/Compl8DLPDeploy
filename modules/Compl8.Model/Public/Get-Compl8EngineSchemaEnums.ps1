@@ -18,8 +18,10 @@ function Get-Compl8EngineSchemaEnums {
     [pscustomobject]@{
         # Assessment buckets — each tenant object lands in exactly one.
         Buckets     = @('create', 'update-in-place', 'repack-move', 'remove', 'orphan', 'foreign', 'drift')
-        # Plan-step actions.
-        Actions     = @('create', 'update', 'remove', 'repack-move', 'dereference', 'snapshot')
+        # Plan-step actions. 'claim' (R2) ADOPTS an existing not-ours object into management by
+        # re-stamping its provenance (Comment) — content unchanged; the next assess then buckets it
+        # as drift/in-sync. Reconciliation (R4) generates claim steps from name-collision conflicts.
+        Actions     = @('create', 'update', 'remove', 'repack-move', 'dereference', 'snapshot', 'claim')
         # Object types referenced by assessment entries and plan steps.
         ObjectTypes = @('dictionary', 'rulePackage', 'sit', 'label', 'labelPolicy', 'dlpRule', 'dlpPolicy', 'autoLabelPolicy', 'tenant')
         # Gate types carried as data on plan steps (enforcement is pluggable in Engine).
