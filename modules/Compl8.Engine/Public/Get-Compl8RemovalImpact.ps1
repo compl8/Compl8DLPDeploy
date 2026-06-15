@@ -56,84 +56,96 @@ function Get-Compl8RemovalImpact {
         [string]$NodeId
     }
 
-    # ---- backward edge indexes (mirror Get-Compl8PlanOrder) ----------------------------------------
-    $sitsByPackageName = @{}      # package name      -> [sit guid]
-    foreach ($e in @($Graph.Edges | Where-Object { $_.Type -eq 'packageContainsSit' })) {
-        if (-not ([string]$e.To).StartsWith('sit:', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-        $sitGuid = ([string]$e.To).Substring(4).ToLowerInvariant()
-        $pkgName = Get-NodeName -NodeId $e.From -Prefix 'sitPackage'
-        if (-not $sitsByPackageName.ContainsKey($pkgName)) { $sitsByPackageName[$pkgName] = [System.Collections.Generic.List[string]]::new() }
-        if (-not $sitsByPackageName[$pkgName].Contains($sitGuid)) { $sitsByPackageName[$pkgName].Add($sitGuid) }
+    # Resolve a removal candidate to its canonical graph node Id, matching by Name OR Identity
+    # (codex R3 P2: edges/indexes are keyed by node Id — `dictionary:<identity>` etc. — so a caller
+    # using the documented Identity form, e.g. a dictionary GUID, must still hit the cascade. We
+    # resolve ref -> node Id once, then key the whole backward walk by that canonical Id).
+    function Resolve-TargetNodeId { param([string]$Type, [string]$Ref)
+        $engineType = switch ($Type) {
+            'rulePackage' { 'SitPackage' }
+            'dictionary'  { 'KeywordDictionary' }
+            'dlpRule'     { 'DlpRule' }
+            'dlpPolicy'   { 'DlpPolicy' }
+            'sit'         { 'SensitiveInformationType' }
+            default       { $null }
+        }
+        if (-not $engineType) { return $null }
+        $refLower = $Ref.ToLowerInvariant()
+        foreach ($n in $nodesById.Values) {
+            if ([string]$n.Type -ne $engineType) { continue }
+            if ([string]$n.Name -eq $Ref -or [string]$n.Identity -eq $Ref -or ([string]$n.Identity).ToLowerInvariant() -eq $refLower) {
+                return [string]$n.Id
+            }
+        }
+        $null
     }
-    $sitsByDictKey = @{}          # dictionary identity/key -> [sit guid]
-    foreach ($e in @($Graph.Edges | Where-Object { $_.Type -eq 'dictionaryFeedsSit' })) {
+
+    # ---- backward edge indexes, keyed by canonical node Id (mirror Get-Compl8PlanOrder) ------------
+    $sitGuidsByContainerId = @{}  # container (package OR dictionary) node Id -> [sit guid]
+    foreach ($e in @($Graph.Edges | Where-Object { $_.Type -eq 'packageContainsSit' -or $_.Type -eq 'dictionaryFeedsSit' })) {
         if (-not ([string]$e.To).StartsWith('sit:', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-        $sitGuid = ([string]$e.To).Substring(4).ToLowerInvariant()
-        $dictKey = Get-NodeName -NodeId $e.From -Prefix 'dictionary'
-        if (-not $sitsByDictKey.ContainsKey($dictKey)) { $sitsByDictKey[$dictKey] = [System.Collections.Generic.List[string]]::new() }
-        if (-not $sitsByDictKey[$dictKey].Contains($sitGuid)) { $sitsByDictKey[$dictKey].Add($sitGuid) }
+        $sitGuid     = ([string]$e.To).Substring(4).ToLowerInvariant()
+        $containerId = [string]$e.From
+        if (-not $sitGuidsByContainerId.ContainsKey($containerId)) { $sitGuidsByContainerId[$containerId] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $sitGuidsByContainerId[$containerId].Contains($sitGuid)) { $sitGuidsByContainerId[$containerId].Add($sitGuid) }
     }
-    $rulesBySitGuid = @{}         # sit guid -> [rule name]
+    $ruleIdsBySitGuid = @{}       # sit guid -> [rule node Id]
     foreach ($e in @($Graph.Edges | Where-Object { $_.Type -eq 'sitReferencedByRule' })) {
         if (-not ([string]$e.From).StartsWith('sit:', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         $sitGuid = ([string]$e.From).Substring(4).ToLowerInvariant()
-        $ruleName = Get-NodeName -NodeId $e.To -Prefix 'dlpRule'
-        if (-not $rulesBySitGuid.ContainsKey($sitGuid)) { $rulesBySitGuid[$sitGuid] = [System.Collections.Generic.List[string]]::new() }
-        if (-not $rulesBySitGuid[$sitGuid].Contains($ruleName)) { $rulesBySitGuid[$sitGuid].Add($ruleName) }
+        $ruleId  = [string]$e.To
+        if (-not $ruleIdsBySitGuid.ContainsKey($sitGuid)) { $ruleIdsBySitGuid[$sitGuid] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $ruleIdsBySitGuid[$sitGuid].Contains($ruleId)) { $ruleIdsBySitGuid[$sitGuid].Add($ruleId) }
     }
-    $policiesByRuleName = @{}     # rule name -> [policy name]
+    $policyIdsByRuleId = @{}      # rule node Id -> [policy node Id]
     foreach ($e in @($Graph.Edges | Where-Object { $_.Type -eq 'ruleBelongsToPolicy' })) {
-        $ruleName   = Get-NodeName -NodeId $e.From -Prefix 'dlpRule'
-        $policyName = Get-NodeName -NodeId $e.To   -Prefix 'dlpPolicy'
-        if (-not $policiesByRuleName.ContainsKey($ruleName)) { $policiesByRuleName[$ruleName] = [System.Collections.Generic.List[string]]::new() }
-        if (-not $policiesByRuleName[$ruleName].Contains($policyName)) { $policiesByRuleName[$ruleName].Add($policyName) }
+        $ruleId   = [string]$e.From
+        $policyId = [string]$e.To
+        if (-not $policyIdsByRuleId.ContainsKey($ruleId)) { $policyIdsByRuleId[$ruleId] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $policyIdsByRuleId[$ruleId].Contains($policyId)) { $policyIdsByRuleId[$ruleId].Add($policyId) }
     }
 
     foreach ($t in @($Target)) {
         $type = [string]$t.objectType
         $ref  = [string]$t.ref
+        $targetId = Resolve-TargetNodeId -Type $type -Ref $ref
 
-        # The in-scope SITs whose removal the candidate implies.
+        # The in-scope SITs whose removal the candidate implies (cascade keyed by canonical node Id).
         $sits = switch ($type) {
             'sit'         { @($ref.ToLowerInvariant()) }
-            'rulePackage' { if ($sitsByPackageName.ContainsKey($ref)) { @($sitsByPackageName[$ref]) } else { @() } }
-            'dictionary'  { if ($sitsByDictKey.ContainsKey($ref))     { @($sitsByDictKey[$ref]) }     else { @() } }
+            'rulePackage' { if ($targetId -and $sitGuidsByContainerId.ContainsKey($targetId)) { @($sitGuidsByContainerId[$targetId]) } else { @() } }
+            'dictionary'  { if ($targetId -and $sitGuidsByContainerId.ContainsKey($targetId)) { @($sitGuidsByContainerId[$targetId]) } else { @() } }
             default       { @() }
         }
         $sits = @($sits | Sort-Object -Unique)
 
-        $rules = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($g in $sits) { if ($rulesBySitGuid.ContainsKey($g)) { foreach ($r in $rulesBySitGuid[$g]) { $rules.Add($r) | Out-Null } } }
-        if ($type -eq 'dlpRule') { $rules.Add($ref) | Out-Null }
-        $ruleList = @($rules)
+        # Referencing rules, collected as node Ids then projected to names for the operator-facing output.
+        $ruleIds = [System.Collections.Generic.List[string]]::new()
+        foreach ($g in $sits) { if ($ruleIdsBySitGuid.ContainsKey($g)) { foreach ($r in $ruleIdsBySitGuid[$g]) { if (-not $ruleIds.Contains($r)) { $ruleIds.Add($r) } } } }
+        if ($type -eq 'dlpRule' -and $targetId -and -not $ruleIds.Contains($targetId)) { $ruleIds.Add($targetId) }
+        $ruleNames = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($r in $ruleIds) { $ruleNames.Add((Get-NodeName -NodeId $r -Prefix 'dlpRule')) | Out-Null }
+        $ruleList = @($ruleNames)
 
-        $policies = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($r in $ruleList) { if ($policiesByRuleName.ContainsKey($r)) { foreach ($p in $policiesByRuleName[$r]) { $policies.Add($p) | Out-Null } } }
-        if ($type -eq 'dlpPolicy') { $policies.Add($ref) | Out-Null }
+        $policyNames = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($r in $ruleIds) { if ($policyIdsByRuleId.ContainsKey($r)) { foreach ($p in $policyIdsByRuleId[$r]) { $policyNames.Add((Get-NodeName -NodeId $p -Prefix 'dlpPolicy')) | Out-Null } } }
+        if ($type -eq 'dlpPolicy') { $policyNames.Add((Get-NodeName -NodeId ($targetId ? $targetId : "dlpPolicy:$ref") -Prefix 'dlpPolicy')) | Out-Null }
+        $policyList = @($policyNames)
 
         # Dereferences are needed when removing a sit/package/dictionary still referenced by live rules.
         $derefTypes = @('sit', 'rulePackage', 'dictionary')
         $dereferences = if ($derefTypes -contains $type) { $ruleList } else { @() }
-        # A node we couldn't locate (and which contributed no sits/rules) is unresolved.
-        $resolved = $nodesById.Values | Where-Object {
-            (($type -eq 'rulePackage' -and $_.Type -eq 'SitPackage') -or
-             ($type -eq 'dictionary'  -and $_.Type -eq 'KeywordDictionary') -or
-             ($type -eq 'dlpRule'     -and $_.Type -eq 'DlpRule') -or
-             ($type -eq 'dlpPolicy'   -and $_.Type -eq 'DlpPolicy') -or
-             ($type -eq 'sit'         -and $_.Type -eq 'SensitiveInformationType')) -and
-            ([string]$_.Name -eq $ref -or [string]$_.Identity -eq $ref -or [string]$_.Identity -eq $ref.ToLowerInvariant())
-        } | Select-Object -First 1
 
         [pscustomobject]@{
             objectType         = $type
             ref                = $ref
-            resolved           = [bool]$resolved
+            resolved           = [bool]$targetId
             containedSits      = $sits
             referencingRules   = $ruleList
-            affectedPolicies   = @($policies)
+            affectedPolicies   = $policyList
             dereferencesNeeded = @($dereferences)
             blocked            = (($derefTypes -contains $type) -and $ruleList.Count -gt 0)
-            summary            = "removing $type '$ref' -> $($sits.Count) sit(s), $($ruleList.Count) referencing rule(s), $(@($policies).Count) affected policy(ies); $(@($dereferences).Count) dereference(s) required first."
+            summary            = "removing $type '$ref' -> $($sits.Count) sit(s), $($ruleList.Count) referencing rule(s), $($policyList.Count) affected policy(ies); $(@($dereferences).Count) dereference(s) required first."
         }
     }
 }

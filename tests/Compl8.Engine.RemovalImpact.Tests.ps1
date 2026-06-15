@@ -57,6 +57,15 @@ Describe 'Get-Compl8RemovalImpact — other candidate types' {
         $i.referencingRules | Should -Contain 'P01-R01-ECH-OFFI'
         $i.blocked          | Should -BeTrue
     }
+    It 'a dictionary removal BY IDENTITY (GUID) cascades identically to the Name form (codex R3 P2)' {
+        # The documented Identity form must hit the cascade — indexes are keyed by canonical node Id,
+        # so resolving the GUID-form ref to its node must not produce an empty/hidden blast radius.
+        $i = @(Get-Compl8RemovalImpact -Graph $script:Graph -Target @([pscustomobject]@{ objectType = 'dictionary'; ref = '22222222-2222-4222-8222-222222222222' }))[0]
+        $i.resolved         | Should -BeTrue
+        $i.containedSits    | Should -Contain $script:SitGuid
+        $i.referencingRules | Should -Contain 'P01-R01-ECH-OFFI'
+        $i.blocked          | Should -BeTrue
+    }
     It 'a dlpRule removal lists its policy and is NOT blocked (no dereference needed)' {
         $i = @(Get-Compl8RemovalImpact -Graph $script:Graph -Target @([pscustomobject]@{ objectType = 'dlpRule'; ref = 'P01-R01-ECH-OFFI' }))[0]
         $i.affectedPolicies   | Should -Contain 'P01-ECH-QGISCF-EXT-ADT'
