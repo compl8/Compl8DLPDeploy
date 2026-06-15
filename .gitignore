@@ -33,6 +33,9 @@ scripts/Test-CrossTenantConnect.ps1
 scripts/build-australian-names.py
 scriptfixes.md
 SITcompaction.md
+# Pester NUnit/JUnit result artifacts (CI/local test runs) — never tracked
+testResults.xml
+TestResults.xml
 
 # Test fixtures are program content (committed), even when their paths (xml/, reports/,
 # backups/, plans/, logs/, config/tenant-sits.json, config/tenants/) match the broad
