@@ -15,6 +15,7 @@
         'Invoke-Compl8Apply',
         'Invoke-Compl8Assess',
         'Invoke-Compl8Deploy',
+        'Invoke-Compl8Reconcile',
         'Invoke-Compl8AutoLabelExecutor',
         'Invoke-Compl8ClaimExecutor',
         'Invoke-Compl8DictionaryExecutor',
