@@ -24,6 +24,10 @@ function Get-Compl8EngineSchemaEnums {
         Actions     = @('create', 'update', 'remove', 'repack-move', 'dereference', 'snapshot', 'claim')
         # Object types referenced by assessment entries and plan steps.
         ObjectTypes = @('dictionary', 'rulePackage', 'sit', 'label', 'labelPolicy', 'dlpRule', 'dlpPolicy', 'autoLabelPolicy', 'tenant')
+        # Object types a `claim` step may target (provenance-stamp-owned types the claim executor adopts).
+        # Test-PlanSchema rejects a claim of any other type at validation time (it would only fail later
+        # in apply). v1: dlpRule + dlpPolicy (dictionaries cannot be claimed — names differ from desired).
+        ClaimableObjectTypes = @('dlpRule', 'dlpPolicy')
         # Gate types carried as data on plan steps (enforcement is pluggable in Engine).
         GateTypes   = @('propagation', 'externalRefs', 'snapshotBeforeDestroy')
     }

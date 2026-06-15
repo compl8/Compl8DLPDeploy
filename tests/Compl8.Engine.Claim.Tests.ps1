@@ -40,10 +40,17 @@ Describe 'claim — schema' {
     It 'is a valid plan-step action' {
         (Get-Compl8EngineSchemaEnums).Actions | Should -Contain 'claim'
     }
-    It 'a plan carrying a claim step passes Test-PlanSchema' {
+    It 'a plan carrying a claim step on a claimable type (dlpRule) passes Test-PlanSchema' {
         $plan = New-PlanObject -Workspace 'nonprod' -Id 'plan-claim' -GeneratedUtc '2026-06-16T00:00:00Z'
         $plan = Add-PlanStep -Plan $plan -Id 's1' -Action 'claim' -ObjectType 'dlpRule' -ObjectRef 'P01-R01-ECH-OFFI' -DependsOn @() -Impact @() -Gate $null
         (Test-PlanSchema -Plan $plan).Valid | Should -BeTrue
+    }
+    It 'REJECTS a claim of a non-claimable type at schema time (codex R2 P2)' {
+        $plan = New-PlanObject -Workspace 'nonprod' -Id 'plan-claim-bad' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $plan = Add-PlanStep -Plan $plan -Id 's1' -Action 'claim' -ObjectType 'dictionary' -ObjectRef 'QGISCF - X' -DependsOn @() -Impact @() -Gate $null
+        $r = Test-PlanSchema -Plan $plan
+        $r.Valid | Should -BeFalse
+        ($r.Errors -join '; ') | Should -Match "claim.*not valid for objectType 'dictionary'"
     }
     It 'is exported from Compl8.Engine' {
         (Get-Command -Name Invoke-Compl8ClaimExecutor -Module Compl8.Engine -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty

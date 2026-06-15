@@ -47,6 +47,12 @@ function Test-PlanSchema {
             $errors.Add("Step '$($step.id)': unknown objectType '$($step.objectType)'.")
         }
 
+        # Cross-field: a `claim` step may only target a claimable objectType. Without this an
+        # unsupported claim (e.g. claim a dictionary) passes schema and fails later in apply dispatch.
+        if ($step.action -eq 'claim' -and $enums.ClaimableObjectTypes -notcontains $step.objectType) {
+            $errors.Add("Step '$($step.id)': action 'claim' is not valid for objectType '$($step.objectType)' (claimable: $($enums.ClaimableObjectTypes -join ', ')).")
+        }
+
         foreach ($dep in @($step.dependsOn)) {
             if ($stepIds -notcontains $dep) {
                 $errors.Add("Step '$($step.id)': dependsOn names a missing step id '$dep'.")
