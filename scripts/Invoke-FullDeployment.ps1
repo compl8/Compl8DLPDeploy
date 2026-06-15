@@ -38,7 +38,14 @@ param(
     [switch]$WhatIf,
     [switch]$RegisterFingerprint,
     [string]$FingerprintMode = 'warn',
-    [string]$ExpectedTenantId
+    [string]$ExpectedTenantId,
+    # Stage 5 (D1/D4/D6): opt-in to the Engine path. When set, the 7-field bundle is mapped into a
+    # New-Compl8Context and each phase routes through Invoke-Compl8Deploy IF that object type's route
+    # is ON in the context (tenant.json engineRoutes). Routes default ALL FALSE, so even with
+    # -UseEngine every type still defers to the leaf path until an operator flips a route after its
+    # nonprod shadow trial (5C). WITHOUT -UseEngine the orchestrator behaves byte-for-byte as today.
+    [switch]$UseEngine,
+    [string]$WorkspaceRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -101,6 +108,78 @@ foreach ($mm in @($fingerprint.mismatches)) {
 if (-not $fingerprint.passed) { throw "Tenant fingerprint check failed. Aborting." }
 Write-Host ""
 
+# ── Engine context (Stage 5 D1/D4/D6) ──────────────────────────────────────────
+# Under -UseEngine, resolve the 7-field bundle ONCE into a New-Compl8Context. The context's
+# engineRoutes (from tenant.json; default ALL FALSE) drive per-phase routing below: a phase routes
+# through the Engine verbs (Invoke-Compl8Deploy) only when its object type's route is ON; otherwise
+# it runs the existing leaf script unchanged. Building the context (and importing Compl8.Engine) is
+# gated on -UseEngine so the default path is byte-for-byte today's leaf orchestration.
+$DeployContext = $null
+if ($UseEngine) {
+    Import-Module (Join-Path $ProjectRoot "modules" "Compl8.Engine") -Force
+    $ctxArgs = @{ TargetEnvironment = $TargetEnvironment }
+    if ($WorkspaceRoot) { $ctxArgs["WorkspaceRoot"] = $WorkspaceRoot }
+    if ($Prefix)        { $ctxArgs["Prefix"] = $Prefix }
+    if ($UPN)           { $ctxArgs["UPN"] = $UPN }
+    if ($Delegated)     { $ctxArgs["Delegated"] = $true }
+    $DeployContext = New-Compl8Context @ctxArgs
+
+    # Deterministic-within-this-run stamps for the plan id / generatedUtc the Engine verbs require
+    # (the orchestrator surface MAY call Get-Date; the determinism ban is only on the pure Engine
+    # paths, which receive these stamps as injected values).
+    $script:DeployStamp        = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+    $script:DeployGeneratedUtc = (Get-Date).ToUniversalTime().ToString('o')
+}
+
+# Routes a single phase's object type through the Engine. The context is SCOPED to just this route
+# (others forced off) so Invoke-Compl8Deploy applies ONLY this phase's type and defers the rest —
+# preserving the orchestrator's per-phase ordering + propagation messaging. The Engine's own
+# propagation gate replaces the leaf propagation checkpoint for routed types. Per-type apply content
+# is threaded by that type's Stage-5C cutover slice; -WhatIf (and the default routes-off state) make
+# this a safe plan/preview until then.
+function Invoke-Compl8EnginePhase {
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Context,
+        [Parameter(Mandatory)][ValidateSet('dictionary', 'label', 'rulePackage', 'dlpRule', 'autoLabel')][string]$RouteKey,
+        [Parameter(Mandatory)][string]$PhaseLabel,
+        [hashtable]$DesiredContent = @{}
+    )
+    $scopedRoutes = [pscustomobject]@{ dictionary = $false; label = $false; rulePackage = $false; dlpRule = $false; autoLabel = $false }
+    $scopedRoutes.$RouteKey = $true
+    $scoped = $Context.PSObject.Copy()
+    $scoped.EngineRoutes = $scopedRoutes
+
+    # SAFETY (codex 5B P1): until a type's Stage-5C slice wires its per-step desired content, a routed
+    # REAL apply would hand the executors $null content (broken create/update). So when NO DesiredContent
+    # is supplied, force PLAN-ONLY (preview) regardless of -WhatIf; a 5C slice enables real apply by
+    # passing -DesiredContent. (Routes default off, so this only matters once an operator flips one.)
+    $planOnly = [bool]$WhatIf
+    if (-not $planOnly -and @($DesiredContent.Keys).Count -eq 0) {
+        Write-Host "  No desired content wired for '$RouteKey' yet — Engine runs PLAN-ONLY (preview). Real apply lands in this type's Stage-5C cutover." -ForegroundColor Yellow
+        $planOnly = $true
+    }
+
+    $deployArgs = @{
+        Context      = $scoped
+        PlanId       = "deploy-$($Context.Environment)-$RouteKey-$($script:DeployStamp)"
+        GeneratedUtc = $script:DeployGeneratedUtc
+        ProjectRoot  = $ProjectRoot
+        DesiredContent = $DesiredContent
+    }
+    if ($planOnly) { $deployArgs["WhatIf"] = $true }
+    $result = Invoke-Compl8Deploy @deployArgs
+    if ($result.render) { Write-Host $result.render }
+    $result
+}
+
+# True when the Engine should drive this phase's object type (opt-in + the type's route is ON).
+function Test-Compl8PhaseRoutesToEngine {
+    param([string]$RouteKey)
+    if (-not $UseEngine -or -not $DeployContext) { return $false }
+    $prop = $DeployContext.EngineRoutes.PSObject.Properties[$RouteKey]
+    return ($prop -and [bool]$prop.Value)
+}
+
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 # Resolve exactly which live tenant objects each pattern matches, present the full
 # list, then (after typed confirmation) delete ONLY those previewed objects.
@@ -156,11 +235,15 @@ if ($Phase -eq "All" -or $Phase -eq "Cleanup") {
 # ── Phase 1: Labels ──────────────────────────────────────────────────────────
 if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
     Write-Host "=== Phase 1: Deploying Labels ===" -ForegroundColor Cyan
-    $labelArgs = @{ PublishTo = $PublishTo }
-    if ($Prefix) { $labelArgs["Prefix"] = $Prefix }
-    if ($WhatIf) { $labelArgs["WhatIf"] = $true }
-    if ($TargetEnvironment) { $labelArgs["TargetEnvironment"] = $TargetEnvironment }
-    & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") @labelArgs
+    if (Test-Compl8PhaseRoutesToEngine 'label') {
+        Invoke-Compl8EnginePhase -Context $DeployContext -RouteKey 'label' -PhaseLabel 'Labels' | Out-Null
+    } else {
+        $labelArgs = @{ PublishTo = $PublishTo }
+        if ($Prefix) { $labelArgs["Prefix"] = $Prefix }
+        if ($WhatIf) { $labelArgs["WhatIf"] = $true }
+        if ($TargetEnvironment) { $labelArgs["TargetEnvironment"] = $TargetEnvironment }
+        & (Join-Path $PSScriptRoot "Deploy-Labels.ps1") @labelArgs
+    }
     Write-Host ""
 }
 
@@ -168,11 +251,15 @@ if (($Phase -eq "All" -or $Phase -eq "Labels") -and -not $SkipLabels) {
 if ($Phase -eq "All" -or $Phase -eq "Dictionaries" -or $Phase -eq "Classifiers") {
     Write-Host "=== Phase 1.5: Keyword Dictionaries ===" -ForegroundColor Cyan
 
-    $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
-    if ($WhatIf) {
-        $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -WhatIf
+    if (Test-Compl8PhaseRoutesToEngine 'dictionary') {
+        Invoke-Compl8EnginePhase -Context $DeployContext -RouteKey 'dictionary' -PhaseLabel 'Dictionaries' | Out-Null
     } else {
-        $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix
+        $manifestUrl = "$($Config.dictionaryManifestUrl)?scope=$Scope"
+        if ($WhatIf) {
+            $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix -WhatIf
+        } else {
+            $guidMap = Sync-DlpKeywordDictionaries -ManifestUrl $manifestUrl -NamePrefix $Config.namingPrefix
+        }
     }
     Write-Host ""
 
@@ -183,6 +270,9 @@ if ($Phase -eq "All" -or $Phase -eq "Dictionaries" -or $Phase -eq "Classifiers")
 if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
     Write-Host "=== Phase 2: SIT Classifier Package Manager ===" -ForegroundColor Cyan
 
+    if (Test-Compl8PhaseRoutesToEngine 'rulePackage') {
+        Invoke-Compl8EnginePhase -Context $DeployContext -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' | Out-Null
+    } else {
     $deployPath = Join-Path $ProjectRoot $DeployDir
     $xmlFiles = Get-ChildItem -Path $deployPath -Filter "*.xml" | Sort-Object Name
 
@@ -219,6 +309,7 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
             }
         }
     }
+    }
 
     if ($Phase -eq "Classifiers") { return }
 }
@@ -227,6 +318,9 @@ if ($Phase -eq "All" -or $Phase -eq "Classifiers") {
 if ($Phase -eq "All" -or $Phase -eq "DLPRules") {
     Write-Host "=== Phase 3: Deploying DLP Rules ===" -ForegroundColor Cyan
 
+    if (Test-Compl8PhaseRoutesToEngine 'dlpRule') {
+        Invoke-Compl8EnginePhase -Context $DeployContext -RouteKey 'dlpRule' -PhaseLabel 'DLPRules' | Out-Null
+    } else {
     # Propagation check: warn if classifiers were uploaded recently
     $timestampFile = Join-Path $ProjectRoot "config" "last-classifier-upload.json"
     if (Test-Path $timestampFile) {
@@ -275,6 +369,7 @@ if ($Phase -eq "All" -or $Phase -eq "DLPRules") {
     if ($Prefix) { $ruleArgs["Prefix"] = $Prefix }
     if ($Delegated) { $ruleArgs["Delegated"] = $true }
     & (Join-Path $PSScriptRoot "Deploy-DLPRules.ps1") @ruleArgs
+    }
 }
 
 # ── Done ─────────────────────────────────────────────────────────────────────

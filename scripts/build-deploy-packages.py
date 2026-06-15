@@ -68,7 +68,20 @@ def fetch_bundle(slugs, name):
     url = f"{TESTPATTERN_API}?slugs={slug_param}&name={name}&dictionaries=true"
     req = urllib.request.Request(url, headers={"User-Agent": "Compl8DLPDeploy/1.0"})
     with urllib.request.urlopen(req, timeout=120) as resp:
-        return resp.read().decode("utf-8")
+        raw = resp.read()
+    # The API serves UTF-16 LE with BOM (testpattern's native encoding); older responses
+    # were UTF-8. The toolkit's recorded encoding decision is UTF-8, so transcode here and
+    # normalise the declaration — the "modulo declared encoding decision" of the design's
+    # Stage 3 parity rule.
+    if raw.startswith(b"\xff\xfe"):
+        text = raw.decode("utf-16-le").lstrip("﻿")
+    else:
+        text = raw.decode("utf-8")
+    return text.replace(
+        '<?xml version="1.0" encoding="utf-16"?>',
+        '<?xml version="1.0" encoding="utf-8"?>',
+        1,
+    )
 
 
 def optimise(xml_text, publisher):

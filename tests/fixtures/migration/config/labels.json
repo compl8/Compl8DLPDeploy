@@ -1,0 +1,6 @@
+{
+  "labels": [
+    { "name": "OFFICIAL", "labelCode": "OFFI" },
+    { "name": "OFFICIAL Sensitive", "labelCode": "OFFS" }
+  ]
+}

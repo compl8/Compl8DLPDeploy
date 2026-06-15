@@ -1,0 +1,10 @@
+{
+  "tier": "medium",
+  "packages": [
+    {
+      "key": "QGISCF-medium-08",
+      "entities": 2,
+      "sizeKB": 1.2
+    }
+  ]
+}

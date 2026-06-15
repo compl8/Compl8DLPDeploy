@@ -1,0 +1,5 @@
+{
+  "policies": [
+    { "policyNumber": 1, "policyCode": "OFFI", "locations": ["Exchange", "SharePoint"] }
+  ]
+}

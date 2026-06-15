@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "compl8.entity-ledger/v1",
+  "entries": [
+    {
+      "slug": "bail-note",
+      "entityId": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "state": "active",
+      "source": "release",
+      "firstBound": "2026-06-13"
+    },
+    {
+      "slug": "name-dict",
+      "entityId": "22222222-aaaa-4bbb-8ccc-000000000002",
+      "state": "active",
+      "source": "release",
+      "firstBound": "2026-06-13"
+    },
+    {
+      "slug": "shared-a",
+      "entityId": "33333333-aaaa-4bbb-8ccc-000000000003",
+      "state": "active",
+      "source": "release",
+      "firstBound": "2026-06-13"
+    },
+    {
+      "slug": "shared-b",
+      "entityId": "44444444-aaaa-4bbb-8ccc-000000000004",
+      "state": "disabled",
+      "source": "release",
+      "firstBound": "2026-06-13"
+    },
+    {
+      "slug": "custom-incident-ref",
+      "entityId": "55555555-aaaa-4bbb-8ccc-000000000005",
+      "state": "active",
+      "source": "custom",
+      "firstBound": "2026-06-13"
+    }
+  ],
+  "packages": [
+    {
+      "name": "QGISCF-test-01",
+      "rulePackId": "cafebabe-cafe-4abe-8abe-cafebabecafe"
+    }
+  ]
+}

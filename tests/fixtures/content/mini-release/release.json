@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "compl8.release/v1",
+  "version": "2026.06-test.1",
+  "generatedUtc": "2026-06-13T00:00:00Z",
+  "tier": "test",
+  "items": [
+    {
+      "slug": "bail-note",
+      "type": "sit",
+      "entityId": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "name": "Bail Note",
+      "fragment": "fragments/bail-note.json",
+      "definition": "definitions/bail-note.json",
+      "dictionaryRefs": [],
+      "sourceHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "slug": "name-dict",
+      "type": "sit",
+      "entityId": "22222222-aaaa-4bbb-8ccc-000000000002",
+      "name": "Name With Dictionary",
+      "fragment": "fragments/name-dict.json",
+      "definition": "definitions/name-dict.json",
+      "dictionaryRefs": ["{{DICT_AU_FORENAMES}}"],
+      "sourceHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "slug": "shared-a",
+      "type": "sit",
+      "entityId": "33333333-aaaa-4bbb-8ccc-000000000003",
+      "name": "Shared Keyword A",
+      "fragment": "fragments/shared-a.json",
+      "definition": "definitions/shared-a.json",
+      "dictionaryRefs": [],
+      "sourceHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "slug": "shared-b",
+      "type": "sit",
+      "entityId": "44444444-aaaa-4bbb-8ccc-000000000004",
+      "name": "Shared Keyword B",
+      "fragment": "fragments/shared-b.json",
+      "definition": "definitions/shared-b.json",
+      "dictionaryRefs": [],
+      "sourceHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "contentHash": "sha256:feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
+}

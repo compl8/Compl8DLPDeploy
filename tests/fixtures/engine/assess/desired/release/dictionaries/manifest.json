@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "compl8.dictionaries/v1",
+  "dictionaries": [
+    { "placeholder": "{{DICT_AU_FORENAMES}}", "termsBytes": 122880 },
+    { "placeholder": "{{DICT_NOISE_EXCLUSION}}", "termsBytes": 2048 }
+  ]
+}

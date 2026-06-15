@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": {
+    "6c9ccd03a983f26b": {
+      "toolkit": "Compl8DLPDeploy",
+      "version": 1,
+      "prefix": "QGISCF",
+      "component": "KeywordDictionary",
+      "deploymentId": "20260603",
+      "environment": null,
+      "fields": {
+        "prefix": "QGISCF",
+        "component": "KeywordDictionary",
+        "deploymentId": "20260603",
+        "Placeholder": "{{DICT_NOISE_EXCLUSION}}"
+      }
+    }
+  }
+}

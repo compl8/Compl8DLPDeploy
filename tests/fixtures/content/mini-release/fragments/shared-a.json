@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "compl8.fragment/v1",
+  "slug": "shared-a",
+  "entityId": "33333333-aaaa-4bbb-8ccc-000000000003",
+  "sections": {
+    "entity": "<Entity id=\"33333333-aaaa-4bbb-8ccc-000000000003\" patternsProximity=\"300\" recommendedConfidence=\"75\" relaxProximity=\"false\">\n<Pattern confidenceLevel=\"75\">\n<IdMatch idRef=\"Pattern_shared_a_terms_shared-a\" />\n<Any minMatches=\"0\" maxMatches=\"0\">\n<Match idRef=\"Keyword_shared_noise_filter\" />\n</Any>\n</Pattern>\n</Entity>",
+    "regexes": [
+      "<Regex id=\"Pattern_shared_a_terms_shared-a\">(?i)\\bshared\\s+alpha\\s+document\\b</Regex>"
+    ],
+    "keywords": [
+      "<Keyword id=\"Keyword_shared_noise_filter\">\n<Group matchStyle=\"word\">\n<Term caseSensitive=\"false\">template</Term>\n<Term caseSensitive=\"false\">sample only</Term>\n</Group>\n</Keyword>"
+    ],
+    "filters": [],
+    "validators": [],
+    "resources": [
+      "<Resource idRef=\"33333333-aaaa-4bbb-8ccc-000000000003\">\n<Name default=\"true\" langcode=\"en-us\">TestPattern - Shared Keyword A</Name>\n<Description default=\"true\" langcode=\"en-us\">First user of the shared noise filter keyword.</Description>\n</Resource>"
+    ]
+  }
+}

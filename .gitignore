@@ -1,6 +1,8 @@
 *.log
 *.zip
 logs/
+# Per-tenant workspaces are local data, never program content (arch design §3)
+workspaces/
 dist/
 reports/
 archive/
@@ -31,3 +33,12 @@ scripts/Test-CrossTenantConnect.ps1
 scripts/build-australian-names.py
 scriptfixes.md
 SITcompaction.md
+# Pester NUnit/JUnit result artifacts (CI/local test runs) — never tracked
+testResults.xml
+TestResults.xml
+
+# Test fixtures are program content (committed), even when their paths (xml/, reports/,
+# backups/, plans/, logs/, config/tenant-sits.json, config/tenants/) match the broad
+# local-data ignores above. The Convert-ToWorkspace migration tests (Task 5A-2) depend on
+# tests/fixtures/migration/ being tracked. Re-include the whole fixtures tree.
+!tests/fixtures/**

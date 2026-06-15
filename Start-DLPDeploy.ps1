@@ -12,7 +12,13 @@ param(
     [string]$Tenant,
     [string]$TargetEnvironment,
     [string]$Prefix,
-    [switch]$Delegated
+    [switch]$Delegated,
+    # Stage 5 (D1/D4/D6): opt-in to the Engine path. When set, deploy menu items + the rollout
+    # wizard route an object type through Invoke-Compl8Deploy IF that type's route is ON in the
+    # New-Compl8Context (tenant.json engineRoutes; default ALL FALSE). Otherwise — and always
+    # without -UseEngine — the TUI invokes the existing leaf scripts exactly as today.
+    [switch]$UseEngine,
+    [string]$WorkspaceRoot
 )
 
 $ProjectRoot = $PSScriptRoot
@@ -39,6 +45,16 @@ $_Prefix       = $_Config.namingPrefix
 $script:RegisterFingerprint = $false
 $script:FingerprintMode   = 'warn'
 $script:ExpectedTenantId  = $null
+
+# Stage 5 Engine path (opt-in). Import Compl8.Engine (New-Compl8Context + Invoke-Compl8Deploy) and
+# stamp deterministic-within-this-session plan id / generatedUtc values ONLY under -UseEngine, so the
+# default TUI startup is unchanged. (The TUI surface MAY call Get-Date; the determinism ban is on the
+# pure Engine paths, which receive these as injected values.)
+if ($UseEngine) {
+    Import-Module (Join-Path $ProjectRoot "modules" "Compl8.Engine") -Force
+    $script:DeployStamp        = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+    $script:DeployGeneratedUtc = (Get-Date).ToUniversalTime().ToString('o')
+}
 
 #region Box Drawing
 function Get-TerminalSize {
@@ -408,6 +424,76 @@ function Get-CommonDeploymentArgs {
         if ($script:ExpectedTenantId) { $commonArgs += @("-ExpectedTenantId", $script:ExpectedTenantId) }
     }
     return $commonArgs
+}
+
+# ── Engine routing (Stage 5 D1/D4/D6) ──────────────────────────────────────────
+# Builds a New-Compl8Context from the current TUI selection (Tenant/Env/Prefix/UPN/Delegated). Pure
+# file resolution; returns $null when -UseEngine is off, no environment is selected, or the env is not
+# yet pinned (so the TUI silently keeps the leaf path until a workspace/tenant.json exists).
+function Get-Compl8DeployContext {
+    if (-not $UseEngine -or -not $script:TargetEnvironment) { return $null }
+    $ctxArgs = @{ TargetEnvironment = $script:TargetEnvironment }
+    if ($WorkspaceRoot)      { $ctxArgs["WorkspaceRoot"] = $WorkspaceRoot }
+    if ($script:Prefix)      { $ctxArgs["Prefix"] = $script:Prefix }
+    if ($script:UPN)         { $ctxArgs["UPN"] = $script:UPN }
+    if ($script:Delegated)   { $ctxArgs["Delegated"] = $true }
+    try {
+        return New-Compl8Context @ctxArgs
+    } catch {
+        Write-Host "  (Engine context unavailable: $($_.Exception.Message) — using leaf path.)" -ForegroundColor DarkYellow
+        return $null
+    }
+}
+
+# True when the Engine should drive this object type (opt-in + a context + that type's route is ON).
+function Test-Compl8PhaseRoutesToEngine {
+    param([Parameter(Mandatory)][string]$RouteKey)
+    if (-not $UseEngine) { return $false }
+    $ctx = Get-Compl8DeployContext
+    if (-not $ctx) { return $false }
+    $prop = $ctx.EngineRoutes.PSObject.Properties[$RouteKey]
+    return ($prop -and [bool]$prop.Value)
+}
+
+# Routes ONE object type through the Engine. The context is SCOPED to just this route (others forced
+# off) so Invoke-Compl8Deploy applies only this type and defers the rest — preserving the menu/wizard
+# per-type flow. Per-type apply content is threaded by that type's Stage-5C cutover slice; until then
+# this is a safe plan/preview (and the default routes-off state never reaches here).
+function Invoke-Compl8EnginePhase {
+    param(
+        [Parameter(Mandatory)][ValidateSet('dictionary', 'label', 'rulePackage', 'dlpRule', 'autoLabel')][string]$RouteKey,
+        [Parameter(Mandatory)][string]$PhaseLabel,
+        [switch]$WhatIf,
+        [hashtable]$DesiredContent = @{}
+    )
+    $ctx = Get-Compl8DeployContext
+    if (-not $ctx) { Write-Host "  Engine context unavailable; skipping $PhaseLabel." -ForegroundColor Yellow; return }
+    $scopedRoutes = [pscustomobject]@{ dictionary = $false; label = $false; rulePackage = $false; dlpRule = $false; autoLabel = $false }
+    $scopedRoutes.$RouteKey = $true
+    $scoped = $ctx.PSObject.Copy()
+    $scoped.EngineRoutes = $scopedRoutes
+
+    # SAFETY (codex 5B P1): until a type's Stage-5C slice wires its per-step desired content, a routed
+    # REAL apply would hand the executors $null content (broken create/update). So when NO DesiredContent
+    # is supplied, force PLAN-ONLY (preview) regardless of -WhatIf; a 5C slice enables real apply by
+    # passing -DesiredContent. (Routes default off, so this only matters once an operator flips one.)
+    $planOnly = [bool]$WhatIf
+    if (-not $planOnly -and @($DesiredContent.Keys).Count -eq 0) {
+        Write-Host "  No desired content wired for '$RouteKey' yet — Engine runs PLAN-ONLY (preview). Real apply lands in this type's Stage-5C cutover." -ForegroundColor Yellow
+        $planOnly = $true
+    }
+
+    $deployArgs = @{
+        Context        = $scoped
+        PlanId         = "deploy-$($ctx.Environment)-$RouteKey-$($script:DeployStamp)"
+        GeneratedUtc   = $script:DeployGeneratedUtc
+        ProjectRoot    = $ProjectRoot
+        DesiredContent = $DesiredContent
+    }
+    if ($planOnly) { $deployArgs["WhatIf"] = $true }
+    $result = Invoke-Compl8Deploy @deployArgs
+    if ($result.render) { Write-Host $result.render }
+    $result
 }
 
 function Get-ExpectedDlpPolicyNameSet {
@@ -803,6 +889,14 @@ function Invoke-DeployLabels {
 
     Select-TargetEnvironment
 
+    if (Test-Compl8PhaseRoutesToEngine 'label') {
+        Write-Host ""
+        Write-Host "  --- Deploy Labels (Engine) ---" -ForegroundColor Cyan
+        $dryRun = Read-YesNo "Dry run (WhatIf preview)?" -Default $true
+        Invoke-Compl8EnginePhase -RouteKey 'label' -PhaseLabel 'Labels' -WhatIf:$dryRun | Out-Null
+        return
+    }
+
     if (-not (Confirm-ConfigSkew)) { return }
 
     Write-Host ""
@@ -834,6 +928,14 @@ function Invoke-DeployClassifiers {
     if (-not (Require-Connection $Connected)) { return }
 
     Select-TargetEnvironment
+
+    if (Test-Compl8PhaseRoutesToEngine 'rulePackage') {
+        Write-Host ""
+        Write-Host "  --- Deploy Classifiers (Engine) ---" -ForegroundColor Cyan
+        $dryRun = Read-YesNo "Dry run (WhatIf preview)?" -Default $true
+        Invoke-Compl8EnginePhase -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' -WhatIf:$dryRun | Out-Null
+        return
+    }
 
     if (-not (Confirm-ConfigSkew)) { return }
 
@@ -929,6 +1031,14 @@ function Invoke-DeployDLPRules {
     if (-not (Require-Connection $Connected)) { return }
 
     Select-TargetEnvironment
+
+    if (Test-Compl8PhaseRoutesToEngine 'dlpRule') {
+        Write-Host ""
+        Write-Host "  --- Deploy DLP Rules (Engine) ---" -ForegroundColor Cyan
+        $dryRun = Read-YesNo "Dry run (WhatIf preview)?" -Default $true
+        Invoke-Compl8EnginePhase -RouteKey 'dlpRule' -PhaseLabel 'DLPRules' -WhatIf:$dryRun | Out-Null
+        return
+    }
 
     if (-not (Confirm-ConfigSkew)) { return }
 
@@ -1809,7 +1919,12 @@ function Invoke-CustomerRolloutWizard {
     # 4. Labels
     Write-Host ""
     Write-Host "  Phase 4/6: Labels" -ForegroundColor Cyan
-    if (Read-YesNo "Deploy labels (WhatIf preview first)?" -Default $true) {
+    if (Test-Compl8PhaseRoutesToEngine 'label') {
+        Invoke-Compl8EnginePhase -RouteKey 'label' -PhaseLabel 'Labels' -WhatIf | Out-Null
+        if (Read-YesNo "WhatIf looked good — apply labels (Engine) for real?" -Default $false) {
+            Invoke-Compl8EnginePhase -RouteKey 'label' -PhaseLabel 'Labels' | Out-Null
+        }
+    } elseif (Read-YesNo "Deploy labels (WhatIf preview first)?" -Default $true) {
         $labelArgs = @("-WhatIf", "-SkipPublish") + $commonArgs
         Invoke-ToolkitScript -ScriptName "Deploy-Labels.ps1" -ArgumentList $labelArgs
         if (Read-YesNo "WhatIf looked good — apply labels for real?" -Default $false) {
@@ -1825,6 +1940,13 @@ function Invoke-CustomerRolloutWizard {
     Write-Host ""
     Write-Host "  Phase 5/6: Classifiers" -ForegroundColor Cyan
     $classifiersApplied = $false
+    if (Test-Compl8PhaseRoutesToEngine 'rulePackage') {
+        Invoke-Compl8EnginePhase -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' -WhatIf | Out-Null
+        if (Read-YesNo "WhatIf looked good — apply classifiers (Engine) for real?" -Default $false) {
+            Invoke-Compl8EnginePhase -RouteKey 'rulePackage' -PhaseLabel 'Classifiers' | Out-Null
+            $classifiersApplied = $true
+        }
+    } else {
     Write-Host "    A. Greenfield Upload (clean tenant with no custom classifier packages)" -ForegroundColor White
     Write-Host "    B. Refit Plan + Apply (tenant has existing custom packages)" -ForegroundColor White
     Write-Host "    S. Skip classifiers phase" -ForegroundColor Gray
@@ -1864,6 +1986,7 @@ function Invoke-CustomerRolloutWizard {
             Write-Host "  Unrecognised selection; skipping classifiers phase." -ForegroundColor Yellow
         }
     }
+    }
 
     # Propagation checkpoint: custom SITs take 4-24h to become visible to the DLP engine.
     if ($classifiersApplied) {
@@ -1879,7 +2002,12 @@ function Invoke-CustomerRolloutWizard {
     # 6. DLP rules
     Write-Host ""
     Write-Host "  Phase 6/6: DLP rules" -ForegroundColor Cyan
-    if (Read-YesNo "Deploy DLP rules (WhatIf preview first)?" -Default $true) {
+    if (Test-Compl8PhaseRoutesToEngine 'dlpRule') {
+        Invoke-Compl8EnginePhase -RouteKey 'dlpRule' -PhaseLabel 'DLPRules' -WhatIf | Out-Null
+        if (Read-YesNo "WhatIf looked good — apply DLP rules (Engine) for real?" -Default $false) {
+            Invoke-Compl8EnginePhase -RouteKey 'dlpRule' -PhaseLabel 'DLPRules' | Out-Null
+        }
+    } elseif (Read-YesNo "Deploy DLP rules (WhatIf preview first)?" -Default $true) {
         $dlpWhatif = @("-WhatIf") + $commonArgs
         Invoke-ToolkitScript -ScriptName "Deploy-DLPRules.ps1" -ArgumentList $dlpWhatif
         if (Read-YesNo "WhatIf looked good — apply DLP rules for real?" -Default $false) {

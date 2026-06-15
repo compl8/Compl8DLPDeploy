@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+<RulePack id="afb2542c-6d06-4770-b39b-5b9dfbf844bc">
+<Version major="1" minor="0" build="0" revision="0" />
+<Publisher id="afb2542c-6d06-4770-b39b-5b9dfbf844bc" />
+</RulePack>
+<Rules>
+<Entity id="7a1f0c2d-aaaa-bbbb-cccc-1234567890ab" patternsProximity="300" recommendedConfidence="75" />
+</Rules>
+</RulePackage>

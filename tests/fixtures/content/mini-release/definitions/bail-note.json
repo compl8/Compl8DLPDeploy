@@ -1,0 +1,10 @@
+{
+  "slug": "bail-note",
+  "name": "Bail Note",
+  "description": "Detects bail notes with surety arrangements.",
+  "confidence": "high",
+  "proximity": 300,
+  "regex": "(?i)\\b(bail\\s+(?:note|undertaking)|surety\\s+amount)\\b",
+  "keywords": ["bail note", "surety amount"],
+  "exclusions": ["annual report", "statistics"]
+}

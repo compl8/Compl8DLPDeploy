@@ -93,6 +93,197 @@ Describe 'Compl8.Model standalone exports (parsing/graph)' {
     }
 }
 
+Describe 'Get-DlpEntityContentHash — shared canonical SIT content hash' {
+    BeforeAll {
+        Remove-Module DLP-Deploy -ErrorAction SilentlyContinue
+        $script:ModelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'Compl8.Model'
+        Import-Module $script:ModelDir -Force
+    }
+
+    It 'is exported by Compl8.Model' {
+        (Get-Command -Name Get-DlpEntityContentHash -Module Compl8.Model -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns a sha256:-prefixed 64-hex-char hash' {
+        $h = Get-DlpEntityContentHash -EntityXml '<Entity id="x"><Pattern confidenceLevel="85"/></Entity>'
+        $h | Should -Match '^sha256:[0-9a-f]{64}$'
+    }
+
+    It 'hashes two serially-different-but-semantically-equal entities EQUAL (the comparability seam)' {
+        # Same entity, three serialisations: compact, indented+xml-decl, and a UTF-16 decl.
+        $compact = '<Entity id="22222222-aaaa-4bbb-8ccc-000000000002"><Pattern confidenceLevel="75"><IdMatch idRef="P"/></Pattern></Entity>'
+        $indented = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Entity id="22222222-aaaa-4bbb-8ccc-000000000002">
+  <Pattern confidenceLevel="75">
+    <IdMatch idRef="P" />
+  </Pattern>
+</Entity>
+"@
+        $utf16decl = "<?xml version='1.0' encoding='utf-16'?>`r`n<Entity id=`"22222222-aaaa-4bbb-8ccc-000000000002`">`r`n`t<Pattern confidenceLevel=`"75`"><IdMatch idRef=`"P`"></IdMatch></Pattern></Entity>"
+
+        $a = Get-DlpEntityContentHash -EntityXml $compact
+        $b = Get-DlpEntityContentHash -EntityXml $indented
+        $c = Get-DlpEntityContentHash -EntityXml $utf16decl
+        $a | Should -Be $b
+        $a | Should -Be $c
+    }
+
+    It 'hashes a genuinely-changed entity DIFFERENTLY (real drift still surfaces)' {
+        $base    = '<Entity id="x"><Pattern confidenceLevel="75"><IdMatch idRef="P"/></Pattern></Entity>'
+        $changed = '<Entity id="x"><Pattern confidenceLevel="85"><IdMatch idRef="P"/></Pattern></Entity>'
+        (Get-DlpEntityContentHash -EntityXml $base) | Should -Not -Be (Get-DlpEntityContentHash -EntityXml $changed)
+    }
+
+    It 'is stable across processes for the same input (deterministic)' {
+        $x = '<Entity id="x"><Regex id="r">(?i)\bfoo\b</Regex></Entity>'
+        Get-DlpEntityContentHash -EntityXml $x | Should -Be (Get-DlpEntityContentHash -EntityXml $x)
+    }
+
+    It 'preserves significant text — a changed Regex body changes the hash' {
+        $a = '<Entity id="x"><Regex id="r">(?i)\bfoo\b</Regex></Entity>'
+        $b = '<Entity id="x"><Regex id="r">(?i)\bbar\b</Regex></Entity>'
+        (Get-DlpEntityContentHash -EntityXml $a) | Should -Not -Be (Get-DlpEntityContentHash -EntityXml $b)
+    }
+
+    It 'does not throw on null/empty/unparseable input' {
+        { Get-DlpEntityContentHash -EntityXml $null } | Should -Not -Throw
+        { Get-DlpEntityContentHash -EntityXml '' }    | Should -Not -Throw
+        { Get-DlpEntityContentHash -EntityXml 'not xml <<<' } | Should -Not -Throw
+    }
+}
+
+Describe 'Get-DlpEntityClosureContentHash — entity PLUS transitive idRef closure (codex 4A P2-A)' {
+    BeforeAll {
+        Remove-Module DLP-Deploy -ErrorAction SilentlyContinue
+        $script:ModelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'Compl8.Model'
+        Import-Module $script:ModelDir -Force
+
+        # Parse a package's <Rules> node so tests can hand the helper an entity + its sibling pool.
+        function script:Get-RulesNode {
+            param([string]$PackageXml)
+            [xml]$doc = $PackageXml
+            $doc.RulePackage.ChildNodes | Where-Object { $_.LocalName -eq 'Rules' } | Select-Object -First 1
+        }
+        function script:Get-EntityNode {
+            param($RulesNode, [string]$Id)
+            @($RulesNode.ChildNodes | Where-Object {
+                $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -eq 'Entity' -and $_.GetAttribute('id') -eq $Id
+            })[0]
+        }
+
+        # Two packages that are IDENTICAL except the body of the <Regex> the entity references.
+        # The <Entity> node itself is byte-identical in both — the only change lives in a sibling.
+        $script:PkgBase = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+<Rules>
+<Entity id="e1" patternsProximity="300" recommendedConfidence="75" relaxProximity="false">
+<Pattern confidenceLevel="75"><IdMatch idRef="Regex_alpha" /><Match idRef="Keyword_alpha" /></Pattern>
+</Entity>
+<Regex id="Regex_alpha">(?i)\balpha\b</Regex>
+<Keyword id="Keyword_alpha"><Group matchStyle="word"><Term caseSensitive="false">alpha</Term></Group></Keyword>
+</Rules>
+</RulePackage>
+"@
+        # Same entity node, but the referenced regex body is edited foo -> bar.
+        $script:PkgRegexEdited = $script:PkgBase.Replace('(?i)\balpha\b', '(?i)\bALPHA-EDITED\b')
+        # Same entity node and same regex, only formatting/encoding-style differs (indentation,
+        # explicit end tags) — must still hash EQUAL to base.
+        $script:PkgReserialized = @"
+<?xml version="1.0" encoding="utf-16"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+    <Rules>
+        <Entity id="e1"   patternsProximity="300" recommendedConfidence="75" relaxProximity="false">
+            <Pattern confidenceLevel="75">
+                <IdMatch idRef="Regex_alpha"></IdMatch>
+                <Match idRef="Keyword_alpha"></Match>
+            </Pattern>
+        </Entity>
+        <Regex id="Regex_alpha">(?i)\balpha\b</Regex>
+        <Keyword id="Keyword_alpha"><Group matchStyle="word"><Term caseSensitive="false">alpha</Term></Group></Keyword>
+    </Rules>
+</RulePackage>
+"@
+    }
+
+    It 'is exported by Compl8.Model' {
+        (Get-Command -Name Get-DlpEntityClosureContentHash -Module Compl8.Model -ErrorAction SilentlyContinue) |
+            Should -Not -BeNullOrEmpty
+    }
+
+    It 'CHANGES when a referenced sibling <Regex> body is edited (entity node unchanged) — the P2-A bug' {
+        $baseRules    = Get-RulesNode -PackageXml $script:PkgBase
+        $editedRules  = Get-RulesNode -PackageXml $script:PkgRegexEdited
+        $baseEntity   = Get-EntityNode -RulesNode $baseRules   -Id 'e1'
+        $editedEntity = Get-EntityNode -RulesNode $editedRules -Id 'e1'
+
+        # The plain entity-only hash MISSES the edit (this is exactly the regression P2-A fixes).
+        (Get-DlpEntityContentHash -EntityXml $baseEntity.OuterXml) |
+            Should -Be (Get-DlpEntityContentHash -EntityXml $editedEntity.OuterXml) `
+            -Because 'the entity node is identical; only a sibling regex changed'
+
+        # The closure hash MUST differ, because it folds the referenced sibling regex in.
+        $baseHash  = Get-DlpEntityClosureContentHash -Entity $baseEntity   -RulesNode $baseRules
+        $editHash  = Get-DlpEntityClosureContentHash -Entity $editedEntity -RulesNode $editedRules
+        $baseHash | Should -Not -Be $editHash
+    }
+
+    It 'is EQUAL across only-serialisation-different packages (no false drift)' {
+        $baseRules  = Get-RulesNode -PackageXml $script:PkgBase
+        $reserRules = Get-RulesNode -PackageXml $script:PkgReserialized
+        $baseEntity = Get-EntityNode -RulesNode $baseRules  -Id 'e1'
+        $reserEntity = Get-EntityNode -RulesNode $reserRules -Id 'e1'
+
+        $baseHash  = Get-DlpEntityClosureContentHash -Entity $baseEntity  -RulesNode $baseRules
+        $reserHash = Get-DlpEntityClosureContentHash -Entity $reserEntity -RulesNode $reserRules
+        $baseHash | Should -Be $reserHash -Because 'only encoding/whitespace differs; the closure is semantically identical'
+        $baseHash | Should -Match '^sha256:[0-9a-f]{64}$'
+    }
+
+    It 'resolves the closure TRANSITIVELY (a sibling that references another sibling)' {
+        # Validator references another Regex via a nested idRef-bearing element. Editing the
+        # transitively-referenced regex must change the closure hash even though neither the
+        # entity nor the directly-referenced validator node changed.
+        $pkg = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+<Rules>
+<Entity id="e1"><Pattern confidenceLevel="75"><IdMatch idRef="Validator_top" /></Pattern></Entity>
+<Validator id="Validator_top"><Match idRef="Regex_deep" /></Validator>
+<Regex id="Regex_deep">DEEP-ORIGINAL</Regex>
+<Regex id="Regex_unrelated">UNRELATED</Regex>
+</Rules>
+</RulePackage>
+"@
+        $pkgEdited = $pkg.Replace('DEEP-ORIGINAL', 'DEEP-CHANGED')
+        $rules  = Get-RulesNode -PackageXml $pkg
+        $rulesE = Get-RulesNode -PackageXml $pkgEdited
+        $h1 = Get-DlpEntityClosureContentHash -Entity (Get-EntityNode -RulesNode $rules  -Id 'e1') -RulesNode $rules
+        $h2 = Get-DlpEntityClosureContentHash -Entity (Get-EntityNode -RulesNode $rulesE -Id 'e1') -RulesNode $rulesE
+        $h1 | Should -Not -Be $h2 -Because 'the transitively-referenced regex changed'
+
+        # An edit to an UNREFERENCED sibling must NOT change the closure hash (closure is scoped).
+        $pkgUnrelated = $pkg.Replace('UNRELATED', 'UNRELATED-CHANGED')
+        $rulesU = Get-RulesNode -PackageXml $pkgUnrelated
+        $h3 = Get-DlpEntityClosureContentHash -Entity (Get-EntityNode -RulesNode $rulesU -Id 'e1') -RulesNode $rulesU
+        $h1 | Should -Be $h3 -Because 'an unreferenced sibling is outside the closure'
+    }
+
+    It 'accepts entity XML + an explicit support-element list (string overload for the desired side)' {
+        # Both sides must be able to compute identically; the desired side may pass raw OuterXml.
+        $baseRules = Get-RulesNode -PackageXml $script:PkgBase
+        $baseEntity = Get-EntityNode -RulesNode $baseRules -Id 'e1'
+        $byNode = Get-DlpEntityClosureContentHash -Entity $baseEntity -RulesNode $baseRules
+        $supportXml = @($baseRules.ChildNodes |
+            Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element -and $_.LocalName -ne 'Entity' -and $_.LocalName -ne 'LocalizedStrings' } |
+            ForEach-Object { $_.OuterXml })
+        $byXml = Get-DlpEntityClosureContentHash -EntityXml $baseEntity.OuterXml -SupportElementXml $supportXml
+        $byXml | Should -Be $byNode -Because 'node-based and xml-based overloads must agree'
+    }
+}
+
 Describe 'Compl8.Model standalone exports (naming)' {
     BeforeAll {
         # Reload Compl8.Model in a clean state; the DLP-Deploy facade Describe above

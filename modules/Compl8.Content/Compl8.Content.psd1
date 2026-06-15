@@ -5,7 +5,24 @@
     Author            = 'Compl8 DLP Deploy'
     Description       = 'Compl8 content layer: curated release + overlay merge + repack engine (Stage 3).'
     PowerShellVersion = '7.0'
-    FunctionsToExport = @()
+    FunctionsToExport = @(
+        'ConvertTo-CustomSitFragment'
+        'ConvertTo-RulePackageXml'
+        'Get-Compl8WorkspacePath'
+        'Get-ContentInputHash'
+        'Get-EntityLedger'
+        'Get-RulePackageAssignment'
+        'Import-ContentOverlay'
+        'Import-ContentRelease'
+        'Initialize-EntityLedger'
+        'Merge-DesiredContent'
+        'Resolve-DesiredAutoLabel'
+        'Resolve-DesiredContent'
+        'Resolve-DesiredDlpRules'
+        'Test-ContentDictionaryBudget'
+        'Test-ResolveManifestCurrent'
+        'Update-EntityLedger'
+    )
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()
