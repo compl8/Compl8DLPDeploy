@@ -182,6 +182,18 @@ function Invoke-Compl8Reconcile {
         })
         foreach ($x in $toRemove) { $conflicts.Remove($x) | Out-Null }
     }
+    # Does a name-collision exist for THIS (type, ref)? Keyed by (parsed conflict type, slug) — same
+    # matching as Remove-Collision (codex R4 P2) — so a foreign dlpRule 'Foo' is NOT treated as colliding
+    # just because a dlpPolicy 'Foo' collides. A collision means a DESIRED counterpart exists, which is
+    # the precondition for projecting a claim into drift (then updating it).
+    function Test-IsCollision { param([string]$Type, [string]$Ref)
+        foreach ($c in $conflicts) {
+            if ([string]$c.kind -ne 'name-collision' -or [string]$c.slug -ne $Ref) { continue }
+            $ct = Get-ConflictType $c
+            if ($null -eq $ct -or $ct -eq $Type) { return $true }
+        }
+        $false
+    }
 
     # Claim candidates: FOREIGN entries only (codex R4 P2). Claiming ADOPTS a NOT-ours object by
     # re-stamping provenance — an orphan is ALREADY ours, so claim is a no-op for it (handled below as
@@ -191,10 +203,8 @@ function Invoke-Compl8Reconcile {
     # update toward — projecting it to drift would emit an update step the executor can't fulfil).
     function Get-PendingClaims {
         $pending = [System.Collections.Generic.List[object]]::new()
-        $collisionRefs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($c in $conflicts) { if ([string]$c.kind -eq 'name-collision') { $collisionRefs.Add([string]$c.slug) | Out-Null } }
         foreach ($e in $bk['foreign']) {
-            $cand = [pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = 'foreign'; isCollision = $collisionRefs.Contains([string]$e.ref) }
+            $cand = [pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = 'foreign'; isCollision = (Test-IsCollision -Type ([string]$e.objectType) -Ref ([string]$e.ref)) }
             $key = "$($cand.objectType)|$($cand.ref)"
             if ($claimedKeys.Contains($key)) { continue }
             if ((Get-Res -Type $cand.objectType -Ref $cand.ref) -ne 'claim') { continue }

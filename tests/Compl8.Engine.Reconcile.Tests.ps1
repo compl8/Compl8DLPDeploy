@@ -191,6 +191,27 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         $remaining = @($r.unresolvedConflicts | Where-Object { $_.detail -match 'dlpPolicy' })
         @($remaining).Count             | Should -Be 1
     }
+    It 'claiming a foreign object that does NOT itself collide is adopt-only — no bogus update (codex R4 P2)' {
+        # Only dlpPolicy 'Foo' has a name-collision; a separate foreign dlpRule 'Foo' has NO collision (no
+        # desired dlpRule 'Foo'). Claiming the rule must adopt it WITHOUT projecting to drift / planning an
+        # update for content that does not exist. The policy collision is left unresolved -> blocked.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.foreign = @(
+            [pscustomobject]@{ objectType = 'dlpRule';   ref = 'Foo'; reason = 'not ours' }
+            [pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'Foo'; reason = 'not ours' }
+        )
+        $a.upgradeConflicts = @([pscustomobject]@{ slug = 'Foo'; kind = 'name-collision'; detail = "desired dlpPolicy 'Foo' is blocked — a foreign object holds this name." })
+        $res = @([pscustomobject]@{ objectType = 'dlpRule'; ref = 'Foo'; resolution = 'claim' })   # claim the NON-colliding rule
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        # The rule is adopted (claim step) but NOT updated (no desired dlpRule 'Foo' to reconcile toward).
+        $claimSteps = @($r.iterations | ForEach-Object { $_.plan.steps } | Where-Object { $_.action -eq 'claim' -and $_.objectType -eq 'dlpRule' -and $_.objectRef -eq 'Foo' })
+        @($claimSteps).Count | Should -Be 1
+        $updateSteps = @($r.iterations | ForEach-Object { $_.plan.steps } | Where-Object { $_.action -eq 'update' -and $_.objectType -eq 'dlpRule' -and $_.objectRef -eq 'Foo' })
+        @($updateSteps).Count | Should -Be 0
+        # The dlpPolicy 'Foo' collision was never resolved.
+        $r.status | Should -Be 'blocked'
+    }
     It 'an orphan resolved claim is a no-op (already ours) — no broken update, recorded unclaimable (codex R4 P2)' {
         # Claiming adopts a FOREIGN object; an orphan is already ours, and it has no desired counterpart,
         # so a claim->drift->update path would emit an update with no resolved content. Must NOT do that.
