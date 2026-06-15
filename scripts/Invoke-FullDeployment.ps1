@@ -116,17 +116,31 @@ Write-Host ""
 # gated on -UseEngine so the default path is byte-for-byte today's leaf orchestration.
 $DeployContext = $null
 if ($UseEngine) {
-    Import-Module (Join-Path $ProjectRoot "modules" "Compl8.Engine") -Force
-    $ctxArgs = @{ TargetEnvironment = $TargetEnvironment }
-    if ($WorkspaceRoot) { $ctxArgs["WorkspaceRoot"] = $WorkspaceRoot }
-    if ($Prefix)        { $ctxArgs["Prefix"] = $Prefix }
-    if ($UPN)           { $ctxArgs["UPN"] = $UPN }
-    if ($Delegated)     { $ctxArgs["Delegated"] = $true }
-    $DeployContext = New-Compl8Context @ctxArgs
+    # FALL BACK TO LEAF, don't break the rollout (codex rescue review P2). Engine routes default off,
+    # so opting into -UseEngine must NOT abort an otherwise-valid leaf deployment: skip the context when
+    # no -TargetEnvironment is given, and treat a New-Compl8Context failure (env not pinned / no
+    # workspace yet) as "no engine context" -> every phase routes to the leaf. (Mirrors the TUI's
+    # Get-Compl8DeployContext fallback.)
+    if ([string]::IsNullOrWhiteSpace($TargetEnvironment)) {
+        Write-Host "  -UseEngine: no -TargetEnvironment supplied; using the leaf path." -ForegroundColor DarkYellow
+    } else {
+        Import-Module (Join-Path $ProjectRoot "modules" "Compl8.Engine") -Force
+        $ctxArgs = @{ TargetEnvironment = $TargetEnvironment }
+        if ($WorkspaceRoot) { $ctxArgs["WorkspaceRoot"] = $WorkspaceRoot }
+        if ($Prefix)        { $ctxArgs["Prefix"] = $Prefix }
+        if ($UPN)           { $ctxArgs["UPN"] = $UPN }
+        if ($Delegated)     { $ctxArgs["Delegated"] = $true }
+        try {
+            $DeployContext = New-Compl8Context @ctxArgs
+        } catch {
+            Write-Host "  -UseEngine: context unavailable ($($_.Exception.Message)); using the leaf path." -ForegroundColor DarkYellow
+            $DeployContext = $null
+        }
+    }
 
     # Deterministic-within-this-run stamps for the plan id / generatedUtc the Engine verbs require
     # (the orchestrator surface MAY call Get-Date; the determinism ban is only on the pure Engine
-    # paths, which receive these stamps as injected values).
+    # paths, which receive these stamps as injected values). Used only when a route actually fires.
     $script:DeployStamp        = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
     $script:DeployGeneratedUtc = (Get-Date).ToUniversalTime().ToString('o')
 }

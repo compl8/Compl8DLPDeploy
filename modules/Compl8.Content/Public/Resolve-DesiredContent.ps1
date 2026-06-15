@@ -40,7 +40,12 @@ function Resolve-DesiredContent {
         # The config source for the DESIRED DLP rule/policy set (the Stage-5 re-point seam). When
         # supplied, the resolved desired rules are persisted to desired/resolved/dlp-rules.json so the
         # workspace is self-contained for assess; when absent, no dlp-rules.json is written.
-        [string]$ConfigRoot
+        [string]$ConfigRoot,
+
+        # Optional explicit manifest timestamp. When supplied it is written verbatim (determinism for
+        # callers/tests). When omitted, a no-op re-resolve REUSES the prior manifest's stamp (idempotent —
+        # see the generatedUtc note below), else the current time is stamped.
+        [string]$GeneratedUtc
     )
 
     $releasePath = Join-Path $WorkspacePath 'desired' 'release'
@@ -171,9 +176,37 @@ function Resolve-DesiredContent {
         foreach ($drop in @($assignment.Dropped)) { $warnings += "dropped:$($drop.Slug) — $($drop.Reason)" }
 
         $hashes = Get-ContentInputHash -ReleasePath $releasePath -OverlayPath $overlayPath -LedgerPath $ledgerPath
+
+        # generatedUtc: desired/resolved is a PURE function of (release, overlay, ledger) — the stamp must
+        # not break that. Explicit -GeneratedUtc wins (determinism for callers/tests); else REUSE the prior
+        # manifest's stamp when the input hashes are unchanged, so a no-op re-resolve produces byte-identical
+        # output and does NOT stale every plan that hashes the manifest (codex rescue review P2); else stamp now.
+        $resolvedGeneratedUtc = if (-not [string]::IsNullOrWhiteSpace($GeneratedUtc)) {
+            $GeneratedUtc
+        } else {
+            $priorManifestPath = Join-Path $resolvedPath 'resolve-manifest.json'
+            $reuse = $null
+            if (Test-Path -LiteralPath $priorManifestPath -PathType Leaf) {
+                try {
+                    $priorText = Get-Content -LiteralPath $priorManifestPath -Raw
+                    $prior = $priorText | ConvertFrom-Json
+                    if ($prior.inputs -and
+                        [string]$prior.inputs.releaseHash -eq [string]$hashes.ReleaseHash -and
+                        [string]$prior.inputs.overlayHash  -eq [string]$hashes.OverlayHash -and
+                        [string]$prior.inputs.ledgerHash   -eq [string]$hashes.LedgerHash) {
+                        # Extract the generatedUtc value from the RAW TEXT — ConvertFrom-Json coerces the
+                        # ISO string into a [datetime], and [string]-casting that re-formats it in local
+                        # culture (e.g. '06/15/2026 11:51:17'), corrupting the stamp. The raw value is exact.
+                        $gm = [regex]::Match($priorText, '"generatedUtc"\s*:\s*"([^"]*)"')
+                        if ($gm.Success) { $reuse = $gm.Groups[1].Value }
+                    }
+                } catch { $reuse = $null }
+            }
+            if ($reuse) { $reuse } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        }
         $manifest = [pscustomobject]@{
             schemaVersion = 'compl8.resolve-manifest/v1'
-            generatedUtc  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            generatedUtc  = $resolvedGeneratedUtc
             inputs        = [pscustomobject]@{
                 releaseVersion = $hashes.ReleaseVersion
                 releaseHash    = $hashes.ReleaseHash

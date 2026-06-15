@@ -682,6 +682,24 @@ Describe 'Resolve-DesiredContent pipeline' {
         $v.Valid | Should -BeTrue
     }
 
+    It 're-resolving unchanged inputs is byte-identical — reuses the prior generatedUtc, no plan churn [codex rescue P2]' {
+        # generatedUtc was stamped with the current time on every resolve, so a no-op re-resolve rewrote
+        # resolve-manifest.json with different bytes and staled every plan that hashes the manifest. The
+        # fix reuses the prior stamp when the input hashes are unchanged -> byte-identical manifest.
+        $ws = New-ResolveWorkspace 'ws-idempotent'
+        Invoke-Resolve $ws | Out-Null
+        $manifestPath = Join-Path $ws 'desired' 'resolved' 'resolve-manifest.json'
+        $first = Get-Content -LiteralPath $manifestPath -Raw
+        Invoke-Resolve $ws | Out-Null   # re-resolve; release/overlay/ledger unchanged
+        (Get-Content -LiteralPath $manifestPath -Raw) | Should -Be $first
+    }
+
+    It 'honours an injected -GeneratedUtc (determinism)' {
+        $ws = New-ResolveWorkspace 'ws-injected'
+        $m = Resolve-DesiredContent -WorkspacePath $ws -Prefix 'P' -Publisher 'Test Pub' -GeneratedUtc '2026-01-01T00:00:00Z'
+        $m.generatedUtc | Should -Be '2026-01-01T00:00:00Z'
+    }
+
     It 'pins the golden package hash (recorded from the first green run)' {
         $ws = New-ResolveWorkspace 'ws-golden'
         $m = Invoke-Resolve $ws

@@ -49,6 +49,12 @@ Describe 'Invoke-FullDeployment — Engine opt-in surface' {
         ($script:Content -match '\$ctxArgs\["UPN"\]\s*=\s*\$UPN') | Should -BeTrue
         ($script:Content -match '\$ctxArgs\["Delegated"\]\s*=\s*\$true') | Should -BeTrue
     }
+    It 'falls back to the leaf path instead of throwing when the context cannot be built [codex rescue P2]' {
+        # -UseEngine must not break an otherwise-valid leaf rollout: skip when no -TargetEnvironment, and
+        # treat a New-Compl8Context failure (no pin / no workspace) as "no context" -> leaf.
+        ($script:Content -match 'IsNullOrWhiteSpace\(\$TargetEnvironment\)') | Should -BeTrue -Because 'opting in with no env should use the leaf path, not throw'
+        ($script:Content -match 'try\s*\{[\s\S]*?New-Compl8Context\s+@ctxArgs[\s\S]*?\}\s*catch') | Should -BeTrue -Because 'a context-build failure should fall back to leaf'
+    }
 }
 
 Describe 'Invoke-FullDeployment — every phase has a route-gated Engine branch' {
