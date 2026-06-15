@@ -3,7 +3,7 @@
   "workspace": "nonprod",
   "generatedUtc": "2026-06-13T00:00:00Z",
   "inputs": {
-    "resolveManifest": "sha256:3cfd7a32d2722a92c30abf9754291385d204b7018946cb0d60c6874a5e064892",
+    "resolveManifest": "sha256:36617f42bcfafa39d238b38918ed8735d163b82624467dc671d5f2ea480857b7",
     "inventory": "sha256:9caf3e0c156a003fb75313e854cc65fc7678b247d4bbd64142c0c09c141a026e"
   },
   "buckets": {

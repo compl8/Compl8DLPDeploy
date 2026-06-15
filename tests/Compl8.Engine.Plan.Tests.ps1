@@ -711,7 +711,21 @@ Describe 'New-Compl8Plan — externalRefs gate on a policy-scope step' {
 
 Describe 'New-Compl8Plan — determinism + golden plan' {
     BeforeAll {
-        $script:FixtureRoot   = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'assess'
+        # The plan carries the assessment's raw-byte input hashes (inputs.inventory / resolveManifest),
+        # so the golden is sensitive to the fixtures' on-disk line endings (a fresh autocrlf=true clone
+        # renders the LF-committed fixtures as CRLF). Build the golden inputs from a CR-stripped (LF)
+        # copy so they are checkout-independent (the golden was pinned from LF). Deleted in AfterAll.
+        function New-LfFixtureRoot {
+            param([Parameter(Mandatory)][string]$Src)
+            $dest = Join-Path ([System.IO.Path]::GetTempPath()) ("lf-fixture-" + [guid]::NewGuid().ToString('N'))
+            Copy-Item -LiteralPath $Src -Destination $dest -Recurse -Force
+            foreach ($f in @(Get-ChildItem -LiteralPath $dest -Recurse -File | Where-Object { $_.Extension -in '.json', '.xml' })) {
+                $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+                [System.IO.File]::WriteAllBytes($f.FullName, ($bytes -ne [byte]0x0D))
+            }
+            $dest
+        }
+        $script:FixtureRoot   = New-LfFixtureRoot -Src (Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'assess')
         $script:InventoryPath = Join-Path $script:FixtureRoot 'actual' 'inventory.json'
         $script:ExpectedRoot  = Join-Path $script:RepoRoot 'tests' 'fixtures' 'engine' 'expected'
 
@@ -744,7 +758,7 @@ Describe 'New-Compl8Plan — determinism + golden plan' {
         (New-GoldenPlanJson) | Should -Be (New-GoldenPlanJson)
     }
 
-    It 'matches the pinned golden plan JSON' {
+    It 'matches the pinned golden plan JSON (line-ending insensitive)' {
         $goldenPath = Join-Path $script:ExpectedRoot 'plan-nonprod.json'
         $actual = New-GoldenPlanJson
         if (-not (Test-Path -LiteralPath $goldenPath)) {
@@ -753,7 +767,15 @@ Describe 'New-Compl8Plan — determinism + golden plan' {
             Set-Content -LiteralPath $goldenPath -Value $actual -Encoding UTF8 -NoNewline
         }
         $expected = Get-Content -LiteralPath $goldenPath -Raw
-        $actual | Should -Be $expected.TrimEnd("`r", "`n")
+        # Compare with line endings normalised on both sides (ConvertTo-Json emits platform newlines).
+        ($actual -replace "`r`n", "`n") | Should -Be (($expected -replace "`r`n", "`n").TrimEnd("`n"))
+    }
+
+    AfterAll {
+        if ($script:FixtureRoot -and (Test-Path -LiteralPath $script:FixtureRoot) -and
+            $script:FixtureRoot -like '*lf-fixture-*') {
+            Remove-Item -LiteralPath $script:FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

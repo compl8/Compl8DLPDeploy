@@ -4,9 +4,9 @@
   "workspace": "nonprod",
   "generatedUtc": "2026-06-13T00:00:00Z",
   "inputs": {
-    "resolveManifest": "sha256:3cfd7a32d2722a92c30abf9754291385d204b7018946cb0d60c6874a5e064892",
+    "resolveManifest": "sha256:36617f42bcfafa39d238b38918ed8735d163b82624467dc671d5f2ea480857b7",
     "inventory": "sha256:9caf3e0c156a003fb75313e854cc65fc7678b247d4bbd64142c0c09c141a026e",
-    "assessment": "sha256:0881fff67dfe2b981a43e24c677679a38505dc10f776c9ad28b129778d0942e1"
+    "assessment": "sha256:6600e6b0884c3cdd9d8b98e50275636b42a5b04c5d0a2ea6e84478a066c26995"
   },
   "steps": [
     {

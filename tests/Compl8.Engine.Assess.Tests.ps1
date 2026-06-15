@@ -33,6 +33,23 @@ BeforeAll {
         @($Assessment.buckets.$Bucket | Where-Object { $_.ref -eq $Ref })[0]
     }
 
+    # Golden robustness: assess hashes the RAW BYTES of its input fixtures (inputs.inventory /
+    # inputs.resolveManifest + the package XML), so the pinned golden is sensitive to the fixtures'
+    # on-disk line endings. A fresh Windows clone (core.autocrlf=true) renders the LF-committed
+    # fixtures as CRLF, changing those hashes. This returns a temp copy of a fixture tree with CR
+    # bytes stripped from json/xml (byte-exact LF), so a golden run reads checkout-independent inputs
+    # (the golden was pinned from LF). Caller deletes it.
+    function New-LfFixtureRoot {
+        param([Parameter(Mandatory)][string]$Src)
+        $dest = Join-Path ([System.IO.Path]::GetTempPath()) ("lf-fixture-" + [guid]::NewGuid().ToString('N'))
+        Copy-Item -LiteralPath $Src -Destination $dest -Recurse -Force
+        foreach ($f in @(Get-ChildItem -LiteralPath $dest -Recurse -File | Where-Object { $_.Extension -in '.json', '.xml' })) {
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            [System.IO.File]::WriteAllBytes($f.FullName, ($bytes -ne [byte]0x0D))
+        }
+        $dest
+    }
+
     # Single assess run reused across the read-only assertions. The inventory is supplied
     # from the fixture (no live tenant call); workspace path points at the committed desired/.
     $script:Assessment = Invoke-Compl8Assess `
@@ -167,17 +184,25 @@ Describe 'Invoke-Compl8Assess — determinism' {
 }
 
 Describe 'Invoke-Compl8Assess — golden assessment' {
-    It 'matches the pinned golden assessment JSON' {
+    It 'matches the pinned golden assessment JSON (line-ending insensitive)' {
         $goldenPath = Join-Path $script:ExpectedRoot 'assessment-nonprod.json'
-        $actual = Invoke-Compl8Assess -WorkspacePath $script:FixtureRoot -InventoryPath $script:InventoryPath `
-            -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z' | ConvertTo-Json -Depth 12
+        # Run against a CR-stripped (LF) copy of the fixtures so the embedded raw-byte input hashes are
+        # checkout-independent (the golden was pinned from LF); compare with line endings normalised on
+        # both sides (the engine's ConvertTo-Json emits platform newlines).
+        $lfRoot = New-LfFixtureRoot -Src $script:FixtureRoot
+        try {
+            $actual = Invoke-Compl8Assess -WorkspacePath $lfRoot -InventoryPath (Join-Path $lfRoot 'actual' 'inventory.json') `
+                -Workspace 'nonprod' -GeneratedUtc '2026-06-13T00:00:00Z' | ConvertTo-Json -Depth 12
+        } finally {
+            if (Test-Path -LiteralPath $lfRoot) { Remove-Item -LiteralPath $lfRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
 
         if (-not (Test-Path -LiteralPath $goldenPath)) {
-            # First green run records the golden file; thereafter it is asserted byte-for-byte.
+            # First green run records the golden file; thereafter it is asserted (LF-normalised).
             Set-Content -LiteralPath $goldenPath -Value $actual -Encoding UTF8 -NoNewline
         }
         $expected = Get-Content -LiteralPath $goldenPath -Raw
-        $actual | Should -Be $expected.TrimEnd("`r", "`n")
+        ($actual -replace "`r`n", "`n") | Should -Be (($expected -replace "`r`n", "`n").TrimEnd("`n"))
     }
 }
 
