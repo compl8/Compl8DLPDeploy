@@ -682,6 +682,42 @@ function Invoke-Compl8Assess {
         }
     }
 
+    # ----------------------------------------------------------------- name-collision conflicts
+    # A desired object whose NAME is held by a NOT-OURS (foreign) actual cannot deploy: the engine
+    # never overwrites a foreign object (opacity-as-safety, spec §8) and will not create a duplicate
+    # name — so WITHOUT this the desired object SILENTLY never deploys (no create emitted because the
+    # name is taken, no conflict raised). Surface each as a first-class conflict so the plan/report
+    # shows the blockage natively instead of a silent no-op. (A name held by an OURS actual is not a
+    # collision — it is drift/update/in-sync, already bucketed above.)
+    $desiredNamesByType = [ordered]@{
+        dictionary      = @($desiredDictionaries)
+        rulePackage     = @($desiredPackages.Keys)
+        sit             = @($desiredSits)
+        dlpRule         = @($desiredRuleHashByName.Keys)
+        dlpPolicy       = @($desiredPolicyByName.Keys)
+        autoLabelPolicy = @($desiredAutoLabelByName.Keys)
+    }
+    $foreignNamesByType = @{}
+    foreach ($entry in @($buckets['foreign'])) {
+        $ft = [string]$entry.objectType
+        if (-not $foreignNamesByType.ContainsKey($ft)) {
+            $foreignNamesByType[$ft] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        }
+        $foreignNamesByType[$ft].Add([string]$entry.ref) | Out-Null
+    }
+    foreach ($t in $desiredNamesByType.Keys) {
+        if (-not $foreignNamesByType.ContainsKey($t)) { continue }
+        foreach ($name in (@($desiredNamesByType[$t]) | Sort-Object -Unique)) {
+            if ($foreignNamesByType[$t].Contains([string]$name)) {
+                $conflicts.Add([pscustomobject]@{
+                    slug   = [string]$name
+                    kind   = 'name-collision'
+                    detail = "desired $t '$name' is blocked — a foreign (not-ours) object holds this name; the engine will neither overwrite it nor create a duplicate."
+                }) | Out-Null
+            }
+        }
+    }
+
     # ----------------------------------------------------------------- assemble (deterministic)
     # Sort each bucket's entries by ref so the JSON is byte-stable regardless of walk order.
     $bucketOut = [ordered]@{}
