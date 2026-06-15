@@ -94,13 +94,24 @@ function Resolve-DesiredAutoLabel {
         }
     }
 
-    # MATCH THE DEPLOY CONFIG (codex review). Deploy-AutoLabeling.ps1 merges Get-ModuleDefaults UNDER
-    # settings.json (Merge-GlobalConfig) before it names anything, so a config that OMITS the auto-label
-    # name templates from settings.json STILL deploys auto-label policies using the module defaults. We
-    # must resolve the SAME desired set the deploy path creates — not silently emit nothing — so supply
-    # the auto-label-relevant default templates as fallbacks here (settings.json wins on conflict). The
-    # values mirror Get-ModuleDefaults.nameTemplates so a desired policy hashes/compares EQUAL to its
-    # deployed counterpart even when the operator relied entirely on the defaults.
+    # MATCH THE DEPLOY CONFIG (codex review P2). Deploy-AutoLabeling.ps1 merges Get-ModuleDefaults UNDER
+    # settings.json (Merge-GlobalConfig) before it names anything, so a config that OMITS naming fields
+    # from settings.json STILL deploys auto-label policies using the module defaults. We must resolve the
+    # SAME desired set the deploy path creates — not silently emit nothing or diverging names — so supply
+    # the deploy-relevant defaults as fallbacks here (settings.json wins on conflict). The values mirror
+    # Get-ModuleDefaults so a desired policy hashes/compares EQUAL to its deployed counterpart even when
+    # the operator relied entirely on the defaults. (Get-ModuleDefaults lives in the DLP-Deploy facade,
+    # which the layer modules must NOT import — keep these mirrored values in sync with it.)
+    #
+    # SCALAR naming defaults (namingPrefix/namingSuffix): the {prefix}/{suffix} tokens the label and
+    # autoLabelPolicy templates consume. Omitting these previously produced empty tokens (e.g.
+    # 'AL01-OFFI' instead of 'AL01-OFFI-DLP-EXT-ADT'), diverging from the deploy path → false drift.
+    $defaultNamingScalars = @{ namingPrefix = 'DLP'; namingSuffix = 'EXT-ADT' }
+    foreach ($k in $defaultNamingScalars.Keys) {
+        if (-not $config.ContainsKey($k) -or [string]::IsNullOrWhiteSpace([string]$config[$k])) {
+            $config[$k] = $defaultNamingScalars[$k]
+        }
+    }
     if (-not ($config['nameTemplates'] -is [System.Collections.IDictionary])) { $config['nameTemplates'] = @{} }
     $defaultNameTemplates = @{
         label           = '{prefix}-{name}-{labelCode}'

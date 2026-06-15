@@ -322,10 +322,14 @@ function Invoke-Compl8Assess {
         try {
             $desiredAL = Resolve-DesiredAutoLabel -ConfigPath $alConfigSource
             foreach ($p in @($desiredAL.Policies)) { if ($p.policyName) { $desiredAutoLabelByName[[string]$p.policyName] = $p } }
-        } catch { $desiredAutoLabelByName = @{} }
-        # A config without auto-label naming returns no policies (Resolve-DesiredAutoLabel gates on the
-        # autoLabelPolicy template); only treat auto-label as MANAGED when a desired set was produced.
-        $haveDesiredAutoLabel = (@($desiredAutoLabelByName.Keys).Count -gt 0)
+            # A SUCCESSFUL resolve over a valid config means auto-label IS managed here — even when it
+            # yields ZERO desired policies (e.g. all supported workloads disabled, or no eligible
+            # labels). Existing OURS auto-label policies must then bucket as ORPHANS, not be silently
+            # ignored (codex review P2a). Gating on a non-empty desired set would skip that detection.
+            # A resolve FAILURE (the config dir is not auto-label-shaped — a required file missing) is
+            # caught below and leaves auto-label UNMANAGED, so non-auto-label workspaces are unaffected.
+            $haveDesiredAutoLabel = $true
+        } catch { $desiredAutoLabelByName = @{}; $haveDesiredAutoLabel = $false }
     }
 
     # ----------------------------------------------------------------- actual side
