@@ -141,20 +141,55 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
         @($ri.plan.steps | Where-Object { $_.action -eq 'remove' -and $_.objectRef -eq 'OldPkg' }).Count | Should -Be 1
     }
-    It 'does NOT falsely converge on non-dlpRule drift the planner cannot step (codex R4 P1)' {
-        # The planner (Get-Compl8PlanOrder) only turns dlpRule drift into a step; a drifted dlpPolicy
-        # produces NO step. Reconcile must surface it (unreconciled) and report blocked — never clear it
-        # and claim converged while the policy is unchanged.
+    It 'does NOT falsely converge on drift the planner cannot step (codex R4 P1)' {
+        # The planner steps drift only for content-bearing types it can update (dlpRule/dlpPolicy/
+        # autoLabelPolicy); a drifted `sit` produces NO step (its content lives in its rule package).
+        # Reconcile must surface it (unreconciled) and report blocked — never clear it and claim
+        # converged while the object is unchanged.
         $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
-        $a.buckets.drift = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; reason = 'ours — content changed out-of-band' })
+        $a.buckets.drift = @([pscustomobject]@{ objectType = 'sit'; ref = 'QGISCF-medium-01-names'; reason = 'ours — content changed out-of-band' })
         $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions @() `
             -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
         $r.status                       | Should -Be 'blocked'
         @($r.unreconciled).Count        | Should -Be 1
-        $r.unreconciled[0].objectType   | Should -Be 'dlpPolicy'
-        $r.unreconciled[0].ref          | Should -Be 'P01-ECH-QGISCF-EXT-ADT'
+        $r.unreconciled[0].objectType   | Should -Be 'sit'
         # And it did NOT record a bogus iteration with an empty plan.
         @($r.iterations | Where-Object { @($_.plan.steps).Count -eq 0 }).Count | Should -Be 0
+    }
+    It 'a claimed dlpPolicy IS reconciled (the planner now steps policy drift; codex R4 P2)' {
+        # dlpPolicy is claimable AND the executor map updates policies, so a policy name-collision must
+        # claim -> drift -> update to a clean converged plan, not stall as unreconciled.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.foreign = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; reason = 'not ours' })
+        $a.upgradeConflicts = @([pscustomobject]@{ slug = 'P01-ECH-QGISCF-EXT-ADT'; kind = 'name-collision'; detail = "desired dlpPolicy 'P01-ECH-QGISCF-EXT-ADT' is blocked — a foreign object holds this name." })
+        $res = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; resolution = 'claim' })
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $r.status                | Should -Be 'converged'
+        @($r.unreconciled).Count | Should -Be 0
+        $claim = @($r.iterations | Where-Object { $_.phase -eq 'claim' })[0]
+        @($claim.plan.steps | Where-Object { $_.action -eq 'claim' -and $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 1
+        $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
+        @($ri.plan.steps | Where-Object { $_.action -eq 'update' -and $_.objectType -eq 'dlpPolicy' -and $_.objectRef -eq 'P01-ECH-QGISCF-EXT-ADT' }).Count | Should -Be 1
+    }
+    It 'does NOT clear a same-name collision of a different objectType when only one is claimed (codex R4 P2)' {
+        # A dlpRule 'Foo' and a dlpPolicy 'Foo' are BOTH foreign name-collisions. Claiming only the rule
+        # must leave the policy collision unresolved (status blocked) — not silently clear both.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.foreign = @(
+            [pscustomobject]@{ objectType = 'dlpRule';   ref = 'Foo'; reason = 'not ours' }
+            [pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'Foo'; reason = 'not ours' }
+        )
+        $a.upgradeConflicts = @(
+            [pscustomobject]@{ slug = 'Foo'; kind = 'name-collision'; detail = "desired dlpRule 'Foo' is blocked — a foreign object holds this name." }
+            [pscustomobject]@{ slug = 'Foo'; kind = 'name-collision'; detail = "desired dlpPolicy 'Foo' is blocked — a foreign object holds this name." }
+        )
+        $res = @([pscustomobject]@{ objectType = 'dlpRule'; ref = 'Foo'; resolution = 'claim' })   # claim ONLY the rule
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $r.status                       | Should -Be 'blocked'
+        $remaining = @($r.unresolvedConflicts | Where-Object { $_.detail -match 'dlpPolicy' })
+        @($remaining).Count             | Should -Be 1
     }
     It 'an orphan resolved claim is a no-op (already ours) — no broken update, recorded unclaimable (codex R4 P2)' {
         # Claiming adopts a FOREIGN object; an orphan is already ours, and it has no desired counterpart,

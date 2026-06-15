@@ -162,10 +162,24 @@ function Invoke-Compl8Reconcile {
         }
         $bk[$Bucket] = $keep
     }
-    # Mutate the $conflicts List IN PLACE (never reassign the variable — a child scope reassignment
-    # would not propagate to the parent function scope; removing items from the shared list object does).
-    function Remove-Collision { param([string]$Ref)
-        $toRemove = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' -and [string]$_.slug -eq $Ref })
+    # A name-collision's objectType is not a field on the conflict record — assess encodes it in the
+    # detail text ("desired <type> '<name>' is blocked …"). Recover it so collision handling can be
+    # type-scoped (two foreign objects of DIFFERENT types can share a name => two distinct collisions).
+    function Get-ConflictType { param($Conflict)
+        $m = [regex]::Match([string]$Conflict.detail, "^desired\s+(?<t>[A-Za-z]+)\s+'")
+        if ($m.Success) { return $m.Groups['t'].Value }
+        $null
+    }
+    # Mutate the $conflicts List IN PLACE (never reassign the variable — a child scope reassignment would
+    # not propagate to the parent function scope; removing items from the shared list object does). SCOPED
+    # to (type, ref): claiming a dlpRule 'Foo' must NOT clear a dlpPolicy 'Foo' collision (codex R4 P2) —
+    # else the unclaimed one vanishes from unresolvedConflicts and the run can falsely report converged. A
+    # conflict whose type can't be parsed falls back to slug-only match (assess always writes the detail).
+    function Remove-Collision { param([string]$Type, [string]$Ref)
+        $toRemove = @($conflicts | Where-Object {
+            [string]$_.kind -eq 'name-collision' -and [string]$_.slug -eq $Ref -and
+            (($null -eq (Get-ConflictType $_)) -or ((Get-ConflictType $_) -eq $Type))
+        })
         foreach ($x in $toRemove) { $conflicts.Remove($x) | Out-Null }
     }
 
@@ -230,7 +244,7 @@ function Invoke-Compl8Reconcile {
                 # it to drift would queue an update with no resolved content to apply (codex R4 P2).
                 $claimedKeys.Add($key) | Out-Null
                 Remove-BucketEntry -Bucket $cand.bucket -Type $cand.objectType -Ref $cand.ref
-                Remove-Collision -Ref $cand.ref
+                Remove-Collision -Type $cand.objectType -Ref $cand.ref
                 if ($cand.isCollision) {
                     $bk['drift'].Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; reason = 'claimed — re-stamped ours; content reconciled by the update path' }) | Out-Null
                 }

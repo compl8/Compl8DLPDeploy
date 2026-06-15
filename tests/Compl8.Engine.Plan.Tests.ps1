@@ -228,6 +228,32 @@ Describe 'Get-Compl8PlanOrder — propagation gate placement' {
     }
 }
 
+Describe 'Get-Compl8PlanOrder — drift of updatable policy types is stepped (codex R4 P2)' {
+    # The executor map can update dlpPolicy / autoLabelPolicy, and assess emits drift for them, so the
+    # planner must turn that drift into an `update` step (previously only dlpRule drift was stepped).
+    It 'turns a drifted dlpPolicy into an update step (no package dependency)' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'P01-ECH-QGISCF-EXT-ADT') }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        $polStep = @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' -and $_.objectRef -eq 'P01-ECH-QGISCF-EXT-ADT' })
+        $polStep.Count        | Should -Be 1
+        $polStep[0].action    | Should -Be 'update'
+        $polStep[0].gate      | Should -BeNullOrEmpty
+    }
+    It 'turns a drifted autoLabelPolicy into an update step' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'autoLabelPolicy' -Ref 'QGISCF-AL-01') }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' -and $_.action -eq 'update' }).Count | Should -Be 1
+    }
+    It 'does NOT step a drifted sit (its content lives in its rule package)' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'sit' -Ref 'QGISCF-sit-01') }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'sit' }).Count | Should -Be 0
+    }
+}
+
 Describe 'Get-Compl8PlanOrder — cycle detection' {
     It 'throws a clear error on a dependency cycle' {
         # Construct a graph whose dependency wiring (a package depends on the dictionaries that

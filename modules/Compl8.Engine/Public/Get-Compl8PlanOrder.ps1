@@ -42,8 +42,10 @@ function Get-Compl8PlanOrder {
     .PARAMETER Assessment
         A compl8.assessment/v1 object (New-AssessmentObject shape). Only the actionable buckets
         (create / update-in-place / repack-move / remove) and impact[] drive ordering; orphan /
-        foreign / drift-of-non-rule objects are not turned into steps here (foreign is never
-        touched; orphan is human-review; a drift dlpRule IS re-applied so it carries a step).
+        foreign are not turned into steps here (foreign is never touched; orphan is human-review). A
+        drift of a content-bearing type the executor map can update — dlpRule / dlpPolicy /
+        autoLabelPolicy — IS re-applied as an `update` step; drift of sit / dictionary is not (a sit's
+        content lives in its rule package, reconciled via the package path).
 
     .PARAMETER Graph
         A Get-DeploymentReferenceGraph result (Nodes / Edges / Summary). Edges consulted:
@@ -230,15 +232,22 @@ function Get-Compl8PlanOrder {
         }
     }
 
-    # A `drift` dlpRule is re-applied (ours, changed out-of-band) — it carries a rule step too,
-    # with the same dependency / propagation treatment as a forward rule.
+    # A `drift` object that is ours but changed out-of-band is RE-APPLIED — it carries an update step.
+    # This covers the content-bearing types the executor map can update: dlpRule, dlpPolicy and
+    # autoLabelPolicy (assess emits drift for all three). dlpRule / autoLabelPolicy get the same
+    # package-dependency + propagation treatment as their forward steps (a rule/auto-label reading a
+    # freshly-changed package needs propagation time); a dlpPolicy is not package-dependent in the graph,
+    # so it is a plain update. Other drift types (sit / dictionary) are NOT stepped here — a sit's content
+    # lives in its rule package (reconciled via repack/update-in-place of the package), not a standalone
+    # sit update — so they are left for the package path / surfaced by the caller.
     foreach ($entry in @($Assessment.buckets.drift)) {
-        if ([string]$entry.objectType -ne 'dlpRule') { continue }
+        $type = [string]$entry.objectType
+        if ($type -notin 'dlpRule', 'dlpPolicy', 'autoLabelPolicy') { continue }
         $ref  = [string]$entry.ref
         $deps = [System.Collections.Generic.List[string]]::new()
         $gate = $null
         $impact = @()
-        if ($packagesByRuleName.ContainsKey($ref)) {
+        if ($type -in 'dlpRule', 'autoLabelPolicy' -and $packagesByRuleName.ContainsKey($ref)) {
             $changedDep = $false
             foreach ($p in @($packagesByRuleName[$ref] | Sort-Object)) {
                 $deps.Add($p) | Out-Null
@@ -246,8 +255,8 @@ function Get-Compl8PlanOrder {
             }
             if ($changedDep) { $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 } }
         }
-        if ($impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
-        Add-WorkItem -Action 'update' -ObjectType 'dlpRule' -Ref $ref -Direction 'forward' `
+        if ($type -eq 'dlpRule' -and $impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
+        Add-WorkItem -Action 'update' -ObjectType $type -Ref $ref -Direction 'forward' `
             -DependsRefs @($deps) -Impact $impact -Gate $gate
     }
 
