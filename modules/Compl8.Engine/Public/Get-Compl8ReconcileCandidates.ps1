@@ -29,6 +29,13 @@ function Get-Compl8ReconcileCandidates {
     .PARAMETER Graph
         A Get-DeploymentReferenceGraph result, used to compute each orphan's removal blast-radius (R3).
 
+    .PARAMETER Inventory
+        Optional parsed inventory (the same actual/inventory.json assess consumed). Used ONLY to recover a
+        sit's entity GUID by name: an assessment's orphan/remove sit bucket entry carries no identity, but
+        Get-Compl8RemovalImpact keys a `sit` target by its entity GUID — so without this an orphaned SIT's
+        blast-radius would resolve EMPTY and the operator would lose the dereference warning before
+        choosing `remove`. Absent, sit candidates fall back to the (name) ref and may not resolve.
+
     .OUTPUTS
         Zero or more candidate records (deterministically ordered by kind then objectType then ref):
         { kind ('name-collision'|'orphan'); objectType; ref; detail; allowedResolutions = @(...);
@@ -37,10 +44,20 @@ function Get-Compl8ReconcileCandidates {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][pscustomobject]$Assessment,
-        [Parameter(Mandatory)][pscustomobject]$Graph
+        [Parameter(Mandatory)][pscustomobject]$Graph,
+        [pscustomobject]$Inventory
     )
 
     $candidates = [System.Collections.Generic.List[object]]::new()
+
+    # sit display name -> entity GUID (from inventory), so an orphan sit (whose bucket entry carries no
+    # identity) still resolves its GUID-keyed removal blast-radius (codex R5).
+    $sitGuidByName = @{}
+    if ($Inventory -and $Inventory.objects -and $Inventory.objects.sits) {
+        foreach ($s in @($Inventory.objects.sits)) {
+            if ($s.name -and $s.identity) { $sitGuidByName[[string]$s.name] = ([string]$s.identity).ToLowerInvariant() }
+        }
+    }
 
     # --- name-collisions -> claim / leave ---------------------------------------------------------
     foreach ($c in @($Assessment.upgradeConflicts)) {
@@ -62,9 +79,11 @@ function Get-Compl8ReconcileCandidates {
     foreach ($e in @($Assessment.buckets.orphan)) {
         $type = [string]$e.objectType
         $ref  = [string]$e.ref
-        # Blast-radius target: a sit is keyed by its entity GUID (identity), everything else by ref.
+        # Blast-radius target: a sit is keyed by its entity GUID (identity), everything else by ref. The
+        # orphan bucket entry rarely carries the GUID, so fall back to the inventory name->GUID map.
         $impactRef = if ($type -eq 'sit' -and $e.PSObject.Properties['identity'] -and $e.identity) { [string]$e.identity }
                      elseif ($type -eq 'sit' -and $e.PSObject.Properties['entityId'] -and $e.entityId) { [string]$e.entityId }
+                     elseif ($type -eq 'sit' -and $sitGuidByName.ContainsKey($ref)) { $sitGuidByName[$ref] }
                      else { $ref }
         $impact = $null
         try { $impact = @(Get-Compl8RemovalImpact -Graph $Graph -Target @([pscustomobject]@{ objectType = $type; ref = $impactRef }))[0] } catch { $impact = $null }

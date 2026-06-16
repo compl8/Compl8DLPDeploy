@@ -58,6 +58,19 @@ Describe 'Get-Compl8ReconcileCandidates' {
         $orph.blastRadius                  | Should -Not -BeNullOrEmpty
         $orph.blastRadius.referencingRules | Should -Contain 'LiveRule'
     }
+    It 'resolves an orphan SIT blast-radius via the inventory GUID even though the bucket entry has no identity (codex R5)' {
+        # assess emits an orphan sit with only objectType/ref/reason (no GUID); Get-Compl8RemovalImpact
+        # keys sits by entity GUID, so without the inventory name->GUID map the impact would be empty and
+        # the operator would lose the dereference warning.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'sit'; ref = 'OldPkg-sit-display-name'; reason = 'ours, unexpected' })
+        $inv = [pscustomobject]@{ objects = [pscustomobject]@{ sits = @([pscustomobject]@{ name = 'OldPkg-sit-display-name'; identity = $script:G1 }) } }
+        $cands = @(Get-Compl8ReconcileCandidates -Assessment $a -Graph $script:Graph -Inventory $inv)
+        $orph = @($cands | Where-Object { $_.kind -eq 'orphan' -and $_.ref -eq 'OldPkg-sit-display-name' })[0]
+        $orph.blastRadius                  | Should -Not -BeNullOrEmpty
+        $orph.blastRadius.resolved         | Should -BeTrue
+        $orph.blastRadius.referencingRules | Should -Contain 'LiveRule'
+    }
     It 'returns an empty set when there is nothing to reconcile' {
         $clean = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         @(Get-Compl8ReconcileCandidates -Assessment $clean -Graph $script:Graph) | Should -HaveCount 0

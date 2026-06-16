@@ -540,7 +540,7 @@ function Invoke-Compl8ReconcileMenu {
         -DlpRules     @($inv.objects.dlpRules) `
         -DlpPolicies  @($inv.objects.dlpPolicies)
 
-    $candidates = @(Get-Compl8ReconcileCandidates -Assessment $assessment -Graph $graph)
+    $candidates = @(Get-Compl8ReconcileCandidates -Assessment $assessment -Graph $graph -Inventory $inv)
     if ($candidates.Count -eq 0) {
         Write-Host "  Nothing to reconcile — no name-collisions or orphans surfaced." -ForegroundColor Green
         return
@@ -609,8 +609,13 @@ function Invoke-Compl8ReconcileMenu {
         return
     }
     if (-not (Require-Connection -Connected $Connected)) { return }
+    # Thread the workspace provenance context so the claim re-stamps into the WORKSPACE registry (the
+    # source of truth for ownership). With only -Prefix the stamp lands in the default registry and the
+    # adopted object would still resolve as foreign on the next inventory (codex R5).
+    $claimMap = Get-Compl8ExecutorMap -StepContent @{} -Prefix $ctx.Prefix `
+        -TargetEnvironment $ctx.Environment -ProvenanceRegistryPath $ctx.ProvenanceRegistryPath
     Invoke-Compl8Apply -PlanPath $planPath -ProjectRoot $ProjectRoot -TargetEnvironment $ctx.Environment `
-        -ExecutorMap (Get-Compl8ExecutorMap -StepContent @{} -Prefix $ctx.Prefix) | Out-Null
+        -ExecutorMap $claimMap | Out-Null
     Write-Host "  Claimed. The adopted objects now bucket as drift — re-record the inventory and reconcile/deploy them via the per-type path." -ForegroundColor Green
 }
 

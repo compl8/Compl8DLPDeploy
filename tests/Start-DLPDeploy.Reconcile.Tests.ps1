@@ -72,6 +72,13 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Require-Connection')    | Should -BeTrue
         ($script:Fn -match 'Invoke-Compl8Apply')    | Should -BeTrue
     }
+    It 'threads workspace provenance + environment into the claim executor map (codex R5)' {
+        # Without the workspace ProvenanceRegistryPath + TargetEnvironment, the claim stamps to the default
+        # registry and the adopted object would still resolve as foreign on the next inventory.
+        ($script:Fn -match 'Get-Compl8ReconcileCandidates[^\r\n]*-Inventory') | Should -BeTrue
+        ($script:Fn -match 'Get-Compl8ExecutorMap[\s\S]*-TargetEnvironment \$ctx\.Environment')          | Should -BeTrue
+        ($script:Fn -match 'Get-Compl8ExecutorMap[\s\S]*-ProvenanceRegistryPath \$ctx\.ProvenanceRegistryPath') | Should -BeTrue
+    }
     It 'only auto-applies a CLAIM-ONLY iteration 1 — destructive/content-bearing plans are not applied here (codex R5)' {
         # A plan with create/update/remove/dereference needs desired-content + snapshot context the
         # minimal executor map does not carry, so the handler gates direct apply to claim-only plans.
