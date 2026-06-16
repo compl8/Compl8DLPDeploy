@@ -95,6 +95,14 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Get-Compl8ExecutorMap[\s\S]*-TargetEnvironment \$ctx\.Environment')          | Should -BeTrue
         ($script:Fn -match 'Get-Compl8ExecutorMap[\s\S]*-ProvenanceRegistryPath \$ctx\.ProvenanceRegistryPath') | Should -BeTrue
     }
+    It 'passes freshly recomputed input hashes to apply so the freshness gate is not tautological (codex R5)' {
+        # Without -InventoryHash/-ResolveManifestHash, apply defaults both from the plan -> the freshness
+        # check always passes; recomputing from the current files lets a changed inventory/resolve refuse a
+        # stale plan.
+        ($script:Fn -match 'ComputeHash')                                    | Should -BeTrue
+        ($script:Fn -match 'InventoryHash\s*=\s*\$invHash')                  | Should -BeTrue
+        ($script:Fn -match 'ResolveManifestHash''\]\s*=\s*\$rmHash')         | Should -BeTrue
+    }
     It 'only auto-applies a CLAIM-ONLY iteration 1 — destructive/content-bearing plans are not applied here (codex R5)' {
         # A plan with create/update/remove/dereference needs desired-content + snapshot context the
         # minimal executor map does not carry, so the handler gates direct apply to claim-only plans.

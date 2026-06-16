@@ -71,6 +71,17 @@ Describe 'Get-Compl8ReconcileCandidates' {
         $orph.blastRadius.resolved         | Should -BeTrue
         $orph.blastRadius.referencingRules | Should -Contain 'LiveRule'
     }
+    It 'offers ONLY leave for a name-collision of a non-claimable type (codex R5)' {
+        # dictionary/sit/rulePackage/autoLabelPolicy are not claimable; advertising claim would lead the
+        # operator to a request the engine reports unclaimable/blocked.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.upgradeConflicts = @([pscustomobject]@{ slug = 'QGISCF - Names'; kind = 'name-collision'; detail = "desired dictionary 'QGISCF - Names' is blocked — a foreign object holds this name." })
+        $cands = @(Get-Compl8ReconcileCandidates -Assessment $a -Graph $script:Graph)
+        $dict = @($cands | Where-Object { $_.kind -eq 'name-collision' -and $_.ref -eq 'QGISCF - Names' })[0]
+        $dict.objectType         | Should -Be 'dictionary'
+        $dict.allowedResolutions | Should -Be @('leave')
+        $dict.allowedResolutions | Should -Not -Contain 'claim'
+    }
     It 'returns an empty set when there is nothing to reconcile' {
         $clean = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         @(Get-Compl8ReconcileCandidates -Assessment $clean -Graph $script:Graph) | Should -HaveCount 0

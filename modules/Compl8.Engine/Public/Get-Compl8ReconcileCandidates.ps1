@@ -49,6 +49,10 @@ function Get-Compl8ReconcileCandidates {
     )
 
     $candidates = [System.Collections.Generic.List[object]]::new()
+    # Only these types can actually be claimed (Invoke-Compl8Reconcile honours claim for them alone), so
+    # do not advertise `claim` for a name-collision of any other type — the operator would pick it and the
+    # run would report it unclaimable/blocked (codex R5). Such collisions can only be `leave`.
+    $claimable = (Get-Compl8EngineSchemaEnums).ClaimableObjectTypes
 
     # sit display name -> entity GUID (from inventory), so an orphan sit (whose bucket entry carries no
     # identity) still resolves its GUID-keyed removal blast-radius (codex R5).
@@ -65,12 +69,15 @@ function Get-Compl8ReconcileCandidates {
         # Recover the objectType from the detail ("desired <type> '<name>' …"); fall back to '' if absent.
         $m = [regex]::Match([string]$c.detail, "^desired\s+(?<t>[A-Za-z]+)\s+'")
         $type = if ($m.Success) { $m.Groups['t'].Value } else { '' }
+        # Offer `claim` only when the colliding type is actually claimable; otherwise the only resolution
+        # the engine can honour is `leave` (the foreign object cannot be adopted, nor removed directly).
+        $allowed = if ($claimable -contains $type) { @('claim', 'leave') } else { @('leave') }
         $candidates.Add([pscustomobject]@{
             kind               = 'name-collision'
             objectType         = $type
             ref                = [string]$c.slug
             detail             = [string]$c.detail
-            allowedResolutions = @('claim', 'leave')
+            allowedResolutions = $allowed
             blastRadius        = $null
         }) | Out-Null
     }

@@ -653,8 +653,20 @@ function Invoke-Compl8ReconcileMenu {
     # adopted object would still resolve as foreign on the next inventory (codex R5).
     $claimMap = Get-Compl8ExecutorMap -StepContent @{} -Prefix $ctx.Prefix `
         -TargetEnvironment $ctx.Environment -ProvenanceRegistryPath $ctx.ProvenanceRegistryPath
-    Invoke-Compl8Apply -PlanPath $planPath -ProjectRoot $ProjectRoot -TargetEnvironment $ctx.Environment `
-        -ExecutorMap $claimMap | Out-Null
+    # Recompute the input hashes from the CURRENT workspace files at apply time and hand them to the
+    # freshness gate. Without these, Invoke-Compl8Apply defaults both from the plan itself, so the check
+    # is tautological — a plan built from an inventory/resolve that has since changed would still apply. If
+    # either file changed since the walk, apply now (correctly) refuses the stale plan (codex R5).
+    $manifestText = Get-Content -LiteralPath (Join-Path $ctx.WorkspacePath 'desired' 'resolved' 'resolve-manifest.json') -Raw -ErrorAction SilentlyContinue
+    $inventoryText = Get-Content -LiteralPath $invPath -Raw
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $rmHash  = if ($manifestText) { 'sha256:' + (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$manifestText)) | ForEach-Object { $_.ToString('x2') })) } else { $null }
+        $invHash = 'sha256:' + (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$inventoryText)) | ForEach-Object { $_.ToString('x2') }))
+    } finally { $sha.Dispose() }
+    $applyArgs = @{ PlanPath = $planPath; ProjectRoot = $ProjectRoot; TargetEnvironment = $ctx.Environment; ExecutorMap = $claimMap; InventoryHash = $invHash }
+    if ($rmHash) { $applyArgs['ResolveManifestHash'] = $rmHash }
+    Invoke-Compl8Apply @applyArgs | Out-Null
     Write-Host "  Claimed. The adopted objects now bucket as drift — re-record the inventory and reconcile/deploy them via the per-type path." -ForegroundColor Green
 }
 
