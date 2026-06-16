@@ -104,7 +104,7 @@ function Invoke-Compl8Reconcile {
           actions = @({objectType; ref; resolution}); plan = <compl8.plan/v1>; blastRadius = @(<R3 records>);
           remainingConflicts = @(<projected name-collisions>) }); iterationCapHit; unresolvedConflicts;
           pendingWork; unreconciled; unclaimable }. status is 'converged' ONLY when unresolvedConflicts,
-        unreconciled AND pendingWork are all empty — otherwise 'blocked'. pendingWork lists actionable
+        unreconciled, pendingWork AND unclaimable are all empty — otherwise 'blocked'. pendingWork lists actionable
         entries the loop never planned (e.g. -MaxIterations truncated it; iterationCapHit flags that
         case). unreconciled lists entries the planner could not turn into a step (e.g. non-dlpRule drift).
     #>
@@ -431,10 +431,12 @@ function Invoke-Compl8Reconcile {
 
     # ------------------------------------------------------------------ terminal status
     # Converged ONLY when nothing is left: no unresolved name-collision, nothing unreconciled (a planner
-    # gap), AND no actionable work still pending (the cap-truncation guard). Any of these makes the run
-    # `blocked` so the operator is never told "done" while work remains.
+    # gap), no actionable work still pending (the cap-truncation guard), AND no requested resolution that
+    # could not be honoured (unclaimable — e.g. a claim of a non-claimable type, or of an orphan that is
+    # already ours). Any of these makes the run `blocked` so the operator is never told "done" while a
+    # requested resolution was silently not applied (codex R4 P2).
     $unresolved = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
-    $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0 -and $pending.Count -eq 0) { 'converged' } else { 'blocked' }
+    $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0 -and $pending.Count -eq 0 -and @($unclaimable).Count -eq 0) { 'converged' } else { 'blocked' }
 
     [pscustomobject]@{
         schemaVersion       = 'compl8.reconciliation/v1'

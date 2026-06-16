@@ -275,6 +275,8 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         $allSteps = @($r.iterations | ForEach-Object { $_.plan.steps } | Where-Object { $_.objectRef -eq 'Orphan-Rule-01' })
         @($allSteps).Count                        | Should -Be 0
         @($r.unclaimable | Where-Object { $_.ref -eq 'Orphan-Rule-01' }).Count | Should -Be 1
+        # The requested resolution was NOT honoured, so the run reports blocked, not converged (codex R4 P2).
+        $r.status | Should -Be 'blocked'
     }
     It 'a -MaxIterations truncation does NOT report false convergence (codex R4 P2)' {
         $res = @(
