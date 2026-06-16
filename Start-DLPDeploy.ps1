@@ -540,6 +540,23 @@ function Invoke-Compl8ReconcileMenu {
         -DlpRules     @($inv.objects.dlpRules) `
         -DlpPolicies  @($inv.objects.dlpPolicies)
 
+    # Stamp each actionable sit bucket entry with its entity GUID from the inventory. assess emits a sit
+    # orphan/remove with only the display name, but the GUID is what Get-Compl8PlanOrder matches in the
+    # graph to generate the dereference cascade — so without this the persisted reconcile plan would
+    # UNDERSTATE a referenced SIT removal's destructive cascade (codex R5). Enriching the assessment here
+    # (not just the preview) makes BOTH the blast-radius preview AND the planned removal resolve the GUID.
+    $sitGuidByName = @{}
+    foreach ($s in @($inv.objects.sits)) { if ($s.name -and $s.identity) { $sitGuidByName[[string]$s.name] = [string]$s.identity } }
+    foreach ($bn in 'orphan', 'remove', 'repack-move', 'drift') {
+        foreach ($e in @($assessment.buckets.$bn)) {
+            if ([string]$e.objectType -ne 'sit') { continue }
+            $hasId = $e.PSObject.Properties['identity'] -and $e.identity
+            if (-not $hasId -and $sitGuidByName.ContainsKey([string]$e.ref)) {
+                $e | Add-Member -NotePropertyName identity -NotePropertyValue $sitGuidByName[[string]$e.ref] -Force
+            }
+        }
+    }
+
     $candidates = @(Get-Compl8ReconcileCandidates -Assessment $assessment -Graph $graph -Inventory $inv)
     if ($candidates.Count -eq 0) {
         Write-Host "  Nothing to reconcile — no name-collisions or orphans surfaced." -ForegroundColor Green

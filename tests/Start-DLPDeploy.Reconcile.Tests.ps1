@@ -72,6 +72,13 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Require-Connection')    | Should -BeTrue
         ($script:Fn -match 'Invoke-Compl8Apply')    | Should -BeTrue
     }
+    It 'stamps sit entity GUIDs onto the assessment so the planned removal cascade resolves (codex R5)' {
+        # The recovered GUID must reach Invoke-Compl8Reconcile (not just the preview), or Get-Compl8PlanOrder
+        # cannot match the sit in the graph and the persisted plan understates the dereference cascade.
+        ($script:Fn -match '\$sitGuidByName')                               | Should -BeTrue
+        ($script:Fn -match "objectType.*-ne\s*'sit'")                       | Should -BeTrue
+        ($script:Fn -match 'Add-Member -NotePropertyName identity')         | Should -BeTrue
+    }
     It 'threads workspace provenance + environment into the claim executor map (codex R5)' {
         # Without the workspace ProvenanceRegistryPath + TargetEnvironment, the claim stamps to the default
         # registry and the adopted object would still resolve as foreign on the next inventory.
