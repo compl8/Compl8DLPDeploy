@@ -532,13 +532,22 @@ function Invoke-Compl8ReconcileMenu {
         -Workspace $ctx.Environment -GeneratedUtc $script:DeployGeneratedUtc -ConfigRoot $ConfigPath
     Write-Host (Get-Compl8AssessmentReport -Assessment $assessment)
 
-    # Reference graph over the recorded actual objects — the substrate for blast-radius + cascade.
+    # Reference graph over the recorded actual objects — the substrate for blast-radius + cascade. Feed
+    # the COMPLETE object set assess uses (R1), INCLUDING labels (from config): without -Labels there are
+    # no policyTargetsLabel edges, so New-Compl8Plan loses the reverse dependency that tears a referencing
+    # policy/rule down BEFORE the label it targets — a label removal could be ordered too early (codex R5).
     $inv = Get-Content -LiteralPath $invPath -Raw | ConvertFrom-Json
+    $graphLabels = @()
+    $labelsPath = Join-Path $ConfigPath 'labels.json'
+    if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
+        try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
+    }
     $graph = Get-DeploymentReferenceGraph `
         -Dictionaries @($inv.objects.dictionaries) `
         -SitPackages  @($inv.objects.sitPackages) `
         -DlpRules     @($inv.objects.dlpRules) `
-        -DlpPolicies  @($inv.objects.dlpPolicies)
+        -DlpPolicies  @($inv.objects.dlpPolicies) `
+        -Labels       $graphLabels
 
     # Stamp each actionable sit bucket entry with its entity GUID from the inventory. assess emits a sit
     # orphan/remove with only the display name, but the GUID is what Get-Compl8PlanOrder matches in the

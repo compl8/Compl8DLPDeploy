@@ -72,6 +72,13 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Require-Connection')    | Should -BeTrue
         ($script:Fn -match 'Invoke-Compl8Apply')    | Should -BeTrue
     }
+    It 'builds the reference graph with the COMPLETE object set including labels (codex R5)' {
+        # Omitting -Labels loses policyTargetsLabel edges, so a label removal could be ordered before the
+        # policy still referencing it. The walk must mirror the assessment graph (R1, all five families).
+        ($script:Fn -match 'Get-DeploymentReferenceGraph')          | Should -BeTrue
+        ($script:Fn -match '-Labels\s+\$graphLabels')               | Should -BeTrue
+        ($script:Fn -match "labels\.json")                          | Should -BeTrue
+    }
     It 'stamps sit entity GUIDs onto the assessment so the planned removal cascade resolves (codex R5)' {
         # The recovered GUID must reach Invoke-Compl8Reconcile (not just the preview), or Get-Compl8PlanOrder
         # cannot match the sit in the graph and the persisted plan understates the dereference cascade.
