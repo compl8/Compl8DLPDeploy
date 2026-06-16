@@ -146,6 +146,9 @@ function Show-Menu {
     Write-BoxLine -Text " [E]  Edit config (global / tenant)" -InnerWidth $w -Color Cyan
     Write-BoxLine -Text " [12] TestPattern drift check / update" -InnerWidth $w -Color Yellow
     Write-BoxLine -Text " [R]  Customer rollout wizard (full: drift -> readiness -> cleanup -> labels -> classifiers -> rules)" -InnerWidth $w -Color Green
+    if ($UseEngine) {
+        Write-BoxLine -Text " [M]  Reconcile / Migrate (Engine: walk conflicts, claim/remove, preview impact)" -InnerWidth $w -Color Green
+    }
     Write-BoxLine -Text " [Q]  Quit" -InnerWidth $w -Color DarkGray
     Write-BoxBottom -InnerWidth $w -Color Cyan
     Write-Host ""
@@ -494,6 +497,106 @@ function Invoke-Compl8EnginePhase {
     $result = Invoke-Compl8Deploy @deployArgs
     if ($result.render) { Write-Host $result.render }
     $result
+}
+
+# ── Reconcile / Migrate walk (Stage 5 Reconciliation R5; D6 — the TUI walks, the Engine decides) ──
+# Operator-gated, opt-in (-UseEngine). Surfaces the assessment's name-collisions + orphans as a
+# WALKABLE set (Get-Compl8ReconcileCandidates), each with its R3 removal blast-radius; collects a
+# per-candidate resolution (claim/remove/leave/keep) interactively; runs the Engine reconcile verb
+# (Invoke-Compl8Reconcile) and renders the resulting iteration walk (Get-Compl8ReconciliationReport).
+# All intelligence lives in the Engine — this handler only prompts + prints, then writes the first
+# (appliable) iteration's plan and hands it to Invoke-Compl8Apply behind an explicit confirmation.
+function Invoke-Compl8ReconcileMenu {
+    param([ref]$Connected)
+
+    if (-not $UseEngine) {
+        Write-Host "  Reconcile / Migrate is an Engine path — re-run with -UseEngine." -ForegroundColor Yellow
+        return
+    }
+    $ctx = Get-Compl8DeployContext
+    if (-not $ctx) {
+        Write-Host "  Engine context unavailable (select a pinned target environment under -UseEngine)." -ForegroundColor Yellow
+        return
+    }
+
+    # The recorded actual state (read-only; produced by scripts/record-engine-fixtures.ps1 -Connect).
+    $invPath = Join-Path $ctx.WorkspacePath 'actual' 'inventory.json'
+    if (-not (Test-Path -LiteralPath $invPath -PathType Leaf)) {
+        Write-Host "  No recorded inventory at $invPath." -ForegroundColor Yellow
+        Write-Host "  Record the tenant first (operator, connected): scripts/record-engine-fixtures.ps1 -Connect -TargetEnvironment $($ctx.Environment) -Prefix $($ctx.Prefix)" -ForegroundColor DarkYellow
+        return
+    }
+
+    Write-Host "  Assessing '$($ctx.Environment)' (desired vs recorded actual)..." -ForegroundColor Cyan
+    $assessment = Invoke-Compl8Assess -WorkspacePath $ctx.WorkspacePath -InventoryPath $invPath `
+        -Workspace $ctx.Environment -GeneratedUtc $script:DeployGeneratedUtc -ConfigRoot $ConfigPath
+    Write-Host (Get-Compl8AssessmentReport -Assessment $assessment)
+
+    # Reference graph over the recorded actual objects — the substrate for blast-radius + cascade.
+    $inv = Get-Content -LiteralPath $invPath -Raw | ConvertFrom-Json
+    $graph = Get-DeploymentReferenceGraph `
+        -Dictionaries @($inv.objects.dictionaries) `
+        -SitPackages  @($inv.objects.sitPackages) `
+        -DlpRules     @($inv.objects.dlpRules) `
+        -DlpPolicies  @($inv.objects.dlpPolicies)
+
+    $candidates = @(Get-Compl8ReconcileCandidates -Assessment $assessment -Graph $graph)
+    if ($candidates.Count -eq 0) {
+        Write-Host "  Nothing to reconcile — no name-collisions or orphans surfaced." -ForegroundColor Green
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  --- Reconciliation walk: choose a resolution per item ---" -ForegroundColor Cyan
+    $resolutions = [System.Collections.Generic.List[object]]::new()
+    foreach ($cand in $candidates) {
+        Write-Host ""
+        Write-Host ("  [{0}] {1} '{2}'" -f $cand.kind, $cand.objectType, $cand.ref) -ForegroundColor White
+        if ($cand.detail) { Write-Host ("      {0}" -f $cand.detail) -ForegroundColor Gray }
+        if ($cand.blastRadius -and @($cand.blastRadius.referencingRules).Count -gt 0) {
+            $blk = if ($cand.blastRadius.blocked) { ' [dereference required first]' } else { '' }
+            Write-Host ("      Removal impact -> referencing rules: {0}{1}" -f (@($cand.blastRadius.referencingRules) -join ', '), $blk) -ForegroundColor DarkYellow
+        }
+        $opts = @($cand.allowedResolutions) -join '/'
+        $pick = (Read-Host ("      Resolution [{0}] (Enter = skip)" -f $opts)).Trim().ToLower()
+        if (-not $pick) { continue }
+        if (@($cand.allowedResolutions) -notcontains $pick) {
+            Write-Host "      '$pick' is not allowed here; skipping." -ForegroundColor Yellow
+            continue
+        }
+        $resolutions.Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; resolution = $pick }) | Out-Null
+    }
+
+    if ($resolutions.Count -eq 0) {
+        Write-Host "  No resolutions chosen — nothing to reconcile." -ForegroundColor Yellow
+        return
+    }
+
+    $recon = Invoke-Compl8Reconcile -Assessment $assessment -Graph $graph -Resolutions @($resolutions) `
+        -Workspace $ctx.Environment -PlanIdPrefix "reconcile-$($ctx.Environment)-$($script:DeployStamp)" `
+        -GeneratedUtc $script:DeployGeneratedUtc
+    Write-Host ""
+    Write-Host (Get-Compl8ReconciliationReport -Reconciliation $recon)
+
+    $first = @($recon.iterations | Sort-Object index)[0]
+    if (-not $first) { Write-Host "  No iterations to apply." -ForegroundColor Yellow; return }
+
+    Write-Host ""
+    Write-Host "  Only iteration 1 is appliable now; later (projected) iterations must be re-walked after re-recording the inventory (APPLY CONTRACT)." -ForegroundColor DarkCyan
+    if ((Read-Host "  Type APPLY to apply iteration 1 (mutates the tenant), anything else to preview-only").Trim() -cne 'APPLY') {
+        Write-Host "  Preview only — no changes applied." -ForegroundColor Cyan
+        return
+    }
+    if (-not (Require-Connection -Connected $Connected)) { return }
+
+    # Persist iteration 1's plan, then apply it through the canonical mutating verb (all gates intact).
+    $planPath = Join-Path $ctx.WorkspacePath 'history' 'plans' ("$($first.plan.id).json")
+    $planDir  = Split-Path -Parent $planPath
+    if (-not (Test-Path -LiteralPath $planDir)) { New-Item -ItemType Directory -Path $planDir -Force | Out-Null }
+    $first.plan | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $planPath -Encoding UTF8 -NoNewline
+    Invoke-Compl8Apply -PlanPath $planPath -ProjectRoot $ProjectRoot -TargetEnvironment $ctx.Environment `
+        -ExecutorMap (Get-Compl8ExecutorMap -StepContent @{} -Prefix $ctx.Prefix) | Out-Null
+    Write-Host "  Applied iteration 1. Re-record the inventory and re-run Reconcile to continue any projected iterations." -ForegroundColor Green
 }
 
 function Get-ExpectedDlpPolicyNameSet {
@@ -2113,7 +2216,8 @@ while ($true) {
     try { Clear-Host } catch { }
     Show-Menu -Connected $isConnected
 
-    $choice = Read-Choice "  Enter selection [1-12, R, C, Q]"
+    $menuKeys = if ($UseEngine) { "1-12, R, M, C, Q" } else { "1-12, R, C, Q" }
+    $choice = Read-Choice "  Enter selection [$menuKeys]"
 
     switch ($choice.ToUpper()) {
         "C"  { Invoke-Connect ([ref]$isConnected); Pause-AfterRun }
@@ -2132,6 +2236,7 @@ while ($true) {
         "S"  { Invoke-ConfigSkewReport; Pause-AfterRun }
         "E"  { Invoke-ConfigEdit; Pause-AfterRun }
         "R"  { Invoke-CustomerRolloutWizard ([ref]$isConnected); Pause-AfterRun }
+        "M"  { Invoke-Compl8ReconcileMenu ([ref]$isConnected); Pause-AfterRun }
         "Q"  { Write-Host "  Bye." -ForegroundColor Gray; exit 0 }
         default { Write-Host "  Invalid choice." -ForegroundColor Red; Start-Sleep -Seconds 1 }
     }

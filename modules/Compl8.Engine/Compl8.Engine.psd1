@@ -10,6 +10,8 @@
         'Get-Compl8AssessmentReport',
         'Get-Compl8ExecutorMap',
         'Get-Compl8PlanOrder',
+        'Get-Compl8ReconcileCandidates',
+        'Get-Compl8ReconciliationReport',
         'Get-Compl8RemovalImpact',
         'Get-Compl8ShadowDiff',
         'Invoke-Compl8Apply',
