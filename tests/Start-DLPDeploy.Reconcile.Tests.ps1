@@ -62,10 +62,10 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Get-Compl8AssessmentReport')      | Should -BeTrue
         ($script:Fn -match 'Get-Compl8ReconciliationReport')  | Should -BeTrue
     }
-    It 'collects per-item resolutions and runs the Engine reconcile verb' {
+    It 'collects per-item resolutions and runs the Engine reconcile verb WITH the inventory (impact roll-up)' {
         ($script:Fn -match 'allowedResolutions')   | Should -BeTrue
         ($script:Fn -match 'Read-Host')            | Should -BeTrue
-        ($script:Fn -match 'Invoke-Compl8Reconcile') | Should -BeTrue
+        ($script:Fn -match 'Invoke-Compl8Reconcile[\s\S]*-Inventory \$inv') | Should -BeTrue
     }
     It 'applies iteration 1 behind an explicit confirmation + connection via the canonical apply verb' {
         ($script:Fn -match "-cne\s*'APPLY'")        | Should -BeTrue

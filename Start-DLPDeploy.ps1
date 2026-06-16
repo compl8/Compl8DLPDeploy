@@ -598,7 +598,10 @@ function Invoke-Compl8ReconcileMenu {
         return
     }
 
-    $recon = Invoke-Compl8Reconcile -Assessment $assessment -Graph $graph -Resolutions @($resolutions) `
+    # Thread the parsed inventory so New-Compl8Plan can roll a package's contained-SIT impact up onto its
+    # removal step (map contained GUIDs -> sit names -> affected rules); without it a package-removal
+    # step understates the live rules it affects (codex R5).
+    $recon = Invoke-Compl8Reconcile -Assessment $assessment -Graph $graph -Resolutions @($resolutions) -Inventory $inv `
         -Workspace $ctx.Environment -PlanIdPrefix "reconcile-$($ctx.Environment)-$($script:DeployStamp)" `
         -GeneratedUtc $script:DeployGeneratedUtc
     Write-Host ""
