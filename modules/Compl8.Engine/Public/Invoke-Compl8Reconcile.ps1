@@ -269,6 +269,12 @@ function Invoke-Compl8Reconcile {
                 Remove-Collision -Type $cand.objectType -Ref $cand.ref
                 if ($cand.isCollision) {
                     $bk['drift'].Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; reason = 'claimed — re-stamped ours; content reconciled by the update path' }) | Out-Null
+                } else {
+                    # Adopt-only: a foreign object with no desired counterpart, now re-stamped ours, is what
+                    # a live re-assess would bucket as an ORPHAN (ours but not desired). Project it there so
+                    # the run does not falsely converge while leaving a now-owned, undesired object behind
+                    # (codex R4 P2); the operator must still decide its fate (remove/keep) in a later run.
+                    $bk['orphan'].Add([pscustomobject]@{ objectType = $cand.objectType; ref = $cand.ref; reason = 'adopted via claim — now ours but not desired (orphan); decide remove/keep' }) | Out-Null
                 }
             }
 
@@ -412,8 +418,13 @@ function Invoke-Compl8Reconcile {
         }
     }
     foreach ($e in $bk['orphan']) {
-        if ((Get-Res -Type ([string]$e.objectType) -Ref ([string]$e.ref)) -eq 'remove') {
-            $pending.Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; bucket = 'orphan'; wouldBe = 'remove' }) | Out-Null
+        $oType = [string]$e.objectType; $oRef = [string]$e.ref
+        if ((Get-Res -Type $oType -Ref $oRef) -eq 'remove') {
+            $pending.Add([pscustomobject]@{ objectType = $oType; ref = $oRef; bucket = 'orphan'; wouldBe = 'remove' }) | Out-Null
+        } elseif ($claimedKeys.Contains("$oType|$oRef")) {
+            # An orphan we ADOPTED this run (a non-colliding foreign claim): now ours but not desired, so it
+            # is leftover work a live re-assess would surface — count it so the run does not falsely converge.
+            $pending.Add([pscustomobject]@{ objectType = $oType; ref = $oRef; bucket = 'orphan'; wouldBe = 'decide-orphan' }) | Out-Null
         }
     }
     $iterationCapHit = ($iterIndex -ge $MaxIterations) -and ($pending.Count -gt 0)

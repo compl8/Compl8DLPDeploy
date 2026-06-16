@@ -224,6 +224,22 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         # The dlpPolicy 'Foo' collision was never resolved.
         $r.status | Should -Be 'blocked'
     }
+    It 'an adopt-only claim becomes an orphan and does NOT falsely converge (codex R4 P2)' {
+        # Claiming a sole foreign object that does NOT squat a desired name adopts it (re-stamp ours), but
+        # a live re-assess would then see it as an orphan (ours, not desired). The run must reflect that
+        # leftover work — blocked, with the adopted object surfaced as pending orphan work — not converged.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.foreign = @([pscustomobject]@{ objectType = 'dlpRule'; ref = 'Legacy-Foreign-Rule'; reason = 'not ours' })
+        # No upgradeConflicts: this foreign object does not collide with any desired name.
+        $res = @([pscustomobject]@{ objectType = 'dlpRule'; ref = 'Legacy-Foreign-Rule'; resolution = 'claim' })
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        # The claim ran (ownership adopted)…
+        @($r.iterations | ForEach-Object { $_.plan.steps } | Where-Object { $_.action -eq 'claim' -and $_.objectRef -eq 'Legacy-Foreign-Rule' }).Count | Should -Be 1
+        # …but it is now an orphan needing a decision -> blocked + surfaced as pending work, not converged.
+        $r.status | Should -Be 'blocked'
+        @($r.pendingWork | Where-Object { $_.ref -eq 'Legacy-Foreign-Rule' -and $_.bucket -eq 'orphan' }).Count | Should -Be 1
+    }
     It 'an orphan SIT removal preserves its identity so the dereference cascade is generated (codex R4 P2)' {
         # The orphan sit (entity GUID G1, referenced by LiveRule) must reach the planner WITH its
         # identity, so Get-Compl8PlanOrder resolves it in the graph and emits the dereference + ordered
