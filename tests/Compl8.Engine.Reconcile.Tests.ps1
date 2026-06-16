@@ -212,6 +212,22 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         # The dlpPolicy 'Foo' collision was never resolved.
         $r.status | Should -Be 'blocked'
     }
+    It 'an orphan SIT removal preserves its identity so the dereference cascade is generated (codex R4 P2)' {
+        # The orphan sit (entity GUID G1, referenced by LiveRule) must reach the planner WITH its
+        # identity, so Get-Compl8PlanOrder resolves it in the graph and emits the dereference + ordered
+        # removal. Dropping identity would strip the safety cascade for a still-referenced classifier.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'sit'; ref = 'QGISCF-medium-01-names'; identity = $script:G1; reason = 'ours, unexpected' })
+        $a.impact = @([pscustomobject]@{ objectRef = 'QGISCF-medium-01-names'; affects = @('dlp-rule: LiveRule') })
+        $res = @([pscustomobject]@{ objectType = 'sit'; ref = 'QGISCF-medium-01-names'; resolution = 'remove' })
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
+        # dereference LiveRule generated, ordered before the sit removal, with a snapshot prepended.
+        @($ri.plan.steps | Where-Object { $_.action -eq 'dereference' -and $_.objectRef -eq 'LiveRule' }).Count | Should -Be 1
+        @($ri.plan.steps | Where-Object { $_.action -eq 'snapshot' }).Count | Should -Be 1
+        @($ri.plan.steps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'sit' }).Count | Should -Be 1
+    }
     It 'an orphan resolved claim is a no-op (already ours) — no broken update, recorded unclaimable (codex R4 P2)' {
         # Claiming adopts a FOREIGN object; an orphan is already ours, and it has no desired counterpart,
         # so a claim->drift->update path would emit an update with no resolved content. Must NOT do that.

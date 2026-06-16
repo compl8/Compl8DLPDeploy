@@ -298,7 +298,14 @@ function Invoke-Compl8Reconcile {
         }
         foreach ($e in $bk['orphan']) {
             if ((Get-Res -Type ([string]$e.objectType) -Ref ([string]$e.ref)) -ne 'remove') { continue }
-            $actionable['remove'].Add([pscustomobject]@{ objectType = [string]$e.objectType; ref = [string]$e.ref; reason = 'orphan — operator-chosen removal' }) | Out-Null
+            # FORWARD the original entry's properties (only override the reason) — Get-Compl8PlanOrder
+            # reads identity/entityId off a removed sit to resolve it in the graph and generate the
+            # dereference cascade + blast radius. Dropping those fields would strip the safety cascade
+            # for a still-referenced classifier (codex R4 P2).
+            $rec = [ordered]@{}
+            foreach ($p in $e.PSObject.Properties) { $rec[$p.Name] = $p.Value }
+            $rec['reason'] = 'orphan — operator-chosen removal'
+            $actionable['remove'].Add([pscustomobject]$rec) | Out-Null
             $actedEntries.Add([pscustomobject]@{ bucket = 'orphan'; objectType = [string]$e.objectType; ref = [string]$e.ref }) | Out-Null
         }
 
