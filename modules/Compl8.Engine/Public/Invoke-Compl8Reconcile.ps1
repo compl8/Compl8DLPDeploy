@@ -345,9 +345,17 @@ function Invoke-Compl8Reconcile {
 
         $iterIndex = $candidateIndex
 
-        # Blast-radius preview for each removal in this plan (R3).
-        $removeTargets = @($plan.steps | Where-Object { [string]$_.action -eq 'remove' } |
-            ForEach-Object { [pscustomobject]@{ objectType = [string]$_.objectType; ref = [string]$_.objectRef } })
+        # Blast-radius preview for each removal in this plan (R3). Build the targets from the SOURCE
+        # removal entries (not the plan steps): Get-Compl8RemovalImpact keys a `sit` target by its entity
+        # GUID, which the plan step's objectRef (a display name) does not carry — using the name would
+        # return an empty preview and hide referencing rules for a destructive SIT removal (codex R4 P2).
+        $removeTargets = @($actionable['remove'] | ForEach-Object {
+            $rt = [string]$_.objectType
+            $rref = if ($rt -eq 'sit' -and $_.PSObject.Properties['identity'] -and $_.identity) { [string]$_.identity }
+                    elseif ($rt -eq 'sit' -and $_.PSObject.Properties['entityId'] -and $_.entityId) { [string]$_.entityId }
+                    else { [string]$_.ref }
+            [pscustomobject]@{ objectType = $rt; ref = $rref }
+        })
         $blast = if ($removeTargets.Count -gt 0) { @(Get-Compl8RemovalImpact -Graph $Graph -Target $removeTargets) } else { @() }
 
         # Actions reflect what the plan WILL do (the planned step action per object), not the raw request.

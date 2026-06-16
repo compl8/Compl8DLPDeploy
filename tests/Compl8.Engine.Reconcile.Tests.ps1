@@ -232,6 +232,13 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         @($ri.plan.steps | Where-Object { $_.action -eq 'dereference' -and $_.objectRef -eq 'LiveRule' }).Count | Should -Be 1
         @($ri.plan.steps | Where-Object { $_.action -eq 'snapshot' }).Count | Should -Be 1
         @($ri.plan.steps | Where-Object { $_.action -eq 'remove' -and $_.objectType -eq 'sit' }).Count | Should -Be 1
+        # And the blast-radius preview RESOLVES (keyed by the entity GUID, not the display name) and lists
+        # the referencing rule — an empty preview here would hide a destructive removal's impact.
+        $br = @($ri.blastRadius | Where-Object { $_.objectType -eq 'sit' })[0]
+        $br                  | Should -Not -BeNullOrEmpty
+        $br.resolved         | Should -BeTrue
+        $br.referencingRules | Should -Contain 'LiveRule'
+        $br.blocked          | Should -BeTrue
     }
     It 'an orphan resolved claim is a no-op (already ours) — no broken update, recorded unclaimable (codex R4 P2)' {
         # Claiming adopts a FOREIGN object; an orphan is already ours, and it has no desired counterpart,
