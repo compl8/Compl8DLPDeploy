@@ -156,21 +156,26 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         # And it did NOT record a bogus iteration with an empty plan.
         @($r.iterations | Where-Object { @($_.plan.steps).Count -eq 0 }).Count | Should -Be 0
     }
-    It 'a claimed dlpPolicy IS reconciled (the planner now steps policy drift; codex R4 P2)' {
-        # dlpPolicy is claimable AND the executor map updates policies, so a policy name-collision must
-        # claim -> drift -> update to a clean converged plan, not stall as unreconciled.
+    It 'a claimed dlpPolicy is ADOPTED but its drift is honestly surfaced unreconciled (codex R4 P2)' {
+        # dlpPolicy is claimable, so the claim (re-stamp ownership) DOES run. But the policy executor
+        # cannot reconcile policy-location drift on update, so the planner does not step it: the claimed
+        # policy's projected drift is surfaced as unreconciled and the run is blocked — honest, not a
+        # non-convergent update plan.
         $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         $a.buckets.foreign = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; reason = 'not ours' })
         $a.upgradeConflicts = @([pscustomobject]@{ slug = 'P01-ECH-QGISCF-EXT-ADT'; kind = 'name-collision'; detail = "desired dlpPolicy 'P01-ECH-QGISCF-EXT-ADT' is blocked — a foreign object holds this name." })
         $res = @([pscustomobject]@{ objectType = 'dlpPolicy'; ref = 'P01-ECH-QGISCF-EXT-ADT'; resolution = 'claim' })
         $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res `
             -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
-        $r.status                | Should -Be 'converged'
-        @($r.unreconciled).Count | Should -Be 0
+        # The claim (ownership adoption) ran: a claim step + the name-collision cleared.
         $claim = @($r.iterations | Where-Object { $_.phase -eq 'claim' })[0]
         @($claim.plan.steps | Where-Object { $_.action -eq 'claim' -and $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 1
-        $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
-        @($ri.plan.steps | Where-Object { $_.action -eq 'update' -and $_.objectType -eq 'dlpPolicy' -and $_.objectRef -eq 'P01-ECH-QGISCF-EXT-ADT' }).Count | Should -Be 1
+        @($r.unresolvedConflicts).Count | Should -Be 0
+        # But the policy content drift can't be auto-reconciled -> surfaced, run blocked (not converged).
+        $r.status | Should -Be 'blocked'
+        @($r.unreconciled | Where-Object { $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 1
+        # And NO non-convergent update step for the policy was emitted.
+        @($r.iterations | ForEach-Object { $_.plan.steps } | Where-Object { $_.action -eq 'update' -and $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 0
     }
     It 'does NOT clear a same-name collision of a different objectType when only one is claimed (codex R4 P2)' {
         # A dlpRule 'Foo' and a dlpPolicy 'Foo' are BOTH foreign name-collisions. Claiming only the rule

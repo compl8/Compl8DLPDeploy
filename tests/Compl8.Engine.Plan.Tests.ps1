@@ -228,29 +228,39 @@ Describe 'Get-Compl8PlanOrder — propagation gate placement' {
     }
 }
 
-Describe 'Get-Compl8PlanOrder — drift of updatable policy types is stepped (codex R4 P2)' {
-    # The executor map can update dlpPolicy / autoLabelPolicy, and assess emits drift for them, so the
-    # planner must turn that drift into an `update` step (previously only dlpRule drift was stepped).
-    It 'turns a drifted dlpPolicy into an update step (no package dependency)' {
+Describe 'Get-Compl8PlanOrder — only convergent drift is stepped (codex R4 P2)' {
+    # ONLY dlpRule drift is stepped: the rule executor re-applies the full condition on update, so it
+    # converges. dlpPolicy / autoLabelPolicy drift is NOT stepped — their executors update only Mode +
+    # Comment (not locations), so a location-drift update would never converge. sit drift is not stepped
+    # either (a sit's content lives in its rule package). Planning those would emit non-convergent work.
+    It 'does NOT step a drifted dlpPolicy (executor cannot update policy locations)' {
         $graph = New-TestGraph
         $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'P01-ECH-QGISCF-EXT-ADT') }
         $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
-        $polStep = @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' -and $_.objectRef -eq 'P01-ECH-QGISCF-EXT-ADT' })
-        $polStep.Count        | Should -Be 1
-        $polStep[0].action    | Should -Be 'update'
-        $polStep[0].gate      | Should -BeNullOrEmpty
+        @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 0
     }
-    It 'turns a drifted autoLabelPolicy into an update step' {
+    It 'does NOT step a drifted autoLabelPolicy' {
         $graph = New-TestGraph
         $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'autoLabelPolicy' -Ref 'QGISCF-AL-01') }
         $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
-        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' -and $_.action -eq 'update' }).Count | Should -Be 1
+        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' }).Count | Should -Be 0
     }
     It 'does NOT step a drifted sit (its content lives in its rule package)' {
         $graph = New-TestGraph
         $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'sit' -Ref 'QGISCF-sit-01') }
         $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
         @($steps | Where-Object { $_.objectType -eq 'sit' }).Count | Should -Be 0
+    }
+    It 'DOES step a drifted dlpRule (the rule executor re-applies the full condition -> converges)' {
+        $sitGuid = '44444444-aaaa-4bbb-8ccc-000000000004'
+        $pkg = [pscustomobject]@{ Identity = 'QGISCF-drift-pkg'; Name = 'QGISCF-drift-pkg'; Publisher = 'Compl8'
+            SerializedClassificationRuleCollection = (New-PkgXml -EntityId $sitGuid -DictGuid $null) }
+        $rule = [pscustomobject]@{ Name = 'QGISCF-Drift-Rule'; Identity = 'QGISCF-Drift-Rule'; Policy = 'P01'
+            ContentContainsSensitiveInformation = "[{`"id`":`"$sitGuid`"}]" }
+        $graph = New-TestGraph -SitPackages @($pkg) -DlpRules @($rule)
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpRule' -Ref 'QGISCF-Drift-Rule') }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'dlpRule' -and $_.action -eq 'update' -and $_.objectRef -eq 'QGISCF-Drift-Rule' }).Count | Should -Be 1
     }
 }
 
