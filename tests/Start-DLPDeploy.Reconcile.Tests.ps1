@@ -53,9 +53,11 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'if\s*\(-not\s*\$UseEngine\)') | Should -BeTrue
         ($script:Fn -match 'Get-Compl8DeployContext')      | Should -BeTrue
     }
-    It 'reads the recorded actual inventory and assesses against it' {
+    It 'reads the recorded actual inventory and assesses against the WORKSPACE desired state (not forced global config)' {
         ($script:Fn -match "actual'\s*'inventory\.json'") | Should -BeTrue
         ($script:Fn -match 'Invoke-Compl8Assess')          | Should -BeTrue
+        # Must NOT force the repo-global config — assess resolves the workspace's own desired set (codex R5).
+        ($script:Fn -match 'Invoke-Compl8Assess[\s\S]*?-ConfigRoot \$ConfigPath') | Should -BeFalse
     }
     It 'surfaces the walkable set and renders it through the Engine primitives' {
         ($script:Fn -match 'Get-Compl8ReconcileCandidates')   | Should -BeTrue

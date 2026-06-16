@@ -528,8 +528,12 @@ function Invoke-Compl8ReconcileMenu {
     }
 
     Write-Host "  Assessing '$($ctx.Environment)' (desired vs recorded actual)..." -ForegroundColor Cyan
+    # Do NOT force the repo-global -ConfigRoot: let assess resolve the desired set from its natural source
+    # order — the workspace's persisted desired/resolved first, then the workspace config dirs — exactly as
+    # Invoke-Compl8Deploy does. Forcing $ConfigPath would assess a tenant-specific workspace against the
+    # wrong (global) desired DLP/auto-label state (codex R5).
     $assessment = Invoke-Compl8Assess -WorkspacePath $ctx.WorkspacePath -InventoryPath $invPath `
-        -Workspace $ctx.Environment -GeneratedUtc $script:DeployGeneratedUtc -ConfigRoot $ConfigPath
+        -Workspace $ctx.Environment -GeneratedUtc $script:DeployGeneratedUtc
     Write-Host (Get-Compl8AssessmentReport -Assessment $assessment)
 
     # Reference graph over the recorded actual objects — the substrate for blast-radius + cascade. Feed
@@ -537,10 +541,16 @@ function Invoke-Compl8ReconcileMenu {
     # no policyTargetsLabel edges, so New-Compl8Plan loses the reverse dependency that tears a referencing
     # policy/rule down BEFORE the label it targets — a label removal could be ordered too early (codex R5).
     $inv = Get-Content -LiteralPath $invPath -Raw | ConvertFrom-Json
+    # Resolve labels.json from the WORKSPACE config dirs first (then the global config), mirroring the
+    # source order Invoke-Compl8Assess uses — so the graph's label nodes match the assessed desired state.
     $graphLabels = @()
-    $labelsPath = Join-Path $ConfigPath 'labels.json'
-    if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
-        try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
+    foreach ($cand in @((Join-Path $ctx.WorkspacePath 'desired' 'config'), (Join-Path $ctx.WorkspacePath 'config'), $ConfigPath)) {
+        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+        $labelsPath = Join-Path $cand 'labels.json'
+        if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
+            try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
+            break
+        }
     }
     $graph = Get-DeploymentReferenceGraph `
         -Dictionaries @($inv.objects.dictionaries) `
