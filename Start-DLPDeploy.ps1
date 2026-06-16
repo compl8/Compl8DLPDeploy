@@ -581,22 +581,37 @@ function Invoke-Compl8ReconcileMenu {
     $first = @($recon.iterations | Sort-Object index)[0]
     if (-not $first) { Write-Host "  No iterations to apply." -ForegroundColor Yellow; return }
 
-    Write-Host ""
-    Write-Host "  Only iteration 1 is appliable now; later (projected) iterations must be re-walked after re-recording the inventory (APPLY CONTRACT)." -ForegroundColor DarkCyan
-    if ((Read-Host "  Type APPLY to apply iteration 1 (mutates the tenant), anything else to preview-only").Trim() -cne 'APPLY') {
-        Write-Host "  Preview only — no changes applied." -ForegroundColor Cyan
-        return
-    }
-    if (-not (Require-Connection -Connected $Connected)) { return }
-
-    # Persist iteration 1's plan, then apply it through the canonical mutating verb (all gates intact).
+    # Persist iteration 1's plan so it is ready for apply via whichever path is appropriate.
     $planPath = Join-Path $ctx.WorkspacePath 'history' 'plans' ("$($first.plan.id).json")
     $planDir  = Split-Path -Parent $planPath
     if (-not (Test-Path -LiteralPath $planDir)) { New-Item -ItemType Directory -Path $planDir -Force | Out-Null }
     $first.plan | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $planPath -Encoding UTF8 -NoNewline
+    Write-Host ""
+    Write-Host "  Iteration 1 plan written: $planPath" -ForegroundColor Cyan
+    Write-Host "  Only iteration 1 is appliable now; projected iterations must be re-walked after re-recording the inventory (APPLY CONTRACT)." -ForegroundColor DarkCyan
+
+    # SAFE-APPLY SCOPE (codex R5): only a CLAIM-ONLY iteration 1 is applied directly here. Claims are
+    # non-destructive (no snapshot step) and need no resolved desired content, so the canonical apply
+    # runs with a minimal executor map. A plan that also creates/updates (needs DesiredContent) or
+    # removes/dereferences (needs the snapshot-executor context) MUST be applied through the per-type
+    # deploy path that threads that context — applying it here with an empty map would fail or under-apply.
+    $steps = @($first.plan.steps)
+    $claimOnly = ($steps.Count -gt 0) -and (@($steps | Where-Object { [string]$_.action -ne 'claim' }).Count -eq 0)
+    if (-not $claimOnly) {
+        Write-Host "  Iteration 1 carries create/update/remove/dereference steps needing desired-content + snapshot context." -ForegroundColor Yellow
+        Write-Host "  Apply it through the per-type deploy path (which threads that context); this walk is preview + plan only." -ForegroundColor DarkYellow
+        return
+    }
+
+    Write-Host "  Iteration 1 is CLAIM-ONLY (adopt ownership; non-destructive, content-free)." -ForegroundColor Cyan
+    if ((Read-Host "  Type APPLY to adopt these objects now, anything else to preview-only").Trim() -cne 'APPLY') {
+        Write-Host "  Preview only — no changes applied." -ForegroundColor Cyan
+        return
+    }
+    if (-not (Require-Connection -Connected $Connected)) { return }
     Invoke-Compl8Apply -PlanPath $planPath -ProjectRoot $ProjectRoot -TargetEnvironment $ctx.Environment `
         -ExecutorMap (Get-Compl8ExecutorMap -StepContent @{} -Prefix $ctx.Prefix) | Out-Null
-    Write-Host "  Applied iteration 1. Re-record the inventory and re-run Reconcile to continue any projected iterations." -ForegroundColor Green
+    Write-Host "  Claimed. The adopted objects now bucket as drift — re-record the inventory and reconcile/deploy them via the per-type path." -ForegroundColor Green
 }
 
 function Get-ExpectedDlpPolicyNameSet {

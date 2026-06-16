@@ -72,6 +72,13 @@ Describe 'Start-DLPDeploy — Invoke-Compl8ReconcileMenu walks via the Engine (D
         ($script:Fn -match 'Require-Connection')    | Should -BeTrue
         ($script:Fn -match 'Invoke-Compl8Apply')    | Should -BeTrue
     }
+    It 'only auto-applies a CLAIM-ONLY iteration 1 — destructive/content-bearing plans are not applied here (codex R5)' {
+        # A plan with create/update/remove/dereference needs desired-content + snapshot context the
+        # minimal executor map does not carry, so the handler gates direct apply to claim-only plans.
+        ($script:Fn -match '\$claimOnly')                              | Should -BeTrue
+        ($script:Fn -match "action.*-ne\s*'claim'")                    | Should -BeTrue
+        ($script:Fn -match 'if\s*\(-not\s*\$claimOnly\)')              | Should -BeTrue
+    }
     It 'honours the APPLY CONTRACT — only iteration 1 is applied, the rest re-walked' {
         ($script:Fn -match 'iterations \| Sort-Object index')[0] | Should -BeTrue
         ($script:Fn -match 'projected|re-record|re-run|re-walk') | Should -BeTrue
