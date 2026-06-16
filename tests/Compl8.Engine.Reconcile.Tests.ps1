@@ -107,6 +107,13 @@ Describe 'Invoke-Compl8Reconcile — mixed scenario converges over iterations' {
         $actions | Should -Contain 'update:dlpRule:P02-R02-ECH-OFFI'   # pre-existing drift
         $actions | Should -Contain 'remove:rulePackage:OldPkg'         # orphan -> remove
     }
+    It 'flags downstream iterations as projected (apply contract — codex R4 P2)' {
+        # The first recorded iteration is appliable against the current live inventory; later iterations
+        # are projections (the prior iteration mutates inventory) and must be regenerated live before apply.
+        $ordered = @($script:R.iterations | Sort-Object index)
+        $ordered[0].projected | Should -BeFalse
+        $ordered[1].projected | Should -BeTrue
+    }
     It 'preserves safety gates (D7) — the destructive reconcile plan carries a snapshotBeforeDestroy step and a dereference cascade' {
         $ri = @($script:R.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
         $snap = @($ri.plan.steps | Where-Object { $_.action -eq 'snapshot' -and $_.gate.type -eq 'snapshotBeforeDestroy' })

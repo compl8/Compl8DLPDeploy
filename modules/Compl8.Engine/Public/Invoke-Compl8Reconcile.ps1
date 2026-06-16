@@ -50,6 +50,17 @@ function Invoke-Compl8Reconcile {
         Only dlpRule / dlpPolicy are claimable (Get-Compl8EngineSchemaEnums ClaimableObjectTypes); a
         `claim` of any other type is reported in unclaimable[] and the conflict stays unresolved.
 
+        APPLY CONTRACT (projections vs live freshness). This verb is a PURE PROJECTION — it cannot fetch
+        the tenant, so every emitted plan carries the inventory hash of the INPUT assessment. The FIRST
+        recorded iteration is therefore directly appliable against the current live inventory; each LATER
+        iteration is flagged `projected=$true` because the preceding iteration MUTATES the tenant (a claim
+        re-stamps provenance; a reconcile creates/updates/removes), which changes the live inventory hash.
+        Applying a projected plan with a freshly recomputed -InventoryHash would (correctly) be refused as
+        stale by Invoke-Compl8Apply's freshness gate. The intended flow (D5, and what the R5 TUI does) is
+        iterative: apply iteration 1 -> RE-ASSESS live -> RE-RUN this verb to regenerate the remaining
+        iterations against the now-current inventory -> apply the next -> … The verb is deterministic +
+        resumable precisely so this live re-run reproduces the same sequence with fresh hashes.
+
         TERMINATION + STATUS. The loop runs until no claim is pending AND the bucketed reconcile produces
         no steps (bounded by -MaxIterations as a backstop). status='converged' when no name-collision is
         left unresolved; otherwise status='blocked' and unresolvedConflicts[] lists the still-colliding
@@ -89,6 +100,7 @@ function Invoke-Compl8Reconcile {
     .OUTPUTS
         A compl8.reconciliation/v1 object:
         { schemaVersion; workspace; generatedUtc; status; iterationCount; iterations = @({ index; phase;
+          projected (false only for the first iteration — see APPLY CONTRACT);
           actions = @({objectType; ref; resolution}); plan = <compl8.plan/v1>; blastRadius = @(<R3 records>);
           remainingConflicts = @(<projected name-collisions>) }); iterationCapHit; unresolvedConflicts;
           pendingWork; unreconciled; unclaimable }. status is 'converged' ONLY when unresolvedConflicts,
@@ -272,6 +284,11 @@ function Invoke-Compl8Reconcile {
             $iterations.Add([pscustomobject]@{
                 index              = $iterIndex
                 phase              = 'claim'
+                # The FIRST recorded iteration is appliable against the current live inventory; every
+                # later one is a PROJECTION — the preceding iteration mutates the tenant, so its plan's
+                # inventory hash will be stale and the plan MUST be regenerated live (re-assess -> re-run
+                # reconcile) before apply (codex R4 P2; see APPLY CONTRACT in the help).
+                projected          = ($iterations.Count -gt 0)
                 actions            = @($actions)
                 plan               = $plan
                 blastRadius        = @()
@@ -366,6 +383,9 @@ function Invoke-Compl8Reconcile {
         $iterations.Add([pscustomobject]@{
             index              = $iterIndex
             phase              = 'reconcile'
+            # Appliable now only if it is the FIRST recorded iteration; otherwise a projection whose plan
+            # must be regenerated live after the prior (mutating) iteration applies (codex R4 P2).
+            projected          = ($iterations.Count -gt 0)
             actions            = $actions
             plan               = $plan
             blastRadius        = $blast
