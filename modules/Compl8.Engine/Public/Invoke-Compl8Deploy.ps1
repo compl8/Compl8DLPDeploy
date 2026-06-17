@@ -131,6 +131,13 @@ function Invoke-Compl8Deploy {
 
         [datetime]$Now = [datetime]::UtcNow,
 
+        # The production propagation probe: resolves a propagation-gated rule by real tenant SIT
+        # VISIBILITY (Get-DlpSensitiveInformationType) instead of the time-window fallback. Defaults to the
+        # shared probe so connected deployments use the authoritative signal; a caller can inject a fake
+        # (tests) or $null (force the time fallback). When the tenant cannot be queried the probe returns
+        # $null and the gate falls back to its time window, so this is safe disconnected.
+        [scriptblock]$PropagationProbe = (Get-Compl8SitVisibilityProbe),
+
         [switch]$ConfirmExternalRefs,
 
         [switch]$ContinueOnBlock,
@@ -384,6 +391,7 @@ function Invoke-Compl8Deploy {
     }
     if ($ConfirmExternalRefs) { $applyArgs['ConfirmExternalRefs'] = $true }
     if ($ContinueOnBlock)     { $applyArgs['ContinueOnBlock'] = $true }
+    if ($PropagationProbe)    { $applyArgs['PropagationProbe'] = $PropagationProbe }
     $applyResult = Invoke-Compl8Apply @applyArgs
 
     [pscustomobject]([ordered]@{
