@@ -12,14 +12,19 @@ function Test-Compl8Gate {
 
         Three v1 gate types (single-sourced enum: Get-Compl8EngineSchemaEnums.GateTypes):
 
-          * propagation — a SIT-upload's dependent rule step must wait for classifier propagation
-            (the 4-24h folklore, now machinery). The step may proceed only once NOW has reached
-            the gate's notBefore instant. notBefore is resolved in priority order:
+          * propagation — a SIT-upload's dependent rule step must wait for classifier propagation.
+            The AUTHORITATIVE signal is tenant VISIBILITY (the same signal the leaf uses: it polls
+            Get-DlpSensitiveInformationType until the uploaded SIT IDs appear). When the apply layer has
+            probed the tenant, it passes -Context.DependencyVisible: $true => proceed now (propagation
+            confirmed, regardless of the clock); $false => block now (genuinely not ready, regardless of
+            the clock). ONLY when visibility is unknown (the key is absent — disconnected, or the gate
+            carries no SIT ids to probe) does the gate fall back to the time window: the step proceeds
+            once NOW has reached the notBefore instant, resolved in priority order:
               1. an explicit gate.notBefore (an ISO-8601 UTC instant), else
               2. (the dependency step's apply time, -Context.DependencyAppliedUtc)
-                 + gate.notBeforeOffsetHours.
-            When neither yields an instant the gate cannot be evaluated and is treated as BLOCKED
-            (fail-closed) with an explanatory reason.
+                 + gate.notBeforeOffsetHours (a heuristic FALLBACK, not the primary signal).
+            When neither the visibility signal nor a notBefore instant is available the gate is treated
+            as BLOCKED (fail-closed) with an explanatory reason.
 
           * snapshotBeforeDestroy — a destructive step gated this way may proceed only once the
             generated snapshot Step 0.5 has already run (its checkpoint exists). The apply loop
@@ -43,8 +48,11 @@ function Test-Compl8Gate {
 
     .PARAMETER Context
         Optional hashtable of evaluation context:
+          * DependencyVisible    — [bool] whether the dependency classifier is visible in the tenant
+            now (the authoritative propagation signal; set by apply after probing). When present it
+            decides the propagation gate outright; when absent the gate falls back to the time window.
           * DependencyAppliedUtc — the apply time of the step this gate's step depends on (the
-            propagation offset is measured from here when gate.notBefore is absent).
+            propagation offset FALLBACK is measured from here when gate.notBefore is absent).
           * SnapshotApplied       — [bool] whether the snapshot step has checkpointed
             (snapshotBeforeDestroy).
 
@@ -100,6 +108,22 @@ function Test-Compl8Gate {
 
     switch ($type) {
         'propagation' {
+            # AUTHORITATIVE signal (matches the leaf, which polls Get-DlpSensitiveInformationType until
+            # the uploaded SIT IDs are visible): when the apply layer has probed the tenant and reported
+            # whether the dependency classifier is visible, honour it OVER the clock. visible => proceed
+            # now; not-yet-visible => block now (propagation genuinely incomplete). Only when visibility
+            # is UNKNOWN (no probe — disconnected, or the gate carries no SIT ids) do we fall back to the
+            # time-offset window below. This replaces the 4-24h folklore with the real readiness signal.
+            if ($Context.ContainsKey('DependencyVisible')) {
+                if ([bool]$Context['DependencyVisible']) {
+                    return [pscustomobject]@{ Passed = $true; Reason = '' }
+                }
+                return [pscustomobject]@{
+                    Passed = $false
+                    Reason = 'propagation gate: the dependency classifier is not yet visible in the tenant (Get-DlpSensitiveInformationType) — propagation incomplete.'
+                }
+            }
+
             # Resolve the notBefore instant: explicit gate.notBefore, else dependency-apply-time +
             # offset hours. Parse as UTC for a stable comparison against the injected clock.
             $notBefore = $null

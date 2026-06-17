@@ -612,6 +612,33 @@ Describe 'Test-Compl8Gate — propagation (injected clock)' {
     }
 }
 
+Describe 'Test-Compl8Gate — propagation by VISIBILITY (the real signal, not folklore time)' {
+    # The leaf detects propagation by polling Get-DlpSensitiveInformationType until the uploaded SIT IDs
+    # are visible (Deploy-Classifiers.ps1). The gate now honours that as the AUTHORITATIVE signal via
+    # Context.DependencyVisible: visible => proceed regardless of clock; not-yet-visible => block
+    # regardless of clock; unknown (no probe) => fall back to the time-offset window.
+    It 'PASSES immediately when the dependency classifier is visible, even before the time window' {
+        $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 }
+        $ctx  = @{ DependencyAppliedUtc = '2026-06-13T10:00:00Z'; DependencyVisible = $true }
+        # now is well before depApply + 4h, but visibility is confirmed -> proceed.
+        (Test-Compl8Gate -Gate $gate -Now ([datetime]'2026-06-13T10:01:00Z') -Context $ctx).Passed | Should -BeTrue
+    }
+    It 'BLOCKS while the dependency classifier is NOT yet visible, even after the time window elapsed' {
+        $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 }
+        $ctx  = @{ DependencyAppliedUtc = '2026-06-13T10:00:00Z'; DependencyVisible = $false }
+        # now is past depApply + 4h, but the classifier still is not visible -> do NOT proceed.
+        $r = Test-Compl8Gate -Gate $gate -Now ([datetime]'2026-06-13T20:00:00Z') -Context $ctx
+        $r.Passed | Should -BeFalse
+        $r.Reason | Should -Match 'visible|propagat'
+    }
+    It 'falls back to the time-offset window when visibility is UNKNOWN (no probe available)' {
+        $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 }
+        $ctx  = @{ DependencyAppliedUtc = '2026-06-13T10:00:00Z' }   # no DependencyVisible key
+        (Test-Compl8Gate -Gate $gate -Now ([datetime]'2026-06-13T13:59:00Z') -Context $ctx).Passed | Should -BeFalse
+        (Test-Compl8Gate -Gate $gate -Now ([datetime]'2026-06-13T14:00:00Z') -Context $ctx).Passed | Should -BeTrue
+    }
+}
+
 Describe 'Test-Compl8Gate — snapshotBeforeDestroy' {
     It 'BLOCKS until the snapshot step has checkpointed' {
         $gate = [pscustomobject]@{ type = 'snapshotBeforeDestroy' }
@@ -677,6 +704,46 @@ Describe 'Invoke-Compl8Apply — propagation gate halts a step and resumes after
             -ProjectRoot $script:RepoRoot -ExecutorMap $map -Now ([datetime]'2026-06-13T15:00:00Z')
         $script:propRuleCalls | Should -Be 1
         Test-Path -LiteralPath (Join-Path $appliesDir 's02.json') | Should -BeTrue
+        Remove-Item -LiteralPath $fixture.WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Describe 'Invoke-Compl8Apply — propagation gate honours an injected visibility probe (the real signal)' {
+    BeforeEach {
+        Mock -ModuleName Compl8.Engine Test-Compl8PlanCurrent { $true }
+        Mock -ModuleName Compl8.Engine Test-DeploymentTenantFingerprint { [pscustomobject]@{ passed = $true } }
+        $script:sit = '11111111-aaaa-4bbb-8ccc-000000000001'
+        $script:vSteps = @(
+            New-Step -Id 's01' -Action 'update' -ObjectType 'rulePackage' -ObjectRef 'QGISCF-pkg-01'
+            New-Step -Id 's02' -Action 'update' -ObjectType 'dlpRule' -ObjectRef 'QGISCF-Rule-09' -DependsOn @('s01') `
+                -Gate ([pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4; requiresSitIds = @($script:sit) })
+        )
+    }
+
+    It 'APPLIES the gated rule even before the time window when the probe reports the classifier VISIBLE' {
+        $fixture = New-TestPlanFile -Steps $script:vSteps -Id 'plan-vis-yes'
+        $script:calls = 0; $script:probedIds = $null
+        $map = @{ rulePackage = { param($Step) }; dlpRule = { param($Step) $script:calls++ } }
+        $probe = { param($ids) $script:probedIds = @($ids); $true }   # visible
+        $r = Invoke-Compl8Apply -PlanPath $fixture.PlanPath -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:bb' `
+            -ProjectRoot $script:RepoRoot -ExecutorMap $map -PropagationProbe $probe `
+            -Now ([datetime]'2026-06-13T08:00:00Z')   # well before depApply + 4h
+        $script:calls      | Should -Be 1
+        $script:probedIds  | Should -Contain $script:sit   # the probe received the gate's requiresSitIds
+        (@($r.steps | Where-Object { $_.stepId -eq 's02' })[0]).status | Should -Be 'applied'
+        Remove-Item -LiteralPath $fixture.WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'BLOCKS the gated rule even after the time window when the probe reports NOT yet visible' {
+        $fixture = New-TestPlanFile -Steps $script:vSteps -Id 'plan-vis-no'
+        $script:calls = 0
+        $map = @{ rulePackage = { param($Step) }; dlpRule = { param($Step) $script:calls++ } }
+        $probe = { param($ids) $false }   # still propagating
+        $r = Invoke-Compl8Apply -PlanPath $fixture.PlanPath -ResolveManifestHash 'sha256:aa' -InventoryHash 'sha256:bb' `
+            -ProjectRoot $script:RepoRoot -ExecutorMap $map -PropagationProbe $probe -ContinueOnBlock `
+            -Now ([datetime]'2026-06-14T00:00:00Z')   # long after depApply + 4h
+        $script:calls | Should -Be 0
+        (@($r.steps | Where-Object { $_.stepId -eq 's02' })[0]).status | Should -Be 'blocked'
         Remove-Item -LiteralPath $fixture.WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }

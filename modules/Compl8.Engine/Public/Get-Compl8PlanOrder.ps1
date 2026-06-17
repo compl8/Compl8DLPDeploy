@@ -110,15 +110,35 @@ function Get-Compl8PlanOrder {
         if (-not $rulesBySitGuid[$sitGuid].Contains($ruleName)) { $rulesBySitGuid[$sitGuid].Add($ruleName) }
     }
 
-    # rule name -> the rule-package name(s) it reads (rule depends on those packages' steps).
+    # rule name -> the rule-package name(s) it reads (rule depends on those packages' steps), AND
+    # rule name -> the sit entity GUIDs it references (the inverse of rulesBySitGuid).
     $packagesByRuleName = @{}
+    $sitGuidsByRuleName = @{}
     foreach ($sitGuid in $rulesBySitGuid.Keys) {
         $pkgName = if ($packageNameBySitGuid.ContainsKey($sitGuid)) { $packageNameBySitGuid[$sitGuid] } else { $null }
-        if (-not $pkgName) { continue }
         foreach ($ruleName in $rulesBySitGuid[$sitGuid]) {
+            if (-not $sitGuidsByRuleName.ContainsKey($ruleName)) { $sitGuidsByRuleName[$ruleName] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+            $sitGuidsByRuleName[$ruleName].Add($sitGuid) | Out-Null
+            if (-not $pkgName) { continue }
             if (-not $packagesByRuleName.ContainsKey($ruleName)) { $packagesByRuleName[$ruleName] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
             $packagesByRuleName[$ruleName].Add($pkgName) | Out-Null
         }
+    }
+
+    # Build the propagation gate for a rule/auto-label step that depends on a package CHANGED this plan.
+    # It carries notBeforeOffsetHours (the time-window FALLBACK) AND requiresSitIds — the entity GUIDs the
+    # rule reads from the changed package(s), so the apply layer can probe the tenant for their VISIBILITY
+    # (the authoritative propagation signal, matching the leaf's Get-DlpSensitiveInformationType poll).
+    function New-PropagationGate {
+        param([string]$RuleName)
+        $ids = [System.Collections.Generic.List[string]]::new()
+        if ($sitGuidsByRuleName.ContainsKey($RuleName)) {
+            foreach ($g in @($sitGuidsByRuleName[$RuleName] | Sort-Object)) {
+                $pkg = if ($packageNameBySitGuid.ContainsKey($g)) { $packageNameBySitGuid[$g] } else { $null }
+                if ($pkg -and $createdPackages.Contains($pkg) -and -not $ids.Contains($g)) { $ids.Add($g) | Out-Null }
+            }
+        }
+        [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4; requiresSitIds = @($ids) }
     }
 
     # dictionary placeholder/guid -> sit guids it feeds, and the inverse package names.
@@ -210,7 +230,7 @@ function Get-Compl8PlanOrder {
                             if ($createdPackages.Contains($p)) { $changedDep = $true }
                         }
                         if ($changedDep) {
-                            $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 }
+                            $gate = New-PropagationGate -RuleName $ref
                         }
                     }
                     if ($impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
@@ -223,7 +243,7 @@ function Get-Compl8PlanOrder {
                             if ($createdPackages.Contains($p)) { $changedDep = $true }
                         }
                         if ($changedDep) {
-                            $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 }
+                            $gate = New-PropagationGate -RuleName $ref
                         }
                     }
                 }
@@ -254,7 +274,7 @@ function Get-Compl8PlanOrder {
                 $deps.Add($p) | Out-Null
                 if ($createdPackages.Contains($p)) { $changedDep = $true }
             }
-            if ($changedDep) { $gate = [pscustomobject]@{ type = 'propagation'; notBeforeOffsetHours = 4 } }
+            if ($changedDep) { $gate = New-PropagationGate -RuleName $ref }
         }
         if ($impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
         Add-WorkItem -Action 'update' -ObjectType 'dlpRule' -Ref $ref -Direction 'forward' `

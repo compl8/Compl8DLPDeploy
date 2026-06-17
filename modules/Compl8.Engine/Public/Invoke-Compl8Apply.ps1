@@ -95,6 +95,17 @@ function Invoke-Compl8Apply {
         [datetime]::UtcNow ONLY as a convenience for production callers; tests pin it. (Get-Date is
         not called; the default uses the .NET clock directly and is overridden in all tests.)
 
+    .PARAMETER PropagationProbe
+        Optional scriptblock that resolves classifier propagation by tenant VISIBILITY — the
+        authoritative propagation signal (matching the leaf, which polls Get-DlpSensitiveInformationType
+        until the uploaded SIT IDs appear). Invoked as & $PropagationProbe $sitIds for a propagation-gated
+        step whose gate carries requiresSitIds; it returns $true (all visible -> the gate proceeds now),
+        $false (still propagating -> the gate blocks now), or $null (undetermined -> the gate falls back to
+        the time window). DEFAULT is unset: with no probe the propagation gate uses only the time-offset
+        fallback (notBeforeOffsetHours from the dependency apply time) — i.e. behaviour is unchanged unless
+        a caller opts in to live visibility. (Connected callers pass a Get-DlpSensitiveInformationType-based
+        probe; tests inject a deterministic fake.)
+
     .PARAMETER ConfirmExternalRefs
         Operator confirmation forwarded to externalRefs gate evaluation.
 
@@ -148,6 +159,8 @@ function Invoke-Compl8Apply {
         [hashtable]$StepContent = @{},
 
         [datetime]$Now = [datetime]::UtcNow,
+
+        [scriptblock]$PropagationProbe,
 
         [switch]$ConfirmExternalRefs,
 
@@ -450,6 +463,19 @@ function Invoke-Compl8Apply {
             if ($gateType -eq 'propagation') {
                 $depApplied = Get-DependencyAppliedUtc -Step $step
                 if ($depApplied) { $gateContext['DependencyAppliedUtc'] = $depApplied }
+                # PROPAGATION BY VISIBILITY (the authoritative signal — matches the leaf's
+                # Get-DlpSensitiveInformationType poll). When a -PropagationProbe is supplied AND the gate
+                # names the SIT ids the dependent rule reads from the changed package(s), probe the tenant:
+                # the probe returns $true (all visible -> proceed), $false (still propagating -> block), or
+                # $null (couldn't determine -> leave unknown so the gate falls back to the time window).
+                # No probe (the default) => visibility unknown => time-offset fallback, unchanged behaviour.
+                $reqIds = @()
+                if ($step.gate.PSObject.Properties['requiresSitIds']) { $reqIds = @(@($step.gate.requiresSitIds) | Where-Object { $_ }) }
+                if ($PropagationProbe -and $reqIds.Count -gt 0) {
+                    $visible = $null
+                    try { $visible = & $PropagationProbe $reqIds } catch { $visible = $null }
+                    if ($null -ne $visible) { $gateContext['DependencyVisible'] = [bool]$visible }
+                }
             }
 
             $gateResult = Test-Compl8Gate -Gate $step.gate -Now $Now -Context $gateContext -ConfirmExternalRefs:$ConfirmExternalRefs

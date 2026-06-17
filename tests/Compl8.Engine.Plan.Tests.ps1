@@ -207,6 +207,9 @@ Describe 'Get-Compl8PlanOrder — propagation gate placement' {
         $ruleStep.gate | Should -Not -BeNullOrEmpty
         $ruleStep.gate.type | Should -Be 'propagation'
         $ruleStep.gate.notBeforeOffsetHours | Should -Be 4
+        # The gate carries the SIT GUID the rule reads from the changed package, so apply can probe its
+        # tenant VISIBILITY (the real propagation signal) rather than only waiting out the time window.
+        $ruleStep.gate.requiresSitIds | Should -Contain $sitGuid
     }
 
     It 'does NOT attach a propagation gate to a rule depending on an UNCHANGED package' {
