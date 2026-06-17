@@ -82,6 +82,26 @@ Describe 'Get-Compl8ReconcileCandidates' {
         $dict.allowedResolutions | Should -Be @('leave')
         $dict.allowedResolutions | Should -Not -Contain 'claim'
     }
+    It 'attaches the strategist risk verdict to an orphan candidate (internal/external + hand-back surfaced in the walk)' {
+        # OldPkg (sit G1) is referenced by LiveRule; mark LiveRule FOREIGN -> removing the orphan reaches a
+        # not-ours rule -> the candidate's risk hands back, visible while the operator chooses.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; reason = 'orphan' })
+        $inv = [pscustomobject]@{ objects = [pscustomobject]@{
+            dlpRules = @([pscustomobject]@{ name = 'LiveRule'; ours = $false })
+            dlpPolicies = @(); sits = @(); sitPackages = @([pscustomobject]@{ name = 'OldPkg'; ours = $true }); dictionaries = @()
+        } }
+        $orph = @(Get-Compl8ReconcileCandidates -Assessment $a -Graph $script:Graph -Inventory $inv | Where-Object { $_.ref -eq 'OldPkg' })[0]
+        $orph.risk                 | Should -Not -BeNullOrEmpty
+        $orph.risk.handBack        | Should -BeTrue
+        @($orph.risk.externalImpact | Where-Object { $_.ref -eq 'LiveRule' }).Count | Should -Be 1
+    }
+    It 'leaves risk null when no inventory (ownership) is supplied — the walk still works' {
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; reason = 'orphan' })
+        $orph = @(Get-Compl8ReconcileCandidates -Assessment $a -Graph $script:Graph | Where-Object { $_.ref -eq 'OldPkg' })[0]
+        $orph.risk | Should -BeNullOrEmpty
+    }
     It 'returns an empty set when there is nothing to reconcile' {
         $clean = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         @(Get-Compl8ReconcileCandidates -Assessment $clean -Graph $script:Graph) | Should -HaveCount 0

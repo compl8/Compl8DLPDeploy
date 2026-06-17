@@ -102,11 +102,15 @@ function Invoke-Compl8Reconcile {
         { schemaVersion; workspace; generatedUtc; status; iterationCount; iterations = @({ index; phase;
           projected (false only for the first iteration — see APPLY CONTRACT);
           actions = @({objectType; ref; resolution}); plan = <compl8.plan/v1>; blastRadius = @(<R3 records>);
-          remainingConflicts = @(<projected name-collisions>) }); iterationCapHit; unresolvedConflicts;
-          pendingWork; unreconciled; unclaimable }. status is 'converged' ONLY when unresolvedConflicts,
-        unreconciled, pendingWork AND unclaimable are all empty — otherwise 'blocked'. pendingWork lists actionable
-        entries the loop never planned (e.g. -MaxIterations truncated it; iterationCapHit flags that
-        case). unreconciled lists entries the planner could not turn into a step (e.g. non-dlpRule drift).
+          risk = @(<Get-Compl8ChangeRisk verdict per planned step — internal/external impact + hand-back;
+          empty when no -Inventory>); remainingConflicts = @(<projected name-collisions>) });
+          iterationCapHit; unresolvedConflicts; pendingWork; unreconciled; unclaimable;
+          riskHandBacks = @(<every planned change the strategist hands back across the walk>) }. status is
+        'converged' ONLY when unresolvedConflicts, unreconciled, pendingWork AND unclaimable are all empty —
+        otherwise 'blocked'. pendingWork lists actionable entries the loop never planned (e.g. -MaxIterations
+        truncated it; iterationCapHit flags that case). unreconciled lists entries the planner could not turn
+        into a step (e.g. non-dlpRule drift). risk/riskHandBacks surface the strategist verdict the deploy's
+        5c gate enforces — informational here (the reconcile preview never auto-applies).
     #>
     [CmdletBinding()]
     param(
@@ -149,6 +153,29 @@ function Invoke-Compl8Reconcile {
     $impactList = @($Assessment.impact)
     $rmHash  = [string]$Assessment.inputs.resolveManifest
     $invHash = [string]$Assessment.inputs.inventory
+
+    # Risk strategist surfacing: when an inventory is supplied, each iteration's plan steps are
+    # risk-evaluated (Get-Compl8ChangeRisk) so the walk shows the internal/external impact + hand-back
+    # verdict per change. Ownership + sit GUIDs come from the inventory; absent inventory => no risk.
+    $ownership = if ($Inventory) { Get-Compl8OwnershipMap -Inventory $Inventory } else { @{} }
+    $sitGuidByName = @{}
+    if ($Inventory -and $Inventory.objects -and $Inventory.objects.sits) {
+        foreach ($s in @($Inventory.objects.sits)) { if ($s.name -and $s.identity) { $sitGuidByName[[string]$s.name] = ([string]$s.identity).ToLowerInvariant() } }
+    }
+    function Get-PlanStepRisks {
+        param([pscustomobject]$ThePlan)
+        if (-not $Inventory) { return @() }
+        $out = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in @($ThePlan.steps)) {
+            if ([string]$s.action -eq 'snapshot') { continue }
+            $chg = [pscustomobject]@{ objectType = [string]$s.objectType; action = [string]$s.action; ref = [string]$s.objectRef }
+            if ([string]$s.objectType -eq 'sit' -and $sitGuidByName.ContainsKey([string]$s.objectRef)) {
+                $chg | Add-Member -NotePropertyName identity -NotePropertyValue $sitGuidByName[[string]$s.objectRef] -Force
+            }
+            try { $out.Add((Get-Compl8ChangeRisk -Change $chg -Graph $Graph -OwnershipMap $ownership)) | Out-Null } catch { }
+        }
+        @($out)
+    }
 
     $claimedKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $unclaimable = [System.Collections.Generic.List[object]]::new()
@@ -298,6 +325,7 @@ function Invoke-Compl8Reconcile {
                 actions            = @($actions)
                 plan               = $plan
                 blastRadius        = @()
+                risk               = (Get-PlanStepRisks -ThePlan $plan)
                 remainingConflicts = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
             }) | Out-Null
             continue
@@ -395,6 +423,7 @@ function Invoke-Compl8Reconcile {
             actions            = $actions
             plan               = $plan
             blastRadius        = $blast
+            risk               = (Get-PlanStepRisks -ThePlan $plan)
             remainingConflicts = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
         }) | Out-Null
 
@@ -438,6 +467,11 @@ function Invoke-Compl8Reconcile {
     $unresolved = @($conflicts | Where-Object { [string]$_.kind -eq 'name-collision' })
     $status = if (@($unresolved).Count -eq 0 -and @($unreconciled).Count -eq 0 -and $pending.Count -eq 0 -and @($unclaimable).Count -eq 0) { 'converged' } else { 'blocked' }
 
+    # Every planned change the strategist hands back (reaches a not-ours object / too complex / a
+    # dictionary change) — surfaced so the operator sees, across the whole walk, exactly which actions
+    # the deploy's risk gate (Invoke-Compl8Deploy 5c) will withhold pending explicit approval.
+    $riskHandBacks = @($iterations | ForEach-Object { @($_.risk) } | Where-Object { $_ -and $_.handBack })
+
     [pscustomobject]@{
         schemaVersion       = 'compl8.reconciliation/v1'
         workspace           = $Workspace
@@ -450,5 +484,6 @@ function Invoke-Compl8Reconcile {
         pendingWork         = @($pending)
         unreconciled        = @($unreconciled)
         unclaimable         = @($unclaimable)
+        riskHandBacks       = @($riskHandBacks)
     }
 }

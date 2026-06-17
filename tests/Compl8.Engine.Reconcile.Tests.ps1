@@ -291,6 +291,24 @@ Describe 'Invoke-Compl8Reconcile — a left name-collision is reported, loop sti
         $r.iterationCapHit   | Should -BeTrue
         @($r.pendingWork).Count | Should -BeGreaterThan 0
     }
+    It 'annotates iterations with the strategist risk and surfaces hand-backs when a removal reaches foreign' {
+        # Remove the orphan OldPkg (sit G1, referenced by LiveRule); mark LiveRule FOREIGN via the
+        # inventory so the reconcile iteration's risk hands back and riskHandBacks lists it.
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; reason = 'orphan' })
+        $a.impact = @([pscustomobject]@{ objectRef = 'OldPkg'; affects = @('dlp-rule: LiveRule') })
+        $inv = [pscustomobject]@{ objects = [pscustomobject]@{
+            dlpRules = @([pscustomobject]@{ name = 'LiveRule'; ours = $false })
+            dlpPolicies = @(); sits = @(); sitPackages = @([pscustomobject]@{ name = 'OldPkg'; ours = $true }); dictionaries = @()
+        } }
+        $res = @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; resolution = 'remove' })
+        $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions $res -Inventory $inv `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $ri = @($r.iterations | Where-Object { $_.phase -eq 'reconcile' })[0]
+        @($ri.risk | Where-Object { $_.handBack }).Count | Should -BeGreaterThan 0
+        @($r.riskHandBacks | Where-Object { $_.ref -eq 'OldPkg' }).Count | Should -Be 1
+        @($r.riskHandBacks[0].externalImpact | Where-Object { $_.ref -eq 'LiveRule' }).Count | Should -Be 1
+    }
     It 'a no-op resolution set (nothing actionable, no conflicts) converges in zero iterations' {
         $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
         $r = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph -Resolutions @() `

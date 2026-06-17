@@ -74,6 +74,26 @@ Describe 'Get-Compl8ReconciliationReport — iteration walk' {
     }
 }
 
+Describe 'Get-Compl8ReconciliationReport — renders the strategist risk + hand-backs' {
+    It 'shows the per-iteration risk verdict and the risk hand-back call-out when a removal reaches foreign' {
+        $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'
+        $a.buckets.orphan = @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; reason = 'orphan' })
+        $a.impact = @([pscustomobject]@{ objectRef = 'OldPkg'; affects = @('dlp-rule: LiveRule') })
+        $inv = [pscustomobject]@{ objects = [pscustomobject]@{
+            dlpRules = @([pscustomobject]@{ name = 'LiveRule'; ours = $false })
+            dlpPolicies = @(); sits = @(); sitPackages = @([pscustomobject]@{ name = 'OldPkg'; ours = $true }); dictionaries = @()
+        } }
+        $recon = Invoke-Compl8Reconcile -Assessment $a -Graph $script:Graph `
+            -Resolutions @([pscustomobject]@{ objectType = 'rulePackage'; ref = 'OldPkg'; resolution = 'remove' }) -Inventory $inv `
+            -Workspace 'nonprod' -PlanIdPrefix 'reconcile-20260616-000000' -GeneratedUtc '2026-06-16T00:00:00Z'
+        $text = Get-Compl8ReconciliationReport -Reconciliation $recon
+        $text | Should -Match 'Risk:'
+        $text | Should -Match 'HAND BACK'
+        $text | Should -Match 'Risk hand-backs'
+        $text | Should -Match 'LiveRule'
+    }
+}
+
 Describe 'Get-Compl8ReconciliationReport — blocking call-outs' {
     It 'surfaces unresolved conflicts, pending work, unreconciled and unclaimable when blocked' {
         $a = New-AssessmentObject -Workspace 'nonprod' -GeneratedUtc '2026-06-16T00:00:00Z' -ResolveManifestHash 'sha256:rm' -InventoryHash 'sha256:inv'

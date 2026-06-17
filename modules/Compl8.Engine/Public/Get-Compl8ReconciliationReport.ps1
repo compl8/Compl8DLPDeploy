@@ -66,6 +66,22 @@ function Get-Compl8ReconciliationReport {
 
         $stepCount = @($it.plan.steps).Count
         $lines.Add("  Plan: $stepCount step(s)") | Out-Null
+
+        # Risk strategist verdict per planned change — internal/external impact + hand-back (the deploy's
+        # 5c gate withholds the hand-backs pending approval; here it is shown so the operator sees it while
+        # walking). Only non-trivial verdicts are listed to keep the report readable.
+        $risk = @($it.PSObject.Properties['risk'] ? $it.risk : @())
+        $notable = @($risk | Where-Object { $_ -and ($_.handBack -or $_.riskLevel -in 'medium', 'high', 'critical') })
+        if ($notable.Count -gt 0) {
+            $lines.Add('  Risk:') | Out-Null
+            foreach ($r in $notable) {
+                $ext = @($r.externalImpact)
+                $extText = if ($ext.Count -gt 0) { " — reaches EXTERNAL: $((@($ext | ForEach-Object { $_.ref }) | Sort-Object -Unique) -join ', ')" } else { '' }
+                $hb = if ($r.handBack) { ' [HAND BACK — needs approval]' } else { '' }
+                $lines.Add(("    - [{0}] {1} {2} '{3}'{4}{5}" -f $r.riskLevel, $r.action, $r.objectType, $r.ref, $extText, $hb)) | Out-Null
+            }
+        }
+
         $remaining = @($it.remainingConflicts)
         if ($remaining.Count -gt 0) { $lines.Add("  Conflicts still open after this iteration: $($remaining.Count)") | Out-Null }
         $lines.Add('') | Out-Null
@@ -104,6 +120,15 @@ function Get-Compl8ReconciliationReport {
         $lines.Add("Unclaimable (claim request could not be honoured): $($unclaimable.Count)") | Out-Null
         foreach ($u in @($unclaimable | Sort-Object @{ Expression = { $_.objectType } }, @{ Expression = { $_.ref } })) {
             $lines.Add(("  - {0} '{1}' — {2}" -f $u.objectType, $u.ref, $u.reason)) | Out-Null
+        }
+        $lines.Add('') | Out-Null
+    }
+
+    $handBacks = @($Reconciliation.PSObject.Properties['riskHandBacks'] ? $Reconciliation.riskHandBacks : @())
+    if ($handBacks.Count -gt 0) {
+        $lines.Add("Risk hand-backs (the deploy WILL withhold these for explicit approval): $($handBacks.Count)") | Out-Null
+        foreach ($h in $handBacks) {
+            $lines.Add(("  - [{0}] {1} {2} '{3}': {4}" -f $h.riskLevel, $h.action, $h.objectType, $h.ref, $h.rationale)) | Out-Null
         }
         $lines.Add('') | Out-Null
     }

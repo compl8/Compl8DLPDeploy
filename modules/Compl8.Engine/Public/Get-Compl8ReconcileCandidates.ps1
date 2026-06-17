@@ -39,7 +39,8 @@ function Get-Compl8ReconcileCandidates {
     .OUTPUTS
         Zero or more candidate records (deterministically ordered by kind then objectType then ref):
         { kind ('name-collision'|'orphan'); objectType; ref; detail; allowedResolutions = @(...);
-          blastRadius = <Get-Compl8RemovalImpact record or $null> }.
+          blastRadius = <Get-Compl8RemovalImpact record or $null>; risk = <Get-Compl8ChangeRisk verdict
+          for the destructive/primary resolution, or $null when no -Inventory was supplied> }.
     #>
     [CmdletBinding()]
     param(
@@ -63,6 +64,17 @@ function Get-Compl8ReconcileCandidates {
         }
     }
 
+    # Ownership (for the risk strategist) is derived from the inventory; absent inventory => no risk verdict
+    # (the walk still works, just without the internal/external risk annotation).
+    $ownership = if ($Inventory) { Get-Compl8OwnershipMap -Inventory $Inventory } else { @{} }
+    function New-CandidateRisk {
+        param([string]$Type, [string]$Ref, [string]$Action, [string]$SitGuid)
+        if (-not $Inventory) { return $null }
+        $chg = [pscustomobject]@{ objectType = $Type; action = $Action; ref = $Ref }
+        if ($Type -eq 'sit' -and $SitGuid) { $chg | Add-Member -NotePropertyName identity -NotePropertyValue $SitGuid -Force }
+        try { Get-Compl8ChangeRisk -Change $chg -Graph $Graph -OwnershipMap $ownership } catch { $null }
+    }
+
     # --- name-collisions -> claim / leave ---------------------------------------------------------
     foreach ($c in @($Assessment.upgradeConflicts)) {
         if ([string]$c.kind -ne 'name-collision') { continue }
@@ -79,6 +91,7 @@ function Get-Compl8ReconcileCandidates {
             detail             = [string]$c.detail
             allowedResolutions = $allowed
             blastRadius        = $null
+            risk               = (New-CandidateRisk -Type $type -Ref ([string]$c.slug) -Action 'claim')
         }) | Out-Null
     }
 
@@ -94,6 +107,7 @@ function Get-Compl8ReconcileCandidates {
                      else { $ref }
         $impact = $null
         try { $impact = @(Get-Compl8RemovalImpact -Graph $Graph -Target @([pscustomobject]@{ objectType = $type; ref = $impactRef }))[0] } catch { $impact = $null }
+        $sitGuid = if ($type -eq 'sit') { $impactRef } else { $null }
         $candidates.Add([pscustomobject]@{
             kind               = 'orphan'
             objectType         = $type
@@ -101,6 +115,9 @@ function Get-Compl8ReconcileCandidates {
             detail             = if ($e.PSObject.Properties['reason']) { [string]$e.reason } else { 'ours, unexpected' }
             allowedResolutions = @('remove', 'keep', 'claim')
             blastRadius        = $impact
+            # The risk of the destructive choice (remove) — internal/external impact + hand-back — so the
+            # operator sees it WHILE choosing, not only at apply.
+            risk               = (New-CandidateRisk -Type $type -Ref $ref -Action 'remove' -SitGuid $sitGuid)
         }) | Out-Null
     }
 

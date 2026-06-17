@@ -165,53 +165,12 @@ function Invoke-Compl8Deploy {
     )
 
     # ------------------------------------------------------------------ nested helpers (private)
-    # Reference graph over DESIRED packages + ACTUAL rules — IDENTICAL to Invoke-Compl8Assess so the
-    # planner sees the same graph (ordering / impact roll-up / dereference generation).
+    # Reference graph over DESIRED packages + ACTUAL rules — delegates to the shared public builder
+    # (Get-Compl8ReferenceGraph) so the deploy, the reconcile walk and the risk strategist all reason over
+    # the same graph. -IncludeActualSits registers actual (incl. retired) sit GUIDs for risk/blast-radius.
     function Get-Compl8DeployReferenceGraph {
         param([string]$ResolvedDir, [pscustomobject]$Inventory, [switch]$IncludeActualSits)
-        $manifest = Get-Content -LiteralPath (Join-Path $ResolvedDir 'resolve-manifest.json') -Raw | ConvertFrom-Json
-        $graphPackages = @(foreach ($pkg in @($manifest.packages)) {
-            $pkgFile = Join-Path $ResolvedDir ([string]$pkg.file)
-            if (-not $pkg.file -or -not (Test-Path -LiteralPath $pkgFile -PathType Leaf)) { continue }
-            [pscustomobject]@{
-                Identity = [string]$pkg.name; Name = [string]$pkg.name; Publisher = 'Compl8'
-                SerializedClassificationRuleCollection = (Get-Content -LiteralPath $pkgFile -Raw)
-            }
-        })
-        # For RISK evaluation also make the ACTUAL sit GUIDs known (synthetic entity-only packages from the
-        # inventory's entityIds) — including RETIRED sits no longer in any desired package. Without this a
-        # removal of a retired sit still referenced by a FOREIGN rule would show no blast radius and bypass
-        # the hand-back gate (codex). The real desired XML above still provides the dict->sit edges.
-        if ($IncludeActualSits) {
-            foreach ($pk in @($Inventory.objects.sitPackages)) {
-                $ents = (@($pk.entityIds) | Where-Object { $_ } | ForEach-Object { "<Entity id=`"$([string]$_)`" />" }) -join ''
-                if (-not $ents) { continue }
-                $graphPackages += [pscustomobject]@{
-                    Identity = [string]$pk.identity; Name = [string]$pk.name; Publisher = [string]$pk.publisher
-                    SerializedClassificationRuleCollection = "<RulePackage xmlns=`"http://schemas.microsoft.com/office/2011/mce`"><Rules>$ents</Rules></RulePackage>"
-                }
-            }
-        }
-        $graphRules = @(foreach ($rule in @($Inventory.objects.dlpRules)) {
-            [pscustomobject]@{
-                Name = [string]$rule.name; Identity = [string]$rule.identity; Policy = [string]$rule.policy
-                ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
-            }
-        })
-        # R1: feed the full object set so the complete chain (dict -> sit -> rule -> policy -> label)
-        # is built (dicts + policies from the inventory; labels from <ws>/config when present). The
-        # workspace root is ResolvedDir's grandparent (<ws>/desired/resolved -> <ws>).
-        $wsRoot = Split-Path (Split-Path $ResolvedDir -Parent) -Parent
-        $graphLabels = @()
-        foreach ($cand in @((Join-Path (Join-Path $wsRoot 'desired') 'config'), (Join-Path $wsRoot 'config'))) {
-            $labelsPath = Join-Path $cand 'labels.json'
-            if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
-                try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
-                break
-            }
-        }
-        Get-DeploymentReferenceGraph -Dictionaries @($Inventory.objects.dictionaries) -SitPackages $graphPackages `
-            -DlpRules $graphRules -DlpPolicies @($Inventory.objects.dlpPolicies) -Labels $graphLabels
+        Get-Compl8ReferenceGraph -ResolvedDir $ResolvedDir -Inventory $Inventory -IncludeActualSits:$IncludeActualSits
     }
 
     # Deterministic snapshot folder timestamp derived from -GeneratedUtc (Get-Date is BANNED).
@@ -420,12 +379,7 @@ function Invoke-Compl8Deploy {
     # withheld until explicitly approved; this realises "never auto-apply a change that damages something
     # we do not manage". -SkipRiskCheck bypasses; -ApprovedRiskActions / -ApproveAllRiskHandBacks approve.
     if (-not $SkipRiskCheck) {
-        $ownership = @{}
-        foreach ($r in @($inv.objects.dlpRules))     { if ($r.name)     { $ownership[[string]$r.name] = [bool]$r.ours } }
-        foreach ($pol in @($inv.objects.dlpPolicies)) { if ($pol.name)  { $ownership[[string]$pol.name] = [bool]$pol.ours } }
-        foreach ($s in @($inv.objects.sits))         { if ($s.identity) { $ownership[([string]$s.identity).ToLowerInvariant()] = [bool]$s.ours }; if ($s.name) { $ownership[[string]$s.name] = [bool]$s.ours } }
-        foreach ($pk in @($inv.objects.sitPackages)) { if ($pk.name)    { $ownership[[string]$pk.name] = [bool]$pk.ours } }
-        foreach ($d in @($inv.objects.dictionaries)) { if ($d.name)     { $ownership[[string]$d.name] = [bool]$d.ours } }
+        $ownership = Get-Compl8OwnershipMap -Inventory $inv
 
         # sit steps carry the slug as objectRef, but the graph walk keys sits by entity GUID — resolve it
         # from the inventory and pass it as the change identity, or a SIT change reaching a foreign rule

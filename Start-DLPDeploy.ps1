@@ -536,28 +536,13 @@ function Invoke-Compl8ReconcileMenu {
         -Workspace $ctx.Environment -GeneratedUtc $script:DeployGeneratedUtc
     Write-Host (Get-Compl8AssessmentReport -Assessment $assessment)
 
-    # Reference graph over the recorded actual objects — the substrate for blast-radius + cascade. Feed
-    # the COMPLETE object set assess uses (R1), INCLUDING labels (from config): without -Labels there are
-    # no policyTargetsLabel edges, so New-Compl8Plan loses the reverse dependency that tears a referencing
-    # policy/rule down BEFORE the label it targets — a label removal could be ordered too early (codex R5).
+    # Reference graph via the shared builder — DESIRED packages (real XML: dict->sit edges) + ACTUAL rules
+    # + labels from workspace config, IDENTICAL to assess. -IncludeActualSits also registers the actual
+    # (incl. retired) sit GUIDs so removal blast-radius AND the risk strategist (which the reconcile verb
+    # runs over this graph) see foreign rules that reference an actual sit. The inventory's recorded
+    # sitPackages carry no XML, so building straight from them would yield no sit edges at all.
     $inv = Get-Content -LiteralPath $invPath -Raw | ConvertFrom-Json
-    # Resolve labels.json from the WORKSPACE config dirs first (then the global config), mirroring the
-    # source order Invoke-Compl8Assess uses — so the graph's label nodes match the assessed desired state.
-    $graphLabels = @()
-    foreach ($cand in @((Join-Path $ctx.WorkspacePath 'desired' 'config'), (Join-Path $ctx.WorkspacePath 'config'), $ConfigPath)) {
-        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
-        $labelsPath = Join-Path $cand 'labels.json'
-        if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
-            try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
-            break
-        }
-    }
-    $graph = Get-DeploymentReferenceGraph `
-        -Dictionaries @($inv.objects.dictionaries) `
-        -SitPackages  @($inv.objects.sitPackages) `
-        -DlpRules     @($inv.objects.dlpRules) `
-        -DlpPolicies  @($inv.objects.dlpPolicies) `
-        -Labels       $graphLabels
+    $graph = Get-Compl8ReferenceGraph -ResolvedDir (Join-Path $ctx.WorkspacePath 'desired' 'resolved') -Inventory $inv -IncludeActualSits
 
     # Stamp each actionable sit bucket entry with its entity GUID from the inventory. assess emits a sit
     # orphan/remove with only the display name, but the GUID is what Get-Compl8PlanOrder matches in the
@@ -592,6 +577,15 @@ function Invoke-Compl8ReconcileMenu {
         if ($cand.blastRadius -and @($cand.blastRadius.referencingRules).Count -gt 0) {
             $blk = if ($cand.blastRadius.blocked) { ' [dereference required first]' } else { '' }
             Write-Host ("      Removal impact -> referencing rules: {0}{1}" -f (@($cand.blastRadius.referencingRules) -join ', '), $blk) -ForegroundColor DarkYellow
+        }
+        # Strategist verdict for the destructive choice — internal/external impact + hand-back — shown
+        # WHILE choosing, so the operator sees a not-ours reach before picking remove.
+        if ($cand.risk) {
+            $ext = @($cand.risk.externalImpact)
+            $extText = if ($ext.Count -gt 0) { " reaches EXTERNAL (not-ours): $((@($ext | ForEach-Object { $_.ref }) | Sort-Object -Unique) -join ', ')" } else { '' }
+            $colour = if ($cand.risk.handBack) { 'Red' } elseif ($cand.risk.riskLevel -in 'medium', 'high', 'critical') { 'DarkYellow' } else { 'DarkGray' }
+            $hb = if ($cand.risk.handBack) { ' [HAND BACK — needs approval]' } else { '' }
+            Write-Host ("      Risk [{0}]:{1}{2}" -f $cand.risk.riskLevel, $extText, $hb) -ForegroundColor $colour
         }
         $opts = @($cand.allowedResolutions) -join '/'
         $pick = (Read-Host ("      Resolution [{0}] (Enter = skip)" -f $opts)).Trim().ToLower()
