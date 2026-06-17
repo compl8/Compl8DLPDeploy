@@ -58,6 +58,12 @@ Describe 'Get-Compl8ReferenceCandidates' {
     It 'tags recipient-field references kind=recipient' {
         @($script:Refs | Where-Object { $_.value -eq 'DL-Security' })[0].kind | Should -Be 'recipient'
     }
+    It 'IGNORES a boolean switch value (GenerateIncidentReport=$true is not a recipient identity; codex)' {
+        $rule = @([pscustomobject]@{ ruleName = 'R'; content = @{ GenerateIncidentReport = $true; NotifyUser = 'SiteAdmin' } })
+        $refs = @(Get-Compl8ReferenceCandidates -DesiredRules $rule)
+        @($refs | Where-Object { $_.value -eq 'True' }).Count     | Should -Be 0
+        @($refs | Where-Object { $_.value -eq 'SiteAdmin' }).Count | Should -Be 1   # the real recipient still collected
+    }
     It 'tags a configured domain-field as kind=domain (the extension point — exempt downstream)' {
         $rule = @([pscustomobject]@{ ruleName = 'R'; content = @{ RecipientDomainIs = 'partner.com' } })
         $ref  = @(Get-Compl8ReferenceCandidates -DesiredRules $rule -RecipientFields @() -DomainFields @('RecipientDomainIs'))[0]

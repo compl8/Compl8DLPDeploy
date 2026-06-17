@@ -68,10 +68,17 @@ function Get-Compl8ReferenceCandidates {
         $content  = if ($rule.PSObject.Properties['content'])  { $rule.content } else { $null }
         foreach ($field in @($fieldKinds.Keys)) {
             $val = Get-ContentField -Content $content -Field $field
-            if ($null -eq $val -or [string]::IsNullOrWhiteSpace([string]$val)) { continue }
+            if ($null -eq $val) { continue }
+            # A boolean is an enabled-SWITCH (e.g. GenerateIncidentReport = $true via an override / persisted
+            # projection), NOT a named identity — skip it, or the resolver would classify "True" as a
+            # missing recipient and false-block the deploy (codex).
+            if ($val -is [bool]) { continue }
+            if ([string]::IsNullOrWhiteSpace([string]$val)) { continue }
             foreach ($piece in ([string]$val -split '[;,]')) {
                 $p = $piece.Trim()
-                if ($p) { $refs.Add([pscustomobject]@{ value = $p; source = "$field ($ruleName)"; kind = $fieldKinds[$field] }) | Out-Null }
+                if (-not $p) { continue }
+                if ($p -in 'True', 'False') { continue }   # stringified switch (defensive)
+                $refs.Add([pscustomobject]@{ value = $p; source = "$field ($ruleName)"; kind = $fieldKinds[$field] }) | Out-Null
             }
         }
     }

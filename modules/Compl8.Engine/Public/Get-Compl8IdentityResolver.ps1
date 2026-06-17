@@ -63,7 +63,7 @@ function Get-Compl8IdentityResolver {
             $accepted = $null
             if (Get-Command Get-AcceptedDomain -ErrorAction SilentlyContinue) {
                 try {
-                    $accepted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                    $accepted = [System.Collections.Generic.List[string]]::new()
                     foreach ($d in @(Get-AcceptedDomain -ErrorAction Stop)) {
                         foreach ($f in 'DomainName', 'Name', 'Id') { if ($d.PSObject.Properties[$f] -and $d.$f) { $accepted.Add([string]$d.$f) | Out-Null } }
                     }
@@ -76,7 +76,15 @@ function Get-Compl8IdentityResolver {
                 if ($r -eq 'exists') { return 'exists' }
                 return 'unverified'
             }
-            if ($accepted.Contains($domain)) { return (& $resolveRecipient $v) }   # internal email
+            # Internal when the email's domain EQUALS or is a SUBDOMAIN of an accepted domain (a tenant can
+            # accept 'contoso.com' and route 'dept.contoso.com' — an exact match would wrongly exempt the
+            # subdomain address as external and miss a missing internal recipient; codex).
+            $isAccepted = $false
+            foreach ($ad in $accepted) {
+                if ([string]::IsNullOrWhiteSpace($ad)) { continue }
+                if ($domain -eq $ad -or $domain.EndsWith(".$ad", [System.StringComparison]::OrdinalIgnoreCase)) { $isAccepted = $true; break }
+            }
+            if ($isAccepted) { return (& $resolveRecipient $v) }   # internal email
             return 'external'
         }
 
