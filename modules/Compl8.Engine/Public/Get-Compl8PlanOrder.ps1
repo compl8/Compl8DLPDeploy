@@ -41,12 +41,13 @@ function Get-Compl8PlanOrder {
 
     .PARAMETER Assessment
         A compl8.assessment/v1 object (New-AssessmentObject shape). Only the actionable buckets
-        (create / update-in-place / repack-move / remove) and impact[] drive ordering; orphan /
-        foreign / drift-of-non-rule objects are not turned into steps here (foreign is never touched;
-        orphan is human-review; a drift dlpRule IS re-applied so it carries a step — the rule executor's
-        update path re-applies the full condition, so it converges. dlpPolicy / autoLabelPolicy drift is
-        NOT stepped: their executors update only Mode + Comment, not locations, so a location-drift update
-        would not converge — it is left un-actioned and surfaced by the caller).
+        (create / update-in-place / repack-move / remove) and impact[] drive ordering; orphan / foreign
+        are not turned into steps here (foreign is never touched; orphan is human-review). A `drift` is
+        re-applied as an `update` ONLY when the executor can converge it: a dlpRule always (it re-applies
+        the full condition); a dlpPolicy / autoLabelPolicy only when its driftFields do NOT include
+        `locations` (the policy executors set Mode/label but not locations — a location change needs a
+        recreate, so it is left un-stepped and surfaced by the caller). sit / dictionary drift is never
+        stepped (a sit's content lives in its rule package).
 
     .PARAMETER Graph
         A Get-DeploymentReferenceGraph result (Nodes / Edges / Summary). Edges consulted:
@@ -253,22 +254,33 @@ function Get-Compl8PlanOrder {
         }
     }
 
-    # A `drift` dlpRule is re-applied (ours, changed out-of-band) — it carries a rule step too, with the
-    # same dependency / propagation treatment as a forward rule. ONLY dlpRule drift is stepped: the
-    # dlpRule executor's update path re-applies the full rule condition (ContentContainsSensitiveInformation
-    # / AdvancedRule) + comment, so a rule drift CONVERGES after apply. dlpPolicy / autoLabelPolicy drift
-    # is NOT stepped — assess detects their drift on (mode + locations [+ label]) but the policy executors'
-    # update path sets only Comment + Mode (locations are a create-time parameter, mirroring the leaf
-    # Deploy-*.ps1 paths they were shadow-validated against), so a location-drift update would not converge
-    # (the next assess would still drift). Surfacing policy drift as un-actioned (the reconcile verb reports
-    # it `unreconciled`) is honest; emitting a non-convergent update step would not be.
+    # A `drift` of an ours object (changed out-of-band) is re-applied as an `update` step ONLY when the
+    # executor's update path can actually CONVERGE it:
+    #   * dlpRule           — always: the rule executor re-applies the full condition
+    #                         (ContentContainsSensitiveInformation / AdvancedRule) + comment.
+    #   * dlpPolicy / autoLabelPolicy — only when the drift does NOT involve `locations`. assess attributes
+    #     policy drift per aspect (driftFields), and the policy executors update Mode (+ ApplySensitivity-
+    #     Label) but NOT locations (locations are create-time only, mirroring the leaf). So a mode/label
+    #     drift CONVERGES via update, but a `locations` drift cannot — it is left un-stepped (it needs a
+    #     recreate; the reconcile verb surfaces it as `unreconciled`). A policy drift entry with no
+    #     driftFields (unknown) is conservatively NOT stepped.
+    # sit / dictionary drift is never stepped here (a sit's content lives in its rule package).
     foreach ($entry in @($Assessment.buckets.drift)) {
-        if ([string]$entry.objectType -ne 'dlpRule') { continue }
+        $type = [string]$entry.objectType
+        if ($type -notin 'dlpRule', 'dlpPolicy', 'autoLabelPolicy') { continue }
         $ref  = [string]$entry.ref
+
+        if ($type -ne 'dlpRule') {
+            # Policy / auto-label: step only a fully-update-reconcilable drift (no `locations` change).
+            $df = if ($entry.PSObject.Properties['driftFields']) { @($entry.driftFields) } else { @() }
+            if ($df.Count -eq 0 -or ($df -contains 'locations')) { continue }
+        }
+
         $deps = [System.Collections.Generic.List[string]]::new()
         $gate = $null
         $impact = @()
-        if ($packagesByRuleName.ContainsKey($ref)) {
+        # dlpRule / autoLabelPolicy read packages (propagation applies); dlpPolicy does not.
+        if ($type -ne 'dlpPolicy' -and $packagesByRuleName.ContainsKey($ref)) {
             $changedDep = $false
             foreach ($p in @($packagesByRuleName[$ref] | Sort-Object)) {
                 $deps.Add($p) | Out-Null
@@ -276,8 +288,8 @@ function Get-Compl8PlanOrder {
             }
             if ($changedDep) { $gate = New-PropagationGate -RuleName $ref }
         }
-        if ($impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
-        Add-WorkItem -Action 'update' -ObjectType 'dlpRule' -Ref $ref -Direction 'forward' `
+        if ($type -eq 'dlpRule' -and $impactByRef.ContainsKey($ref)) { $impact = @($impactByRef[$ref]) }
+        Add-WorkItem -Action 'update' -ObjectType $type -Ref $ref -Direction 'forward' `
             -DependsRefs @($deps) -Impact $impact -Gate $gate
     }
 

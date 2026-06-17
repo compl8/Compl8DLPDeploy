@@ -231,22 +231,41 @@ Describe 'Get-Compl8PlanOrder — propagation gate placement' {
     }
 }
 
-Describe 'Get-Compl8PlanOrder — only convergent drift is stepped (codex R4 P2)' {
-    # ONLY dlpRule drift is stepped: the rule executor re-applies the full condition on update, so it
-    # converges. dlpPolicy / autoLabelPolicy drift is NOT stepped — their executors update only Mode +
-    # Comment (not locations), so a location-drift update would never converge. sit drift is not stepped
-    # either (a sit's content lives in its rule package). Planning those would emit non-convergent work.
-    It 'does NOT step a drifted dlpPolicy (executor cannot update policy locations)' {
+Describe 'Get-Compl8PlanOrder — drift is stepped only when the executor can converge it (planner depth #3)' {
+    # dlpRule drift always converges (the rule executor re-applies the full condition). dlpPolicy /
+    # autoLabelPolicy drift converges via update ONLY when it does NOT involve locations (the executors
+    # set Mode/label but not locations); a location drift needs a recreate, so it is left un-stepped. The
+    # discriminator is the entry's driftFields (assess attributes the changed aspects); a drift with no
+    # driftFields (unknown) is conservatively not stepped. sit/dictionary drift is never stepped.
+    It 'STEPS a mode-only dlpPolicy drift as an update (the executor sets Mode — matches the leaf)' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'P01-ECH-QGISCF-EXT-ADT' -Extra @{ driftFields = @('mode') }) }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' -and $_.action -eq 'update' -and $_.objectRef -eq 'P01-ECH-QGISCF-EXT-ADT' }).Count | Should -Be 1
+    }
+    It 'does NOT step a dlpPolicy drift that involves locations (needs recreate, not an in-place update)' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'P01-ECH-QGISCF-EXT-ADT' -Extra @{ driftFields = @('mode', 'locations') }) }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 0
+    }
+    It 'STEPS a label-only autoLabelPolicy drift (the executor sets ApplySensitivityLabel)' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'autoLabelPolicy' -Ref 'QGISCF-AL-01' -Extra @{ driftFields = @('label') }) }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' -and $_.action -eq 'update' }).Count | Should -Be 1
+    }
+    It 'does NOT step an autoLabelPolicy drift that involves locations' {
+        $graph = New-TestGraph
+        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'autoLabelPolicy' -Ref 'QGISCF-AL-01' -Extra @{ driftFields = @('locations') }) }
+        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
+        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' }).Count | Should -Be 0
+    }
+    It 'conservatively does NOT step a policy drift with no driftFields (unknown which aspect changed)' {
         $graph = New-TestGraph
         $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'dlpPolicy' -Ref 'P01-ECH-QGISCF-EXT-ADT') }
         $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
         @($steps | Where-Object { $_.objectType -eq 'dlpPolicy' }).Count | Should -Be 0
-    }
-    It 'does NOT step a drifted autoLabelPolicy' {
-        $graph = New-TestGraph
-        $assessment = New-TestAssessment -Buckets @{ 'drift' = @(New-BucketEntry -ObjectType 'autoLabelPolicy' -Ref 'QGISCF-AL-01') }
-        $steps = @(Get-Compl8PlanOrder -Assessment $assessment -Graph $graph)
-        @($steps | Where-Object { $_.objectType -eq 'autoLabelPolicy' }).Count | Should -Be 0
     }
     It 'does NOT step a drifted sit (its content lives in its rule package)' {
         $graph = New-TestGraph

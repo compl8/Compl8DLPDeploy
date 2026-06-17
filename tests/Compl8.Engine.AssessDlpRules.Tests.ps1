@@ -310,11 +310,16 @@ Describe 'Invoke-Compl8Assess — DR-4 dlpRule four-bucket logic' {
 }
 
 Describe 'Invoke-Compl8Assess — DR-4 dlpPolicy buckets' {
-    It 'drift: an ours policy whose mode changed out-of-band' {
+    It 'drift: an ours policy whose mode changed out-of-band, attributed to driftFields=mode (planner depth #3)' {
         $polNames = @($script:Desired.Policies | ForEach-Object { $_.policyName } | Sort-Object)
         $entry = Get-DR4Entry $script:Assessment 'drift' $polNames[1]
         $entry | Should -Not -BeNullOrEmpty
         $entry.objectType | Should -Be 'dlpPolicy'
+        # policy[1] differs only in mode (Enable vs desired) — locations match. assess attributes the
+        # drift per aspect so the planner can converge a mode change via update but flag a locations change
+        # as needing a recreate.
+        $entry.driftFields | Should -Contain 'mode'
+        @($entry.driftFields) | Should -Not -Contain 'locations'
     }
 
     It 'no bucket: an unchanged ours policy lands in NO bucket' {

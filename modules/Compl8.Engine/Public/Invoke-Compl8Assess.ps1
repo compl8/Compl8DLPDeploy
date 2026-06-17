@@ -579,20 +579,21 @@ function Invoke-Compl8Assess {
     # EVERY owned policy, which falsely reported drift the moment ownership was fixed (P1). The mode and
     # the sorted locations are the meaningful policy content; the Comment is provenance metadata, not
     # drift-relevant, so it is dropped from the hash entirely.
-    function Get-DlpPolicyContentHash {
-        param($Mode, $Locations)
-        $locProjection = ''
-        if ($null -ne $Locations) {
-            $pairs = [System.Collections.Generic.List[string]]::new()
-            if ($Locations -is [System.Collections.IDictionary]) {
-                foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
-            } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
-                foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
-            }
-            $locProjection = (@($pairs) | Sort-Object) -join ';'
+    # Per-ASPECT policy projection (NOT one combined hash) so drift can attribute WHICH aspect changed:
+    # a `mode` change is reconcilable by the executor's update path (it sets -Mode, exactly what the leaf
+    # does), but a `locations` change is NOT (neither the leaf nor the engine sets locations on an
+    # existing policy — Set-DlpCompliancePolicy is called with Mode+Comment only; locations need a
+    # recreate). Comment is excluded (provenance noise: the actual side is stamped, the desired side raw).
+    function Get-DlpPolicyLocationProjection {
+        param($Locations)
+        if ($null -eq $Locations) { return '' }
+        $pairs = [System.Collections.Generic.List[string]]::new()
+        if ($Locations -is [System.Collections.IDictionary]) {
+            foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
+        } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
+            foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
         }
-        $proj = "mode=$([string]$Mode)|locations=$locProjection"
-        return 'sha256:' + (Get-AssessTextHash -Text $proj)
+        (@($pairs) | Sort-Object) -join ';'
     }
     $actualPolicyByName = @{}
     foreach ($p in $actualDlpPolicies) { if ($p.name) { $actualPolicyByName[[string]$p.name] = $p } }
@@ -605,12 +606,14 @@ function Invoke-Compl8Assess {
         if ($desiredPolicyByName.ContainsKey($ref)) {
             $desiredP = $desiredPolicyByName[$ref]
             $actualLocations = if ($p.PSObject.Properties['locations']) { $p.locations } else { $null }
-            # codex review P2: Comment is intentionally NOT part of the content hash — the actual side
-            # carries a provenance-stamped Comment while the desired side keeps the raw one.
-            $desiredHash = Get-DlpPolicyContentHash -Mode $desiredP.mode -Locations $desiredP.locations
-            $actualHash  = Get-DlpPolicyContentHash -Mode $p.mode -Locations $actualLocations
-            if ($desiredHash -ne $actualHash) {
-                Add-Bucket -Bucket 'drift' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
+            $driftFields = [System.Collections.Generic.List[string]]::new()
+            if ([string]$desiredP.mode -ne [string]$p.mode) { $driftFields.Add('mode') | Out-Null }
+            if ((Get-DlpPolicyLocationProjection -Locations $desiredP.locations) -ne (Get-DlpPolicyLocationProjection -Locations $actualLocations)) { $driftFields.Add('locations') | Out-Null }
+            if ($driftFields.Count -gt 0) {
+                Add-Bucket -Bucket 'drift' -ObjectType 'dlpPolicy' -Ref $ref -Extra @{
+                    reason      = 'ours — content changed out-of-band vs desired/resolved'
+                    driftFields = @($driftFields)
+                }
             }
             continue
         }
@@ -637,20 +640,20 @@ function Invoke-Compl8Assess {
     # There is no update-in-place bucket for auto-label policies (no entity-GUID identity to refit) — an
     # ours policy whose content diverges is uniformly drift, exactly as for DLP rules/policies.
     if ($haveDesiredAutoLabel) {
-    function Get-AutoLabelPolicyContentHash {
-        param($Mode, $Label, $Locations)
-        $locProjection = ''
-        if ($null -ne $Locations) {
-            $pairs = [System.Collections.Generic.List[string]]::new()
-            if ($Locations -is [System.Collections.IDictionary]) {
-                foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
-            } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
-                foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
-            }
-            $locProjection = (@($pairs) | Sort-Object) -join ';'
+    # Per-ASPECT auto-label projection (mode / label / locations) so drift attributes WHICH aspect
+    # changed: `mode` and `label` are reconcilable by the executor's update path (Set-AutoSensitivity-
+    # LabelPolicy sets -Mode + -ApplySensitivityLabel — what the leaf does), but `locations` are NOT
+    # (locations are a create-time parameter only; a locations change needs a recreate).
+    function Get-AutoLabelLocationProjection {
+        param($Locations)
+        if ($null -eq $Locations) { return '' }
+        $pairs = [System.Collections.Generic.List[string]]::new()
+        if ($Locations -is [System.Collections.IDictionary]) {
+            foreach ($k in @($Locations.Keys)) { $pairs.Add("$k=$(@($Locations[$k]) -join ',')") | Out-Null }
+        } elseif ($Locations.PSObject -and $Locations.PSObject.Properties) {
+            foreach ($p in $Locations.PSObject.Properties) { $pairs.Add("$($p.Name)=$(@($p.Value) -join ',')") | Out-Null }
         }
-        $proj = "mode=$([string]$Mode)|label=$([string]$Label)|locations=$locProjection"
-        return 'sha256:' + (Get-AssessTextHash -Text $proj)
+        (@($pairs) | Sort-Object) -join ';'
     }
     $actualAlByName = @{}
     foreach ($p in $actualAutoLabelPolicies) { if ($p.name) { $actualAlByName[[string]$p.name] = $p } }
@@ -663,10 +666,15 @@ function Invoke-Compl8Assess {
         if ($desiredAutoLabelByName.ContainsKey($ref)) {
             $desiredP = $desiredAutoLabelByName[$ref]
             $actualLocations = if ($p.PSObject.Properties['locations']) { $p.locations } else { $null }
-            $desiredHash = Get-AutoLabelPolicyContentHash -Mode $desiredP.mode -Label $desiredP.label -Locations $desiredP.locations
-            $actualHash  = Get-AutoLabelPolicyContentHash -Mode $p.mode -Label $p.label -Locations $actualLocations
-            if ($desiredHash -ne $actualHash) {
-                Add-Bucket -Bucket 'drift' -ObjectType 'autoLabelPolicy' -Ref $ref -Extra @{ reason = 'ours — content changed out-of-band vs desired/resolved' }
+            $driftFields = [System.Collections.Generic.List[string]]::new()
+            if ([string]$desiredP.mode  -ne [string]$p.mode)  { $driftFields.Add('mode')  | Out-Null }
+            if ([string]$desiredP.label -ne [string]$p.label) { $driftFields.Add('label') | Out-Null }
+            if ((Get-AutoLabelLocationProjection -Locations $desiredP.locations) -ne (Get-AutoLabelLocationProjection -Locations $actualLocations)) { $driftFields.Add('locations') | Out-Null }
+            if ($driftFields.Count -gt 0) {
+                Add-Bucket -Bucket 'drift' -ObjectType 'autoLabelPolicy' -Ref $ref -Extra @{
+                    reason      = 'ours — content changed out-of-band vs desired/resolved'
+                    driftFields = @($driftFields)
+                }
             }
             continue
         }
