@@ -46,6 +46,16 @@ Describe 'Get-Compl8ReferenceGraph' {
         $g = Get-Compl8ReferenceGraph -ResolvedDir $script:ResolvedDir -Inventory $script:Inv
         @($g.Nodes).Count | Should -BeGreaterThan 0
     }
+    It 'resolves labels from -ConfigRoot first (mirroring assess''s chain) so the graph matches the assessment' {
+        # A temp config root with a labels.json; the graph should pick up the label node from it.
+        $cfg = Join-Path ([System.IO.Path]::GetTempPath()) ("compl8cfg-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $cfg -Force | Out-Null
+        try {
+            @([pscustomobject]@{ code = 'ZZZ'; name = 'ZZZ-FromConfigRoot' }) | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $cfg 'labels.json') -Encoding UTF8
+            $g = Get-Compl8ReferenceGraph -ResolvedDir $script:ResolvedDir -Inventory $script:Inv -ConfigRoot $cfg
+            @($g.Nodes | Where-Object { $_.Type -eq 'Label' -and $_.Name -eq 'ZZZ-FromConfigRoot' }).Count | Should -Be 1
+        } finally { Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     It '-IncludeActualSits registers the actual sit GUIDs as nodes (so removal blast-radius sees them)' {
         $g = Get-Compl8ReferenceGraph -ResolvedDir $script:ResolvedDir -Inventory $script:Inv -IncludeActualSits
         $sitNodes = @($g.Nodes | Where-Object { $_.Type -eq 'SensitiveInformationType' })

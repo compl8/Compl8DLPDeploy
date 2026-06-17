@@ -26,6 +26,11 @@ function Get-Compl8ReferenceGraph {
     .PARAMETER Inventory
         A parsed compl8.inventory/v1 object (actual rules / sits / dictionaries / policies / packages).
 
+    .PARAMETER ConfigRoot
+        Optional repo-level config root, tried FIRST when resolving labels.json — mirroring
+        Invoke-Compl8Assess's label source chain. Pass the SAME value the caller passed to assess (or
+        omit it, as the deploy / reconcile callers do) so the graph's label nodes match the assessment.
+
     .PARAMETER IncludeActualSits
         Also register actual (incl. retired) sit GUIDs from the inventory so removal blast-radius sees
         their referencing rules.
@@ -37,6 +42,7 @@ function Get-Compl8ReferenceGraph {
     param(
         [Parameter(Mandatory)][string]$ResolvedDir,
         [Parameter(Mandatory)][pscustomobject]$Inventory,
+        [string]$ConfigRoot,
         [switch]$IncludeActualSits
     )
 
@@ -65,9 +71,18 @@ function Get-Compl8ReferenceGraph {
             ContentContainsSensitiveInformation = $rule.contentContainsSensitiveInformation
         }
     })
+    # Labels resolved with the SAME source chain Invoke-Compl8Assess uses, so the graph's label nodes
+    # (and thus policyTargetsLabel edges) match the assessment: an explicit -ConfigRoot first (when the
+    # caller passed one to assess), then the workspace config dirs. Pass the SAME ConfigRoot here as to
+    # assess to keep the graph and the assessment consistent (codex).
     $wsRoot = Split-Path (Split-Path $ResolvedDir -Parent) -Parent
+    $labelDirs = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($ConfigRoot)) { $labelDirs.Add($ConfigRoot) | Out-Null }
+    $labelDirs.Add((Join-Path (Join-Path $wsRoot 'desired') 'config')) | Out-Null
+    $labelDirs.Add((Join-Path $wsRoot 'config')) | Out-Null
     $graphLabels = @()
-    foreach ($cand in @((Join-Path (Join-Path $wsRoot 'desired') 'config'), (Join-Path $wsRoot 'config'))) {
+    foreach ($cand in $labelDirs) {
+        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
         $labelsPath = Join-Path $cand 'labels.json'
         if (Test-Path -LiteralPath $labelsPath -PathType Leaf) {
             try { $graphLabels = @(Get-Content -LiteralPath $labelsPath -Raw | ConvertFrom-Json) } catch { $graphLabels = @() }
