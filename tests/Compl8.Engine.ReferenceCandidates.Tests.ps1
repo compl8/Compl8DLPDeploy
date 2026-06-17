@@ -55,4 +55,13 @@ Describe 'Get-Compl8ReferenceCandidates' {
         $asObj = @([pscustomobject]@{ ruleName = 'X'; content = [pscustomobject]@{ GenerateIncidentReport = 'DL-Ops' } })
         @(Get-Compl8ReferenceCandidates -DesiredRules $asObj | Where-Object { $_.value -eq 'DL-Ops' }).Count | Should -Be 1
     }
+    It 'tags recipient-field references kind=recipient' {
+        @($script:Refs | Where-Object { $_.value -eq 'DL-Security' })[0].kind | Should -Be 'recipient'
+    }
+    It 'tags a configured domain-field as kind=domain (the extension point — exempt downstream)' {
+        $rule = @([pscustomobject]@{ ruleName = 'R'; content = @{ RecipientDomainIs = 'partner.com' } })
+        $ref  = @(Get-Compl8ReferenceCandidates -DesiredRules $rule -RecipientFields @() -DomainFields @('RecipientDomainIs'))[0]
+        $ref.value | Should -Be 'partner.com'
+        $ref.kind  | Should -Be 'domain'
+    }
 }

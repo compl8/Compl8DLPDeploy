@@ -26,16 +26,22 @@ function Get-Compl8ReferenceCandidates {
 
     .PARAMETER RecipientFields
         The content fields whose values are tenant-identity references (default GenerateIncidentReport,
-        NotifyUser). Each value is split on ',' and ';'.
+        NotifyUser) — emitted with kind='recipient' (validated as identities). Each value is split on ',' / ';'.
+
+    .PARAMETER DomainFields
+        The content fields whose values are DOMAIN references (a 'recipient domain is X' style condition) —
+        emitted with kind='domain' (exempt as external). Default none (the current config has no such
+        field); this is the extension point so a bare domain is never mis-validated as a recipient alias.
 
     .OUTPUTS
-        Zero or more references: { value; source } (deterministically ordered by value then source).
+        Zero or more references: { value; source; kind ('recipient'|'domain') } (ordered by value, source).
     #>
     [CmdletBinding()]
     param(
         [object[]]$DesiredRules = @(),
         [object[]]$DesiredPolicies = @(),
-        [string[]]$RecipientFields = @('GenerateIncidentReport', 'NotifyUser')
+        [string[]]$RecipientFields = @('GenerateIncidentReport', 'NotifyUser'),
+        [string[]]$DomainFields = @()
     )
 
     # Read a field from rule .content whether it is a hashtable or a pscustomobject.
@@ -48,17 +54,24 @@ function Get-Compl8ReferenceCandidates {
         if ($p) { return $p.Value } else { return $null }
     }
 
+    # Each field maps to a reference KIND: a 'recipient' field's no-'@' value is an identity ALIAS that
+    # must be validated; a 'domain' field's value is a domain that is exempt (external). The kind — not
+    # the value's shape — is what distinguishes a dotted alias ('DL.Security') from a bare domain.
+    $fieldKinds = [ordered]@{}
+    foreach ($f in @($RecipientFields)) { if ($f) { $fieldKinds[$f] = 'recipient' } }
+    foreach ($f in @($DomainFields))    { if ($f) { $fieldKinds[$f] = 'domain' } }
+
     $refs = [System.Collections.Generic.List[object]]::new()
     foreach ($rule in @($DesiredRules)) {
         if (-not $rule) { continue }
         $ruleName = if ($rule.PSObject.Properties['ruleName']) { [string]$rule.ruleName } else { '' }
         $content  = if ($rule.PSObject.Properties['content'])  { $rule.content } else { $null }
-        foreach ($field in @($RecipientFields)) {
+        foreach ($field in @($fieldKinds.Keys)) {
             $val = Get-ContentField -Content $content -Field $field
             if ($null -eq $val -or [string]::IsNullOrWhiteSpace([string]$val)) { continue }
             foreach ($piece in ([string]$val -split '[;,]')) {
                 $p = $piece.Trim()
-                if ($p) { $refs.Add([pscustomobject]@{ value = $p; source = "$field ($ruleName)" }) | Out-Null }
+                if ($p) { $refs.Add([pscustomobject]@{ value = $p; source = "$field ($ruleName)"; kind = $fieldKinds[$field] }) | Out-Null }
             }
         }
     }

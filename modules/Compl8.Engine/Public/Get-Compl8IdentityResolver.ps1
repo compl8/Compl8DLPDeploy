@@ -9,10 +9,13 @@ function Get-Compl8IdentityResolver {
     .DESCRIPTION
         The returned scriptblock, invoked as & $resolver $value, classifies one reference:
 
-          * EXTERNAL — a bare external domain (no local part, e.g. 'contoso.com'), or an email whose domain
-            is NOT a tenant ACCEPTED domain (Get-AcceptedDomain). External domains/emails are not tenant
-            objects, so they are EXEMPT from the existence requirement (the stated exception).
-          * EXISTS / MISSING — an internal identity (a name, or an email at an accepted domain): looked up
+          * EXTERNAL — an email whose domain is NOT a tenant ACCEPTED domain (Get-AcceptedDomain): not a
+            tenant object, so EXEMPT (the stated exception). NOTE: a BARE domain is NOT classified here —
+            domain-context references are exempted upstream by their reference KIND (kind='domain' in
+            Get-Compl8ReferenceReadiness), because a bare domain and a dotted recipient ALIAS ('DL.Security')
+            are syntactically identical and only the source field distinguishes them. So a no-'@' value
+            reaching this resolver is always treated as a recipient identity to validate.
+          * EXISTS / MISSING — an internal identity (a name/alias, or an email at an accepted domain): looked up
             with Get-Recipient (which spans mailboxes, mail-enabled groups and distribution lists). Found
             => 'exists'; not found => 'missing' (this is the blocking case — the deploy points at a tenant
             object that does not exist).

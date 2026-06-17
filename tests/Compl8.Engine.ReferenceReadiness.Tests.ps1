@@ -59,6 +59,20 @@ Describe 'Get-Compl8ReferenceReadiness — surface + classification' {
         $refs = @([pscustomobject]@{ value = 'DL-Security'; source = 'incidentReportRecipient' })
         (Get-Compl8ReferenceReadiness -References $refs -Resolver $script:Resolver).ready | Should -BeTrue
     }
+    It 'exempts a kind=domain reference WITHOUT probing (a domain-context reference is external by rule)' {
+        # A bare domain is indistinguishable from a dotted recipient alias by value — the KIND decides.
+        $refs = @([pscustomobject]@{ value = 'partner.com'; source = 'RecipientDomainIs (R)'; kind = 'domain' })
+        $r = Get-Compl8ReferenceReadiness -References $refs -Resolver { param($v) throw "should not probe a domain-kind ref: $v" }
+        $r.ready | Should -BeTrue
+        @($r.blocking).Count | Should -Be 0
+        @($r.exempt | Where-Object { $_.value -eq 'partner.com' }).Count | Should -Be 1
+    }
+    It 'still VALIDATES a kind=recipient dotted alias (not exempted as a domain)' {
+        $refs = @([pscustomobject]@{ value = 'DL.Security'; source = 'GenerateIncidentReport (R)'; kind = 'recipient' })
+        $r = Get-Compl8ReferenceReadiness -References $refs -Resolver { param($v) 'missing' }
+        $r.ready | Should -BeFalse
+        @($r.blocking | Where-Object { $_.value -eq 'DL.Security' }).Count | Should -Be 1
+    }
 }
 
 Describe 'Get-Compl8ReferenceReadiness — blocks a missing internal identity' {

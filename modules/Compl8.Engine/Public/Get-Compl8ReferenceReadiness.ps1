@@ -11,9 +11,11 @@ function Get-Compl8ReferenceReadiness {
 
           * BUILT-IN TOKEN — SiteAdmin / Owner / LastModifier (the Purview special recipients). Not tenant
             objects; always valid; EXEMPT (never probed).
-          * EXTERNAL — an external domain or external email (e.g. a partner address, a bare domain). Not a
-            tenant object; EXEMPT (the stated exception — external domains/emails are never required to
-            exist). The -Resolver reports these as 'external'.
+          * EXTERNAL — exempt (the stated exception — external domains/emails are never required to exist).
+            Two ways a reference is external: (a) its KIND is 'domain' (a domain-context reference, e.g. a
+            'recipient domain is X' condition) — exempted HERE without probing, because a bare domain is
+            indistinguishable from a dotted recipient alias by value alone, so the source field's kind is
+            authoritative; (b) the -Resolver reports an EMAIL at a non-accepted domain as 'external'.
           * INTERNAL, EXISTS — a tenant identity (mailbox / group / site) the -Resolver confirms exists. OK.
           * INTERNAL, MISSING — a tenant identity the -Resolver reports absent. This is BLOCKING: the deploy
             references an object that does not exist and must be fixed first.
@@ -25,9 +27,10 @@ function Get-Compl8ReferenceReadiness {
         path runs this connected BEFORE apply and halts on not-ready, listing exactly what to fix.
 
     .PARAMETER References
-        The named-identity references to validate: objects with .value (the referenced name/address) and
-        .source (where it came from, e.g. 'incidentReportRecipient', 'notifyUser', 'scope'). Collected by
-        the caller from the desired DLP rules / policies / auto-label config.
+        The named-identity references to validate: objects with .value (the referenced name/address),
+        .source (where it came from, e.g. 'GenerateIncidentReport (rule)'), and optional .kind
+        ('recipient' default — validate as an identity; or 'domain' — a domain-context reference, exempt).
+        Collected (with kind) by Get-Compl8ReferenceCandidates from the desired DLP rules.
 
     .PARAMETER Resolver
         Optional scriptblock invoked as & $Resolver $value for each non-token reference; it returns
@@ -68,8 +71,16 @@ function Get-Compl8ReferenceReadiness {
         $key = "$value|$source"
         if (-not $seen.Add($key)) { continue }
 
+        $kind = if ($ref.PSObject.Properties['kind']) { [string]$ref.kind } else { 'recipient' }
+
         $status = $null
-        if ($tokenSet.Contains($value)) {
+        if ($kind -eq 'domain') {
+            # A DOMAIN-context reference (e.g. a 'recipient domain is X' condition) is not a tenant-object
+            # existence check — external domains are exempt by rule. (This is why classification needs the
+            # reference KIND: a no-'@' recipient ALIAS like 'DL.Security' must still be validated, but a
+            # bare DOMAIN must not be — the two are syntactically identical, only the source distinguishes.)
+            $status = 'external'
+        } elseif ($tokenSet.Contains($value)) {
             $status = 'token'
         } elseif ($Resolver) {
             $verdict = $null
