@@ -138,6 +138,14 @@ function Invoke-Compl8Deploy {
         # $null and the gate falls back to its time window, so this is safe disconnected.
         [scriptblock]$PropagationProbe = (Get-Compl8SitVisibilityProbe),
 
+        # The reference-existence pre-flight resolver: classifies each named identity a deploy references
+        # (exists/missing/external/unverified) against the tenant. Defaults to the connected resolver; a
+        # caller injects a fake (tests) or uses -SkipReferenceCheck to bypass. A MISSING internal identity
+        # HALTS the deploy before apply (fix it first); external domains/emails + built-in tokens are exempt.
+        [scriptblock]$ReferenceResolver = (Get-Compl8IdentityResolver),
+
+        [switch]$SkipReferenceCheck,
+
         [switch]$ConfirmExternalRefs,
 
         [switch]$ContinueOnBlock,
@@ -326,6 +334,43 @@ function Invoke-Compl8Deploy {
 
     # Nothing routed (or no actionable routed delta) => assess + plan only, no apply.
     if (@($plan.steps).Count -eq 0) { return (& $planned $true) }
+
+    # ------------------------------------------------------------------ 5b. REFERENCE-EXISTENCE pre-flight
+    # A deploy must NOT mutate the tenant if it references a tenant identity that does not exist — an
+    # incident-report / notify recipient, or (broad) a named group/user/site in a condition/scope —
+    # EXCEPT external domains/emails and built-in Purview tokens. Collect the desired rules' identity
+    # references, resolve them against the tenant (connected -ReferenceResolver), and HALT before apply
+    # with the fix-list if any INTERNAL identity is missing. Disconnected/undetermined refs do not block
+    # (the resolver fail-safes to 'unverified'); run connected to enforce.
+    if (-not $SkipReferenceCheck) {
+        $dlpRulesPath = Join-Path $workspacePath 'desired' 'resolved' 'dlp-rules.json'
+        $desiredRules = @()
+        if (Test-Path -LiteralPath $dlpRulesPath -PathType Leaf) {
+            try { $desiredRules = @((Get-Content -LiteralPath $dlpRulesPath -Raw | ConvertFrom-Json).rules) } catch { $desiredRules = @() }
+        }
+        $refCandidates = @(Get-Compl8ReferenceCandidates -DesiredRules $desiredRules)
+        if ($refCandidates.Count -gt 0) {
+            $readiness = Get-Compl8ReferenceReadiness -References $refCandidates -Resolver $ReferenceResolver
+            if (-not $readiness.ready) {
+                $missingList = (@($readiness.blocking | ForEach-Object { "$($_.value) [$($_.source)]" }) -join '; ')
+                return [pscustomobject]([ordered]@{
+                    schemaVersion      = 'compl8.deploy-result/v1'
+                    workspace          = $environment
+                    environment        = $environment
+                    phase              = 'blocked-references'
+                    confirmed          = $true
+                    routedTypes        = $routedTypes
+                    deferredTypes      = @($deferredTypeSet | Sort-Object)
+                    assessment         = $assessment
+                    plan               = $plan
+                    render             = "REFERENCE CHECK FAILED — deploy blocked before apply. Missing tenant identities (fix these, then re-run): $missingList"
+                    deferred           = @($deferred)
+                    apply              = $null
+                    referenceReadiness = $readiness
+                })
+            }
+        }
+    }
 
     # ------------------------------------------------------------------ 6. APPLY the routed plan
     # Re-key the caller's 'objectType|objectRef' content to the plan step ids the executor map +

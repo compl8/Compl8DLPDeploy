@@ -291,3 +291,41 @@ Describe 'Invoke-Compl8Deploy — render output shape' {
         $script:result.render | Should -Match 'dictionary'
     }
 }
+
+Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth #2 reframed)' {
+    BeforeEach {
+        $script:ws = New-DeployWorkspace
+        # Inject a desired rule that references a tenant identity (an incident-report recipient).
+        $dlp = [pscustomobject]@{ schemaVersion = 'compl8.dlp-rules/v1'; policies = @(); rules = @(
+            [pscustomobject]@{ ruleName = 'P01-R01-ECH-OFFI'; content = [pscustomobject]@{ GenerateIncidentReport = 'Ghost-Group' } }
+        ) }
+        $dlp | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $script:ws 'desired' 'resolved' 'dlp-rules.json') -Encoding UTF8
+        $script:ctx = New-DeployTestContext -Routes @{ dictionary = $true } -WorkspacePath $script:ws
+        Set-DeploySccMocks
+    }
+    AfterEach {
+        if ($script:ws -and (Test-Path -LiteralPath $script:ws)) { Remove-Item -LiteralPath $script:ws -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'HALTS before apply (phase=blocked-references) and mutates NOTHING when an internal reference is missing' {
+        $missingResolver = { param($v) if ($v -eq 'Ghost-Group') { 'missing' } else { 'unverified' } }
+        $r = Invoke-Compl8Deploy -Context $script:ctx -PlanId 'plan-deploy-refblock' -GeneratedUtc '2026-06-13T00:00:00Z' `
+            -DesiredContent (New-DictDesiredContent) -ProjectRoot $script:RepoRoot -SleepAction $script:NoSleep `
+            -Now ([datetime]'2026-06-14T00:00:00Z') -ReferenceResolver $missingResolver
+        $r.phase | Should -Be 'blocked-references'
+        $r.apply | Should -BeNullOrEmpty
+        @($r.referenceReadiness.blocking | Where-Object { $_.value -eq 'Ghost-Group' }).Count | Should -Be 1
+        $r.render | Should -Match 'REFERENCE CHECK FAILED'
+        # The block is BEFORE apply — no tenant mutation happened.
+        Should -Invoke -ModuleName Compl8.Engine New-DlpKeywordDictionary -Times 0
+    }
+
+    It 'PROCEEDS to apply when the reference resolves (exists), and a -SkipReferenceCheck bypass also applies' {
+        $okResolver = { param($v) 'exists' }
+        $r = Invoke-Compl8Deploy -Context $script:ctx -PlanId 'plan-deploy-refok' -GeneratedUtc '2026-06-13T00:00:00Z' `
+            -DesiredContent (New-DictDesiredContent) -ProjectRoot $script:RepoRoot -SleepAction $script:NoSleep `
+            -Now ([datetime]'2026-06-14T00:00:00Z') -ReferenceResolver $okResolver
+        $r.phase | Should -Be 'applied'
+        Should -Invoke -ModuleName Compl8.Engine New-DlpKeywordDictionary -Times 1
+    }
+}
