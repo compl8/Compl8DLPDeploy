@@ -342,12 +342,18 @@ function Invoke-Compl8Deploy {
     # references, resolve them against the tenant (connected -ReferenceResolver), and HALT before apply
     # with the fix-list if any INTERNAL identity is missing. Disconnected/undetermined refs do not block
     # (the resolver fail-safes to 'unverified'); run connected to enforce.
-    if (-not $SkipReferenceCheck) {
+    # SCOPE: only validate the references of DLP RULES actually being deployed this run (the routed
+    # plan's dlpRule steps). A deploy that touches no DLP rule (e.g. dictionary-only, or dlpRule routing
+    # off) must NOT be blocked by recipients of rules it isn't deploying (codex).
+    $deployedRuleNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($s in @($plan.steps)) { if ([string]$s.objectType -eq 'dlpRule') { $deployedRuleNames.Add([string]$s.objectRef) | Out-Null } }
+    if (-not $SkipReferenceCheck -and $deployedRuleNames.Count -gt 0) {
         $dlpRulesPath = Join-Path $workspacePath 'desired' 'resolved' 'dlp-rules.json'
         $desiredRules = @()
         if (Test-Path -LiteralPath $dlpRulesPath -PathType Leaf) {
             try { $desiredRules = @((Get-Content -LiteralPath $dlpRulesPath -Raw | ConvertFrom-Json).rules) } catch { $desiredRules = @() }
         }
+        $desiredRules = @($desiredRules | Where-Object { $deployedRuleNames.Contains([string]$_.ruleName) })
         $refCandidates = @(Get-Compl8ReferenceCandidates -DesiredRules $desiredRules)
         if ($refCandidates.Count -gt 0) {
             $readiness = Get-Compl8ReferenceReadiness -References $refCandidates -Resolver $ReferenceResolver

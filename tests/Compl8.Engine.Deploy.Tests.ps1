@@ -295,36 +295,39 @@ Describe 'Invoke-Compl8Deploy — render output shape' {
 Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth #2 reframed)' {
     BeforeEach {
         $script:ws = New-DeployWorkspace
-        # Inject a desired rule that references a tenant identity (an incident-report recipient).
+        # A DESIRED dlp rule (a CREATE — not in the fixture actual) referencing a tenant identity.
         $dlp = [pscustomobject]@{ schemaVersion = 'compl8.dlp-rules/v1'; policies = @(); rules = @(
-            [pscustomobject]@{ ruleName = 'P01-R01-ECH-OFFI'; content = [pscustomobject]@{ GenerateIncidentReport = 'Ghost-Group' } }
+            [pscustomobject]@{ ruleName = 'P99-R99-REFTEST-OFFI'; contentHash = 'sha256:ref'; content = [pscustomobject]@{
+                Name = 'P99-R99-REFTEST-OFFI'; Policy = 'P99'; GenerateIncidentReport = 'Ghost-Group' } }
         ) }
         $dlp | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $script:ws 'desired' 'resolved' 'dlp-rules.json') -Encoding UTF8
-        $script:ctx = New-DeployTestContext -Routes @{ dictionary = $true } -WorkspacePath $script:ws
         Set-DeploySccMocks
     }
     AfterEach {
         if ($script:ws -and (Test-Path -LiteralPath $script:ws)) { Remove-Item -LiteralPath $script:ws -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It 'HALTS before apply (phase=blocked-references) and mutates NOTHING when an internal reference is missing' {
+    It 'HALTS before apply when a DEPLOYED rule references a missing identity (no mutation)' {
+        $ctx = New-DeployTestContext -Routes @{ dlpRule = $true } -WorkspacePath $script:ws
         $missingResolver = { param($v) if ($v -eq 'Ghost-Group') { 'missing' } else { 'unverified' } }
-        $r = Invoke-Compl8Deploy -Context $script:ctx -PlanId 'plan-deploy-refblock' -GeneratedUtc '2026-06-13T00:00:00Z' `
-            -DesiredContent (New-DictDesiredContent) -ProjectRoot $script:RepoRoot -SleepAction $script:NoSleep `
-            -Now ([datetime]'2026-06-14T00:00:00Z') -ReferenceResolver $missingResolver
+        $r = Invoke-Compl8Deploy -Context $ctx -PlanId 'plan-deploy-refblock' -GeneratedUtc '2026-06-13T00:00:00Z' `
+            -ProjectRoot $script:RepoRoot -SleepAction $script:NoSleep -Now ([datetime]'2026-06-14T00:00:00Z') `
+            -ReferenceResolver $missingResolver
         $r.phase | Should -Be 'blocked-references'
         $r.apply | Should -BeNullOrEmpty
         @($r.referenceReadiness.blocking | Where-Object { $_.value -eq 'Ghost-Group' }).Count | Should -Be 1
         $r.render | Should -Match 'REFERENCE CHECK FAILED'
-        # The block is BEFORE apply — no tenant mutation happened.
-        Should -Invoke -ModuleName Compl8.Engine New-DlpKeywordDictionary -Times 0
+        Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 0
     }
 
-    It 'PROCEEDS to apply when the reference resolves (exists), and a -SkipReferenceCheck bypass also applies' {
-        $okResolver = { param($v) 'exists' }
-        $r = Invoke-Compl8Deploy -Context $script:ctx -PlanId 'plan-deploy-refok' -GeneratedUtc '2026-06-13T00:00:00Z' `
+    It 'does NOT block a dictionary-only deploy on an UNRELATED rule''s missing reference (codex scoping)' {
+        # dlpRule routing is OFF — the P99 rule is present in dlp-rules.json but NOT being deployed, so its
+        # missing recipient must not block the dictionary deploy.
+        $ctx = New-DeployTestContext -Routes @{ dictionary = $true } -WorkspacePath $script:ws
+        $blockEverything = { param($v) 'missing' }   # would block the rule IF it were checked
+        $r = Invoke-Compl8Deploy -Context $ctx -PlanId 'plan-deploy-dictok' -GeneratedUtc '2026-06-13T00:00:00Z' `
             -DesiredContent (New-DictDesiredContent) -ProjectRoot $script:RepoRoot -SleepAction $script:NoSleep `
-            -Now ([datetime]'2026-06-14T00:00:00Z') -ReferenceResolver $okResolver
+            -Now ([datetime]'2026-06-14T00:00:00Z') -ReferenceResolver $blockEverything
         $r.phase | Should -Be 'applied'
         Should -Invoke -ModuleName Compl8.Engine New-DlpKeywordDictionary -Times 1
     }
