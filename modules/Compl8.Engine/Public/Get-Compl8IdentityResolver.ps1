@@ -76,13 +76,19 @@ function Get-Compl8IdentityResolver {
                 if ($r -eq 'exists') { return 'exists' }
                 return 'unverified'
             }
-            # Internal when the email's domain EQUALS or is a SUBDOMAIN of an accepted domain (a tenant can
-            # accept 'contoso.com' and route 'dept.contoso.com' — an exact match would wrongly exempt the
-            # subdomain address as external and miss a missing internal recipient; codex).
+            # Internal per EXCHANGE accepted-domain semantics (codex): a PLAIN entry ('contoso.com') covers
+            # ONLY that exact domain — NOT its subdomains; a WILDCARD entry ('*.contoso.com') covers the
+            # base domain and any subdomain. So a subdomain address is internal only when a matching
+            # wildcard namespace is accepted.
             $isAccepted = $false
             foreach ($ad in $accepted) {
                 if ([string]::IsNullOrWhiteSpace($ad)) { continue }
-                if ($domain -eq $ad -or $domain.EndsWith(".$ad", [System.StringComparison]::OrdinalIgnoreCase)) { $isAccepted = $true; break }
+                if ($ad.StartsWith('*.')) {
+                    $base = $ad.Substring(2)
+                    if ($domain -eq $base -or $domain.EndsWith(".$base", [System.StringComparison]::OrdinalIgnoreCase)) { $isAccepted = $true; break }
+                } elseif ($domain -eq $ad) {
+                    $isAccepted = $true; break
+                }
             }
             if ($isAccepted) { return (& $resolveRecipient $v) }   # internal email
             return 'external'

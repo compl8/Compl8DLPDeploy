@@ -48,11 +48,16 @@ Describe 'Get-Compl8IdentityResolver' {
         function global:Get-AcceptedDomain { param($ErrorAction) @([pscustomobject]@{ DomainName = 'contoso.com' }) }
         (& (Get-Compl8IdentityResolver) 'missing@contoso.com') | Should -Be 'missing'
     }
-    It "treats an email at a SUBDOMAIN of an accepted domain as internal (missing => blocking; codex)" {
-        # accepted 'contoso.com' should match 'dept.contoso.com' — an exact match would wrongly exempt it.
+    It "a subdomain address is internal only under a WILDCARD accepted domain (Exchange semantics; codex)" {
         function global:Get-Recipient { param($Identity, $ErrorAction) $null }   # not found
-        function global:Get-AcceptedDomain { param($ErrorAction) @([pscustomobject]@{ DomainName = 'contoso.com' }) }
+        # WILDCARD '*.contoso.com' covers the subdomain -> internal -> missing (blocks).
+        function global:Get-AcceptedDomain { param($ErrorAction) @([pscustomobject]@{ DomainName = '*.contoso.com' }) }
         (& (Get-Compl8IdentityResolver) 'user@dept.contoso.com') | Should -Be 'missing'
+    }
+    It "a PLAIN accepted domain does NOT cover its subdomains (subdomain address => external; codex)" {
+        function global:Get-Recipient { param($Identity, $ErrorAction) $null }
+        function global:Get-AcceptedDomain { param($ErrorAction) @([pscustomobject]@{ DomainName = 'contoso.com' }) }
+        (& (Get-Compl8IdentityResolver) 'user@dept.contoso.com') | Should -Be 'external'
     }
     It "is fail-safe: a NOT-CONNECTED tenant query returns 'unverified', never a false 'missing'" {
         # The realistic failure: Get-Recipient is present (EXO module) but the session is not connected,
