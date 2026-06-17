@@ -34,6 +34,10 @@ function Test-Compl8Gate {
           * externalRefs — v1 is operator confirmation (no automated resolver, arch §8). The gate
             HALTS (does not pass) unless -ConfirmExternalRefs is supplied, at which point the
             operator has confirmed the external references resolve and the step may proceed.
+            NOTE: this gate is DORMANT in this toolkit — it is attached only when a policy is scoped to
+            NAMED external entities (groups/users/sites), and the config model never does that (locations
+            are 'All' or rule-level scope filters, not entity references), so New-Compl8Plan never attaches
+            it on a real assessment. It remains as the forward hook for if/when named scope members exist.
 
         DETERMINISM: the clock is INJECTED (-Now). Get-Date is BANNED in this function body so the
         gate decision is a pure function of (gate, now, context, confirmation) — golden-testable.

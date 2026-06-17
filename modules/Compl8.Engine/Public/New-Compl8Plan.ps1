@@ -193,6 +193,17 @@ function New-Compl8Plan {
         $impact = @($impactSet)
 
         # ---- externalRefs gate (only when the step carries no other gate) -----------------
+        # DORMANT in this toolkit (by design, not a bug). The externalRefs gate is the spec §8
+        # halt-and-confirm hook for a policy SCOPED to NAMED external entities (specific
+        # groups/users/SharePoint sites) whose existence the operator must confirm before deploy
+        # (the Engine has no automated resolver). But this toolkit NEVER scopes policies to named
+        # entities — config/policies.json carries location='All' or rule-level scope FILTERS
+        # (e.g. AccessScope=NotInOrganization), not entity references — and Invoke-Compl8Assess never
+        # emits a scope/recipient/recipients/sharedWith field on a bucket entry. So this trigger does
+        # not fire on any real assessment today; it stays as the FORWARD hook for if/when policies grow
+        # named scope members (then assess would populate one of these fields and the manual
+        # -ConfirmExternalRefs halt would engage). It is intentionally left in place rather than removed
+        # so the §8 safety surface and the -ConfirmExternalRefs contract remain wired.
         $gate = $step.gate
         if ($null -eq $gate -and ($policyTypes -contains [string]$step.objectType)) {
             $entry = $entryByKey["$($step.objectType)|$($step.objectRef)"]
