@@ -320,6 +320,13 @@ Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth 
         Should -Invoke -ModuleName Compl8.Engine New-DlpComplianceRule -Times 0
     }
 
+    It 'uses the SAME desired-rule source as assess — config fallback, not just dlp-rules.json (codex)' {
+        # A config-fallback workspace (no desired/resolved/dlp-rules.json) still plans dlpRule changes from
+        # config; the pre-flight must collect those rules' references too, or it silently skips the check.
+        $src = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'modules' 'Compl8.Engine' 'Public' 'Invoke-Compl8Deploy.ps1') -Raw
+        ($src -match 'dlp-rules\.json')           | Should -BeTrue
+        ($src -match 'Resolve-DesiredDlpRules')   | Should -BeTrue   # the config fallback
+    }
     It 'does NOT block a dictionary-only deploy on an UNRELATED rule''s missing reference (codex scoping)' {
         # dlpRule routing is OFF — the P99 rule is present in dlp-rules.json but NOT being deployed, so its
         # missing recipient must not block the dictionary deploy.

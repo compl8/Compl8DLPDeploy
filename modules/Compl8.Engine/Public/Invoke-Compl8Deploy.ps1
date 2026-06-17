@@ -348,10 +348,20 @@ function Invoke-Compl8Deploy {
     $deployedRuleNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($s in @($plan.steps)) { if ([string]$s.objectType -eq 'dlpRule') { $deployedRuleNames.Add([string]$s.objectRef) | Out-Null } }
     if (-not $SkipReferenceCheck -and $deployedRuleNames.Count -gt 0) {
+        # Use the SAME desired-rule source assess used (DR-4): the persisted dlp-rules.json first, else the
+        # config fallback (workspace config dirs -> Resolve-DesiredDlpRules). Reading only dlp-rules.json
+        # would silently skip the check for config-fallback workspaces and apply a missing-recipient rule
+        # (codex). Either source yields rule records with .content (the recipient fields).
         $dlpRulesPath = Join-Path $workspacePath 'desired' 'resolved' 'dlp-rules.json'
         $desiredRules = @()
         if (Test-Path -LiteralPath $dlpRulesPath -PathType Leaf) {
             try { $desiredRules = @((Get-Content -LiteralPath $dlpRulesPath -Raw | ConvertFrom-Json).rules) } catch { $desiredRules = @() }
+        } else {
+            $cfgSource = $null
+            foreach ($cand in @((Join-Path $workspacePath 'desired' 'config'), (Join-Path $workspacePath 'config'))) {
+                if (Test-Path -LiteralPath $cand -PathType Container) { $cfgSource = $cand; break }
+            }
+            if ($cfgSource) { try { $desiredRules = @((Resolve-DesiredDlpRules -ConfigPath $cfgSource).Rules) } catch { $desiredRules = @() } }
         }
         $desiredRules = @($desiredRules | Where-Object { $deployedRuleNames.Contains([string]$_.ruleName) })
         $refCandidates = @(Get-Compl8ReferenceCandidates -DesiredRules $desiredRules)
