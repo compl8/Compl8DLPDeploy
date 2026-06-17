@@ -68,6 +68,17 @@ Describe 'Get-Compl8ChangeRisk — a destructive change that reaches a FOREIGN r
     }
 }
 
+Describe 'Get-Compl8ChangeRisk — a SIT change is keyed by entity GUID (identity), reaching foreign rules (codex)' {
+    It 'a sit remove with identity=GUID finds the foreign referencing rule and hands back' {
+        # The plan carries a sit by slug; the risk eval must use the entity GUID to walk the graph, or a
+        # SIT change reaching a foreign rule would bypass the gate.
+        $r = Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = 'sit'; action = 'remove'; ref = 'medium-names-slug'; identity = $script:G1 }) `
+            -Graph $script:Graph -OwnershipMap $script:Ownership
+        @($r.externalImpact | Where-Object { $_.ref -eq 'Foreign-Rule' }).Count | Should -Be 1
+        $r.handBack | Should -BeTrue
+    }
+}
+
 Describe 'Get-Compl8ChangeRisk — a non-destructive change reaching foreign still hands back (high, reversible)' {
     It 'an UPDATE of a classifier a foreign rule reads is high-risk + hand-back, but reversible' {
         $r = Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = 'rulePackage'; action = 'update'; ref = 'OurPkg' }) `

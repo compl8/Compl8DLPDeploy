@@ -337,6 +337,10 @@ Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth 
         ($src -match '\$ApprovedRiskActions')         | Should -BeTrue
         ($src -match '\$ApproveAllRiskHandBacks')     | Should -BeTrue
         ($src -match '\$SkipRiskCheck')               | Should -BeTrue
+        # sit steps must be risk-evaluated by entity GUID (resolved from the inventory), or a SIT change
+        # reaching a foreign rule would bypass the gate (codex P1).
+        ($src -match '\$sitGuidByName')               | Should -BeTrue
+        ($src -match "objectType -eq 'sit'[\s\S]*Add-Member -NotePropertyName identity") | Should -BeTrue
     }
     It 'does NOT block a dictionary-only deploy on an UNRELATED rule''s missing reference (codex scoping)' {
         # dlpRule routing is OFF — the P99 rule is present in dlp-rules.json but NOT being deployed, so its

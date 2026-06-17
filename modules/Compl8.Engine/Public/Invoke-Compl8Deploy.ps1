@@ -413,10 +413,20 @@ function Invoke-Compl8Deploy {
         foreach ($pk in @($inv.objects.sitPackages)) { if ($pk.name)    { $ownership[[string]$pk.name] = [bool]$pk.ours } }
         foreach ($d in @($inv.objects.dictionaries)) { if ($d.name)     { $ownership[[string]$d.name] = [bool]$d.ours } }
 
+        # sit steps carry the slug as objectRef, but the graph walk keys sits by entity GUID — resolve it
+        # from the inventory and pass it as the change identity, or a SIT change reaching a foreign rule
+        # would evaluate as no-impact and bypass the hand-back gate (codex).
+        $sitGuidByName = @{}
+        foreach ($s in @($inv.objects.sits)) { if ($s.name -and $s.identity) { $sitGuidByName[[string]$s.name] = [string]$s.identity } }
+
         $riskRecords = [System.Collections.Generic.List[object]]::new()
         foreach ($step in @($plan.steps)) {
             if ([string]$step.action -eq 'snapshot') { continue }
-            $riskRecords.Add((Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = [string]$step.objectType; action = [string]$step.action; ref = [string]$step.objectRef }) -Graph $graph -OwnershipMap $ownership)) | Out-Null
+            $change = [pscustomobject]@{ objectType = [string]$step.objectType; action = [string]$step.action; ref = [string]$step.objectRef }
+            if ([string]$step.objectType -eq 'sit' -and $sitGuidByName.ContainsKey([string]$step.objectRef)) {
+                $change | Add-Member -NotePropertyName identity -NotePropertyValue $sitGuidByName[[string]$step.objectRef] -Force
+            }
+            $riskRecords.Add((Get-Compl8ChangeRisk -Change $change -Graph $graph -OwnershipMap $ownership)) | Out-Null
         }
         $unapproved = @($riskRecords | Where-Object {
             $_.handBack -and -not ($ApproveAllRiskHandBacks -or ($ApprovedRiskActions -contains "$($_.action)|$($_.objectType)|$($_.ref)"))
