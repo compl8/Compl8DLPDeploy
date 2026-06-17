@@ -168,7 +168,7 @@ function Invoke-Compl8Deploy {
     # Reference graph over DESIRED packages + ACTUAL rules — IDENTICAL to Invoke-Compl8Assess so the
     # planner sees the same graph (ordering / impact roll-up / dereference generation).
     function Get-Compl8DeployReferenceGraph {
-        param([string]$ResolvedDir, [pscustomobject]$Inventory)
+        param([string]$ResolvedDir, [pscustomobject]$Inventory, [switch]$IncludeActualSits)
         $manifest = Get-Content -LiteralPath (Join-Path $ResolvedDir 'resolve-manifest.json') -Raw | ConvertFrom-Json
         $graphPackages = @(foreach ($pkg in @($manifest.packages)) {
             $pkgFile = Join-Path $ResolvedDir ([string]$pkg.file)
@@ -178,6 +178,20 @@ function Invoke-Compl8Deploy {
                 SerializedClassificationRuleCollection = (Get-Content -LiteralPath $pkgFile -Raw)
             }
         })
+        # For RISK evaluation also make the ACTUAL sit GUIDs known (synthetic entity-only packages from the
+        # inventory's entityIds) — including RETIRED sits no longer in any desired package. Without this a
+        # removal of a retired sit still referenced by a FOREIGN rule would show no blast radius and bypass
+        # the hand-back gate (codex). The real desired XML above still provides the dict->sit edges.
+        if ($IncludeActualSits) {
+            foreach ($pk in @($Inventory.objects.sitPackages)) {
+                $ents = (@($pk.entityIds) | Where-Object { $_ } | ForEach-Object { "<Entity id=`"$([string]$_)`" />" }) -join ''
+                if (-not $ents) { continue }
+                $graphPackages += [pscustomobject]@{
+                    Identity = [string]$pk.identity; Name = [string]$pk.name; Publisher = [string]$pk.publisher
+                    SerializedClassificationRuleCollection = "<RulePackage xmlns=`"http://schemas.microsoft.com/office/2011/mce`"><Rules>$ents</Rules></RulePackage>"
+                }
+            }
+        }
         $graphRules = @(foreach ($rule in @($Inventory.objects.dlpRules)) {
             [pscustomobject]@{
                 Name = [string]$rule.name; Identity = [string]$rule.identity; Policy = [string]$rule.policy
@@ -419,6 +433,10 @@ function Invoke-Compl8Deploy {
         $sitGuidByName = @{}
         foreach ($s in @($inv.objects.sits)) { if ($s.name -and $s.identity) { $sitGuidByName[[string]$s.name] = [string]$s.identity } }
 
+        # The risk graph additionally knows the ACTUAL (incl. retired) sit GUIDs, so a removal of a sit no
+        # longer in the desired packages still surfaces the foreign rules that reference it (codex P1).
+        $riskGraph = Get-Compl8DeployReferenceGraph -ResolvedDir $resolvedDir -Inventory $inv -IncludeActualSits
+
         $riskRecords = [System.Collections.Generic.List[object]]::new()
         foreach ($step in @($plan.steps)) {
             if ([string]$step.action -eq 'snapshot') { continue }
@@ -426,7 +444,7 @@ function Invoke-Compl8Deploy {
             if ([string]$step.objectType -eq 'sit' -and $sitGuidByName.ContainsKey([string]$step.objectRef)) {
                 $change | Add-Member -NotePropertyName identity -NotePropertyValue $sitGuidByName[[string]$step.objectRef] -Force
             }
-            $riskRecords.Add((Get-Compl8ChangeRisk -Change $change -Graph $graph -OwnershipMap $ownership)) | Out-Null
+            $riskRecords.Add((Get-Compl8ChangeRisk -Change $change -Graph $riskGraph -OwnershipMap $ownership)) | Out-Null
         }
         $unapproved = @($riskRecords | Where-Object {
             $_.handBack -and -not ($ApproveAllRiskHandBacks -or ($ApprovedRiskActions -contains "$($_.action)|$($_.objectType)|$($_.ref)"))

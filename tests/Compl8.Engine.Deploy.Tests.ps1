@@ -341,6 +341,9 @@ Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth 
         # reaching a foreign rule would bypass the gate (codex P1).
         ($src -match '\$sitGuidByName')               | Should -BeTrue
         ($src -match "objectType -eq 'sit'[\s\S]*Add-Member -NotePropertyName identity") | Should -BeTrue
+        # the risk graph includes ACTUAL (incl. retired) sits so a retired-sit removal reaching a foreign
+        # rule is not invisible (codex P1 re-review).
+        ($src -match '-IncludeActualSits')            | Should -BeTrue
     }
     It 'does NOT block a dictionary-only deploy on an UNRELATED rule''s missing reference (codex scoping)' {
         # dlpRule routing is OFF — the P99 rule is present in dlp-rules.json but NOT being deployed, so its
