@@ -124,6 +124,19 @@ Describe 'Get-Compl8ChangeRisk — internal-only impact proceeds (no external re
     }
 }
 
+Describe 'Get-Compl8ChangeRisk — a dictionary change always hands back (consumer set unverifiable; codex)' {
+    It 'a dictionary remove/update is handed back because its full fed-sit set cannot be enumerated' {
+        # The inventory records no dict->sit edges for retired sits, so foreign reach cannot be ruled out.
+        foreach ($act in 'remove', 'update') {
+            $r = Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = 'dictionary'; action = $act; ref = '{{DICT_X}}' }) `
+                -Graph $script:Graph -OwnershipMap $script:Ownership
+            $r.handBack       | Should -BeTrue -Because "a $act of a dictionary cannot be proven safe"
+            $r.recommendation | Should -Be 'hand-back'
+            $r.rationale      | Should -Match 'dictionary|consumer|enumerate'
+        }
+    }
+}
+
 Describe 'Get-Compl8ChangeRisk — too-complex cascade hands back even when fully internal' {
     It 'hands back when the affected count exceeds the cascade threshold' {
         $r = Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = 'rulePackage'; action = 'remove'; ref = 'OurPkg' }) `

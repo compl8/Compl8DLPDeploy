@@ -117,12 +117,19 @@ function Get-Compl8ChangeRisk {
     $affectedCount = $internal.Count + $external.Count
     $hasExternal   = $external.Count -gt 0
     $tooComplex    = $affectedCount -gt $CascadeThreshold
-    $handBack      = $hasExternal -or $tooComplex
+    # A DICTIONARY is a shared object whose FULL consumer set (the sits it feeds) cannot be reliably
+    # enumerated from recorded tenant state — the inventory records no dictionary->sit edges for sits no
+    # longer in the desired packages (only their entity GUIDs). So the engine cannot PROVE a dictionary
+    # remove/update does not reach a foreign consumer; it conservatively hands every one back for review
+    # (codex). The visible (current-sit) impact is still reported for transparency.
+    $dictUnverifiable = ($objectType -eq 'dictionary')
+    $handBack      = $hasExternal -or $tooComplex -or $dictUnverifiable
 
     $riskLevel =
         if ($hasExternal -and $destructive) { 'critical' }
         elseif ($hasExternal)               { 'high' }
         elseif ($tooComplex)                { 'high' }
+        elseif ($dictUnverifiable)          { 'high' }
         elseif ($destructive -and $internal.Count -gt 0) { 'medium' }
         else { 'low' }
 
@@ -146,7 +153,8 @@ function Get-Compl8ChangeRisk {
     }
     if ($internal.Count -gt 0) { $parts.Add(("affects {0} internal (ours) object(s)." -f $internal.Count)) | Out-Null }
     if ($tooComplex) { $parts.Add(("cascade of {0} affected objects exceeds the auto-apply threshold ({1}) — too complex/large to auto-apply; hand back." -f $affectedCount, $CascadeThreshold)) | Out-Null }
-    if (-not $hasExternal -and $affectedCount -eq 0) { $parts.Add('no downstream blast radius.') | Out-Null }
+    if ($dictUnverifiable) { $parts.Add("a dictionary's full consumer set (the sits it feeds) cannot be enumerated from recorded tenant state, so foreign reach cannot be ruled out — hand back for review.") | Out-Null }
+    if (-not $hasExternal -and -not $dictUnverifiable -and $affectedCount -eq 0) { $parts.Add('no downstream blast radius.') | Out-Null }
 
     [pscustomobject]@{
         objectType     = $objectType
