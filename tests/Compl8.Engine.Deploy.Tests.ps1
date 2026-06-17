@@ -327,6 +327,17 @@ Describe 'Invoke-Compl8Deploy — reference-existence pre-flight (planner depth 
         ($src -match 'dlp-rules\.json')           | Should -BeTrue
         ($src -match 'Resolve-DesiredDlpRules')   | Should -BeTrue   # the config fallback
     }
+    It 'wires the RISK strategist pre-flight (5c): hand-backs block auto-apply, with explicit approval to proceed' {
+        # The strategist's risk LOGIC is behaviorally tested in Compl8.Engine.ChangeRisk.Tests; here we
+        # assert the deploy path consults it, blocks (phase='blocked-risk') on an unapproved hand-back, and
+        # honours -ApprovedRiskActions / -ApproveAllRiskHandBacks / -SkipRiskCheck.
+        $src = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'modules' 'Compl8.Engine' 'Public' 'Invoke-Compl8Deploy.ps1') -Raw
+        ($src -match 'Get-Compl8ChangeRisk')          | Should -BeTrue
+        ($src -match "phase\s*=\s*'blocked-risk'")    | Should -BeTrue
+        ($src -match '\$ApprovedRiskActions')         | Should -BeTrue
+        ($src -match '\$ApproveAllRiskHandBacks')     | Should -BeTrue
+        ($src -match '\$SkipRiskCheck')               | Should -BeTrue
+    }
     It 'does NOT block a dictionary-only deploy on an UNRELATED rule''s missing reference (codex scoping)' {
         # dlpRule routing is OFF — the P99 rule is present in dlp-rules.json but NOT being deployed, so its
         # missing recipient must not block the dictionary deploy.

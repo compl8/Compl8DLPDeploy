@@ -146,6 +146,17 @@ function Invoke-Compl8Deploy {
 
         [switch]$SkipReferenceCheck,
 
+        # Risk strategist: each routed change is risk-evaluated (Get-Compl8ChangeRisk). A change whose
+        # blast radius reaches a NOT-OURS object — or whose cascade is too large — is HANDED BACK: the
+        # deploy halts (phase='blocked-risk') and withholds it until explicitly approved via
+        # -ApprovedRiskActions ('action|objectType|ref' keys) or -ApproveAllRiskHandBacks.
+        # -SkipRiskCheck bypasses the strategist entirely.
+        [string[]]$ApprovedRiskActions = @(),
+
+        [switch]$ApproveAllRiskHandBacks,
+
+        [switch]$SkipRiskCheck,
+
         [switch]$ConfirmExternalRefs,
 
         [switch]$ContinueOnBlock,
@@ -385,6 +396,49 @@ function Invoke-Compl8Deploy {
                     referenceReadiness = $readiness
                 })
             }
+        }
+    }
+
+    # ------------------------------------------------------------------ 5c. RISK STRATEGIST pre-flight
+    # Risk-evaluate each routed change and HAND BACK (block auto-apply) any whose blast radius reaches a
+    # NOT-OURS object — or whose cascade is too large. Ownership comes from the inventory's `ours` flags;
+    # the graph spans ours + foreign so foreign downstream consumers are visible. A handed-back change is
+    # withheld until explicitly approved; this realises "never auto-apply a change that damages something
+    # we do not manage". -SkipRiskCheck bypasses; -ApprovedRiskActions / -ApproveAllRiskHandBacks approve.
+    if (-not $SkipRiskCheck) {
+        $ownership = @{}
+        foreach ($r in @($inv.objects.dlpRules))     { if ($r.name)     { $ownership[[string]$r.name] = [bool]$r.ours } }
+        foreach ($pol in @($inv.objects.dlpPolicies)) { if ($pol.name)  { $ownership[[string]$pol.name] = [bool]$pol.ours } }
+        foreach ($s in @($inv.objects.sits))         { if ($s.identity) { $ownership[([string]$s.identity).ToLowerInvariant()] = [bool]$s.ours }; if ($s.name) { $ownership[[string]$s.name] = [bool]$s.ours } }
+        foreach ($pk in @($inv.objects.sitPackages)) { if ($pk.name)    { $ownership[[string]$pk.name] = [bool]$pk.ours } }
+        foreach ($d in @($inv.objects.dictionaries)) { if ($d.name)     { $ownership[[string]$d.name] = [bool]$d.ours } }
+
+        $riskRecords = [System.Collections.Generic.List[object]]::new()
+        foreach ($step in @($plan.steps)) {
+            if ([string]$step.action -eq 'snapshot') { continue }
+            $riskRecords.Add((Get-Compl8ChangeRisk -Change ([pscustomobject]@{ objectType = [string]$step.objectType; action = [string]$step.action; ref = [string]$step.objectRef }) -Graph $graph -OwnershipMap $ownership)) | Out-Null
+        }
+        $unapproved = @($riskRecords | Where-Object {
+            $_.handBack -and -not ($ApproveAllRiskHandBacks -or ($ApprovedRiskActions -contains "$($_.action)|$($_.objectType)|$($_.ref)"))
+        })
+        if ($unapproved.Count -gt 0) {
+            $riskLines = @($unapproved | ForEach-Object { "  [$($_.riskLevel)] $($_.rationale)" }) -join "`n"
+            return [pscustomobject]([ordered]@{
+                schemaVersion = 'compl8.deploy-result/v1'
+                workspace     = $environment
+                environment   = $environment
+                phase         = 'blocked-risk'
+                confirmed     = $true
+                routedTypes   = $routedTypes
+                deferredTypes = @($deferredTypeSet | Sort-Object)
+                assessment    = $assessment
+                plan          = $plan
+                render        = "RISK CHECK — deploy blocked: $($unapproved.Count) change(s) reach not-ours objects or are too complex to auto-apply. Approve explicitly (-ApprovedRiskActions '<action>|<objectType>|<ref>' or -ApproveAllRiskHandBacks) to proceed:`n$riskLines"
+                deferred      = @($deferred)
+                apply         = $null
+                risk          = @($riskRecords)
+                handBack      = @($unapproved)
+            })
         }
     }
 
