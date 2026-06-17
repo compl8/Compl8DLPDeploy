@@ -31,9 +31,12 @@ Describe 'Get-Compl8IdentityResolver' {
         function global:Get-Recipient { param($Identity, $ErrorAction) $null }
         (& (Get-Compl8IdentityResolver) 'Ghost-Group') | Should -Be 'missing'
     }
-    It "classifies a bare external domain as 'external'" {
-        function global:Get-Recipient { param($Identity, $ErrorAction) $null }
-        (& (Get-Compl8IdentityResolver) 'contoso.com') | Should -Be 'external'
+    It "treats a dotted no-@ recipient alias as an identity to validate — missing => 'missing', NOT exempt (codex)" {
+        # 'DL.Security' / 'ops.team' look domain-ish but are recipient aliases; a missing one must BLOCK,
+        # not be exempted as an 'external domain'.
+        function global:Get-Recipient { param($Identity, $ErrorAction) $null }   # not found
+        (& (Get-Compl8IdentityResolver) 'DL.Security') | Should -Be 'missing'
+        (& (Get-Compl8IdentityResolver) 'ops.team')    | Should -Be 'missing'
     }
     It "classifies an email at a NON-accepted domain as 'external'" {
         function global:Get-Recipient { param($Identity, $ErrorAction) $null }

@@ -77,14 +77,12 @@ function Get-Compl8IdentityResolver {
             return 'external'
         }
 
-        # No '@'. A bare domain (label.label, no spaces) is external; anything else is an internal name.
-        if ($v -match '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$' -and $v -notmatch '\s') {
-            # Looks like a domain (e.g. contoso.com). Treat as external — but if it happens to be a real
-            # recipient identity, honour that.
-            $r = & $resolveRecipient $v
-            if ($r -eq 'exists') { return 'exists' }
-            return 'external'
-        }
+        # No '@'. In a RECIPIENT context (the only references collected today — GenerateIncidentReport /
+        # NotifyUser) a no-'@' value is an internal identity ALIAS, even when it contains dots (e.g.
+        # 'DL.Security', 'ops.team'). It must be validated as a recipient, NOT exempted as a "bare domain"
+        # — a missing alias has to BLOCK, not slip through (codex). External-DOMAIN exemption applies only
+        # to emails (the '@' branch above); a genuine domain-context condition field (a future broad-scope
+        # case) would be tagged by the collector and classified separately when such fields are collected.
         return (& $resolveRecipient $v)
     }
 }
