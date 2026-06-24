@@ -330,3 +330,83 @@ Describe 'Layer scaffolds' {
         }
     }
 }
+
+Describe 'Test-SITRulePackageXml — UTF-16 size validation (codex P2-2)' {
+    BeforeAll {
+        Remove-Module DLP-Deploy -ErrorAction SilentlyContinue
+        $script:ModelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'modules' 'Compl8.Model'
+        Import-Module $script:ModelDir -Force
+
+        # Minimal but structurally valid rule package XML.
+        function script:New-MinimalPackageXml {
+            param([string]$ExtraRegexContent = '')
+            $entityId = 'aaaaaaaa-1111-2222-3333-444444444444'
+            $rulePackId = 'bbbbbbbb-1111-2222-3333-444444444444'
+            $publisherId = 'cccccccc-1111-2222-3333-444444444444'
+@"
+<?xml version="1.0" encoding="utf-8"?>
+<RulePackage xmlns="http://schemas.microsoft.com/office/2011/mce">
+  <RulePack id="$rulePackId">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Publisher id="$publisherId"/>
+    <Details>
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>TestPub</PublisherName>
+        <Name>TestPkg</Name>
+        <Description>Test package for size validation</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="$entityId" patternsProximity="300" recommendedConfidence="85">
+      <Pattern confidenceLevel="85">
+        <IdMatch idRef="Regex_test" />
+      </Pattern>
+    </Entity>
+    <Regex id="Regex_test">(?i)\btest\b$ExtraRegexContent</Regex>
+    <LocalizedStrings>
+      <Resource idRef="$entityId">
+        <Name default="true" langcode="en-us">Test Entity</Name>
+        <Description default="true" langcode="en-us">Test entity description</Description>
+      </Resource>
+    </LocalizedStrings>
+  </Rules>
+</RulePackage>
+"@
+        }
+    }
+
+    It '(a) a small valid UTF-8 rule-package file passes validation' {
+        $xml = New-MinimalPackageXml
+        $filePath = Join-Path $TestDrive 'small-valid.xml'
+        [System.IO.File]::WriteAllText($filePath, $xml, [System.Text.Encoding]::UTF8)
+
+        $v = Test-SITRulePackageXml -FilePath $filePath
+        $v.Valid | Should -BeTrue
+        $v.Errors | Should -BeNullOrEmpty
+        # FileSize is now the UTF-16 byte count — must be larger than the UTF-8 on-disk size.
+        $onDisk = (Get-Item $filePath).Length
+        $v.FileSize | Should -BeGreaterThan $onDisk
+    }
+
+    It '(b) a file whose UTF-16 size exceeds 153600 is rejected with a UTF-16 size error' {
+        # Construct content whose UTF-16 byte count > 153600 while UTF-8 byte count is ~half that.
+        # We need roughly 77000 ASCII chars so UTF-16 = 154000 bytes (> 153600 cap).
+        # Pad the regex content with enough ASCII so the total XML crosses the threshold.
+        $padLine = 'a' * 74  # 74 chars per line
+        $padContent = ($padLine + "`r`n") * 1050  # ~78 750 ASCII chars; UTF-16 ≈ 157 500 bytes
+        $xml = New-MinimalPackageXml -ExtraRegexContent $padContent
+        $utf16Size = [System.Text.Encoding]::Unicode.GetByteCount($xml)
+        # Sanity: confirm the fixture actually exceeds the cap before writing.
+        $utf16Size | Should -BeGreaterThan 153600
+
+        $filePath = Join-Path $TestDrive 'oversized-utf16.xml'
+        [System.IO.File]::WriteAllText($filePath, $xml, [System.Text.Encoding]::UTF8)
+
+        $v = Test-SITRulePackageXml -FilePath $filePath
+        $v.Valid | Should -BeFalse
+        $v.Errors | Should -Contain ($v.Errors | Where-Object { $_ -like '*UTF-16*' })
+        # On-disk size (UTF-8) is well under 153600; only the UTF-16 measure triggers the error.
+        (Get-Item $filePath).Length | Should -BeLessThan 153600
+    }
+}

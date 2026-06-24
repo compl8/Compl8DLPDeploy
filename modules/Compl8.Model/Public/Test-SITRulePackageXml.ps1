@@ -23,27 +23,19 @@ function Test-SITRulePackageXml {
         return $result
     }
 
-    $result.FileSize = (Get-Item $FilePath).Length
-
-    if ($result.FileSize -gt $MaxFileSizeBytes) {
-        $result.Valid = $false
-        $result.Errors.Add("File exceeds 150KB limit: $([math]::Round($result.FileSize / 1KB, 1))KB")
-    }
-
-    if ($result.FileSize -eq 0) {
+    # Empty-file guard: check on-disk length before reading content.
+    if ((Get-Item $FilePath).Length -eq 0) {
         $result.Valid = $false
         $result.Errors.Add("File is empty")
         return $result
     }
 
-    # Parse XML (UTF-8 and UTF-16 both work; try UTF-8 first as it is the normal case)
+    # Read content once for both XML parsing and size measurement.
+    $content = $null
     $xml = $null
     try {
-        $xml = [xml](Get-Content $FilePath -Encoding UTF8 -ErrorAction SilentlyContinue)
-        if (-not $xml) {
-            $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::Unicode)
-            $xml = [xml]$content
-        }
+        $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::UTF8)
+        $xml = [xml]$content
     } catch {
         try {
             $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::Unicode)
@@ -53,6 +45,14 @@ function Test-SITRulePackageXml {
             $result.Errors.Add("XML parse error: $($_.Exception.Message)")
             return $result
         }
+    }
+
+    # Measure UTF-16 size: Purview's real package-size unit (matches the packer's Utf16SizeBytes).
+    $result.FileSize = [System.Text.Encoding]::Unicode.GetByteCount($content)
+
+    if ($result.FileSize -gt $MaxFileSizeBytes) {
+        $result.Valid = $false
+        $result.Errors.Add("File exceeds 150KB UTF-16 limit: $([math]::Round($result.FileSize / 1KB, 1))KB (UTF-16)")
     }
 
     # Validate structure
