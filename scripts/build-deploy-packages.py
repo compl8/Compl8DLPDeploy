@@ -163,6 +163,22 @@ def main():
     slugs = load_slugs(xls_path, args.tier)
     print(f"  Slugs: {len(slugs)}")
 
+    # Exclude verified Microsoft built-ins from PACKING — they're referenced by GUID in the DLP
+    # rules (Build-FromXLS), already exist in the tenant, and don't count toward our package limit.
+    from _bfx_loaders import load_builtin_map
+    builtin_map = load_builtin_map(os.path.join(str(project_root), "tenant-sits-full.csv"))
+    if builtin_map:
+        import openpyxl
+        _wb = openpyxl.load_workbook(str(xls_path), read_only=True, data_only=True)
+        _ws = _wb["SIT Risk Analysis"]
+        name_by_slug = {str(r[1]).strip(): str(r[0]).strip()
+                        for r in _ws.iter_rows(min_row=2, values_only=True) if r[0] and r[1]}
+        _wb.close()
+        _norm = lambda n: "".join(c for c in str(n or "").lower() if c.isalnum())
+        before = len(slugs)
+        slugs = [s for s in slugs if _norm(name_by_slug.get(s, "")) not in builtin_map]
+        print(f"  Excluded {before - len(slugs)} Microsoft built-ins from packing (referenced by GUID instead)")
+
     if args.dry_run:
         n = (len(slugs) + args.batch_size - 1) // args.batch_size
         print(f"\n  [DRY RUN] Would create ~{n} packages")
