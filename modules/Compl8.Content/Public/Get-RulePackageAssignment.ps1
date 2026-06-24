@@ -42,6 +42,7 @@ function Get-RulePackageAssignment {
     $maxEntities = $limits.MaxSitsPerRulePackage
     $maxBytes = $limits.PreferredRulePackageBytes
     $maxPackages = $limits.MaxRulePackagesPerTenant
+    $maxPackages = $maxPackages - $limits.ReservedManualPackages   # reserve slot(s) for manual additions
 
     # Package order: parse '-NN[a]' ordinal suffix; unparseable names sort last by name.
     function Get-PackageSortKey {
@@ -87,7 +88,8 @@ function Get-RulePackageAssignment {
 
     # Pass 3 — placement: fill ascending-ordinal headroom, then open new packages.
     $dropped = [System.Collections.Generic.List[object]]::new()
-    foreach ($item in ($unplaced | Sort-Object { $itemIndex[$_.Slug] })) {
+    # FFD: largest items claim space first; ties broken by original order for determinism.
+    foreach ($item in ($unplaced | Sort-Object @{ Expression = { [int]$_.SizeBytes }; Descending = $true }, @{ Expression = { $itemIndex[$_.Slug] } })) {
         $placed = $false
         foreach ($name in ($groups.Keys | Sort-Object { Get-PackageSortKey $_ })) {
             $group = $groups[$name]

@@ -435,6 +435,23 @@ Describe 'Get-RulePackageAssignment' {
         $r = Invoke-Pack $items $prior
         $r.Packages[0].Name | Should -Be 'QGISCF-medium-07a'
     }
+
+    It 'caps the automated build at 9 packages (reserves the 10th)' {
+        # 10 items each just under the preferred cap -> would be 10 packages, but cap is 9 -> 1 dropped.
+        $big = [int]($script:Limits.PreferredRulePackageBytes - 1000)
+        $items = 1..10 | ForEach-Object { New-PackItem "big-$_" $big }
+        $r = Invoke-Pack $items
+        @($r.Packages).Count | Should -Be 9
+        @($r.Dropped).Count  | Should -Be 1
+    }
+    It 'places largest-first (FFD): a big item is not stranded behind small ones' {
+        $cap = $script:Limits.PreferredRulePackageBytes
+        # one near-cap item + many small; FFD must give the big item its own package first.
+        $items = @(New-PackItem 'huge' ([int]($cap - 500))) + (1..40 | ForEach-Object { New-PackItem "s-$_" 2000 })
+        $r = Invoke-Pack $items
+        $hugePkg = $r.Packages | Where-Object { $_.Slugs -contains 'huge' }
+        @($hugePkg.Slugs).Count | Should -Be 1   # big item alone; smalls fill OTHER packages
+    }
 }
 
 Describe 'ConvertTo-RulePackageXml' {
