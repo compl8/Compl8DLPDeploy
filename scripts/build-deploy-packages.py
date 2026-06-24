@@ -231,7 +231,9 @@ def main():
         print(f"  WARNING: {len(dropped)} slug(s) dropped (no headroom in {MAX_PACKAGES} packages): {dropped}")
 
     # ---- Phase 3: fetch each bin, verify UTF-16 <= hard cap, write UTF-8 ----
-    results = []
+    # `built` tracks the slug set + REAL fetched size per WRITTEN package, so the merge pass
+    # below can recombine under-full packages on measured sizes (no fragile estimation).
+    built = []
     work = [(b, f"{prefix}-{args.tier}-{i+1:02d}") for i, b in enumerate(bins)]
     while work:
         batch_slugs, pkg_name = work.pop(0)
@@ -248,7 +250,7 @@ def main():
             with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:
                 f.write(xml_text)
             print(f"OK ({entities} entities, {size16 // 1024}KB UTF-16)")
-            results.append({"name": pkg_name, "entities": entities, "size": size16})
+            built.append({"name": pkg_name, "slugs": list(batch_slugs), "size": size16})
         except urllib.error.HTTPError as e:
             if e.code == 422 and len(batch_slugs) > 1:
                 half = len(batch_slugs) // 2
@@ -261,6 +263,68 @@ def main():
         except Exception as e:
             print(f"FAILED: {e}")
         time.sleep(args.delay)
+
+    # ---- Phase 3b: MERGE pass — combine under-full packages by REAL fetched UTF-16 size ----
+    # The split-in-half on 422 leaves many half-full packages. Greedily merge the two smallest
+    # that, when fetched together, still fit PREFERRED_PACKAGE_UTF16. Repeat until no pair merges.
+    # Capped to avoid pathological loops; uses measured sizes only (no estimation).
+    MERGE_FETCH_CAP = 200
+    merge_fetches = 0
+    if len(built) > 1:
+        print(f"  Merge pass: {len(built)} packages, recombining under-full ones...")
+    changed = True
+    while changed and len(built) > 1 and merge_fetches < MERGE_FETCH_CAP:
+        changed = False
+        built.sort(key=lambda p: p["size"])
+        for i in range(len(built)):
+            for j in range(i + 1, len(built)):
+                if merge_fetches >= MERGE_FETCH_CAP:
+                    break
+                union = built[i]["slugs"] + built[j]["slugs"]
+                merge_fetches += 1
+                try:
+                    merged_xml = optimise(fetch_bundle(union, "merge"), publisher)
+                except Exception as e:
+                    print(f"    merge fetch failed ({e}); skipping this pair")
+                    time.sleep(args.delay); continue
+                msize = utf16_len(merged_xml)
+                time.sleep(args.delay)
+                if msize <= PREFERRED_PACKAGE_UTF16:
+                    # collapse j into i: remove both old files, keep merged xml on i (temp name)
+                    for old in (built[i]["name"], built[j]["name"]):
+                        op = os.path.join(output_dir, f"{old}.xml")
+                        if os.path.isfile(op):
+                            os.remove(op)
+                    tmp_name = f"__merge_{i}_{j}"
+                    with open(os.path.join(output_dir, f"{tmp_name}.xml"), "w", encoding="utf-8") as f:
+                        f.write(merged_xml)
+                    built[i] = {"name": tmp_name, "slugs": union, "size": msize}
+                    del built[j]
+                    print(f"    merged -> {len(union)} slugs, {msize // 1024}KB UTF-16 ({len(built)} packages remain)")
+                    changed = True
+                    break
+            if changed:
+                break
+    if merge_fetches >= MERGE_FETCH_CAP:
+        print(f"  WARNING: merge-fetch cap ({MERGE_FETCH_CAP}) hit; stopping merge pass early")
+
+    # ---- Phase 3c: RENUMBER to a clean sequential set {prefix}-{tier}-NN.xml ----
+    # Two-step to avoid clobbering a not-yet-read source whose name collides with a final name:
+    # (1) read every package's XML into memory and delete its on-disk file; (2) write the clean set.
+    built.sort(key=lambda p: (-p["size"], p["name"]))
+    staged = []
+    for p in built:
+        src = os.path.join(output_dir, f"{p['name']}.xml")
+        with open(src, encoding="utf-8") as f:
+            xml_text = f.read()
+        os.remove(src)
+        staged.append((xml_text, p["size"]))
+    results = []
+    for idx, (xml_text, size16) in enumerate(staged):
+        final_name = f"{prefix}-{args.tier}-{idx+1:02d}"
+        with open(os.path.join(output_dir, f"{final_name}.xml"), "w", encoding="utf-8") as f:
+            f.write(xml_text)
+        results.append({"name": final_name, "entities": count_entities(xml_text), "size": size16})
 
     # Write registry
     reg_path = os.path.join(output_dir, "deploy-registry.json")
