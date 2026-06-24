@@ -187,6 +187,9 @@ def main():
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(single, f, indent=2)
     live = {s: single[s] for s in slugs if single.get(s)}
+    missing = [s for s in slugs if not single.get(s)]
+    if missing:
+        print(f"  WARNING: {len(missing)} slug(s) excluded from packing (measurement failed): {missing}")
 
     # ---- Estimate the constant package wrapper, so FFD packs on MARGINAL size ----
     # single(a) = wrapper + marginal(a);  pair(a,b) = wrapper + marginal(a) + marginal(b) (+shared, ignored)
@@ -235,6 +238,8 @@ def main():
                 half = len(batch_slugs) // 2
                 print("OVERSIZED (server 422), splitting...")
                 work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
+            elif e.code == 422:
+                print(f"OVERSIZED (server 422, single slug '{batch_slugs[0]}') — exceeds 150KB, cannot deploy as-is")
             else:
                 print(f"FAILED: {e}")
         except Exception as e:
