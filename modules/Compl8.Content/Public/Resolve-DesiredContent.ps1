@@ -119,7 +119,7 @@ function Resolve-DesiredContent {
         ) -join "`n"
         [pscustomobject]@{
             Slug      = $item.Slug
-            SizeBytes = [System.Text.Encoding]::UTF8.GetByteCount($sectionText)
+            SizeBytes = [System.Text.Encoding]::Unicode.GetByteCount($sectionText)   # UTF-16: matches Purview's real package-size unit
         }
     })
 
@@ -148,8 +148,8 @@ function Resolve-DesiredContent {
             $rulePackId = (Update-EntityLedger -Path $ledgerPath -BindPackage $package.Name).rulePackId
             $composed = ConvertTo-RulePackageXml -Name $package.Name -Items $packageItems `
                 -Ledger $ledger -Publisher $Publisher -RulePackId $rulePackId
-            if ($composed.SizeBytes -gt $hardCap) {
-                throw "Composed package '$($package.Name)' is $($composed.SizeBytes) bytes — over the $hardCap-byte hard cap; resolve aborted."
+            if ($composed.Utf16SizeBytes -gt $hardCap) {
+                throw "Composed package '$($package.Name)' is $($composed.Utf16SizeBytes) bytes — over the $hardCap-byte hard cap; resolve aborted."
             }
             $fileName = "$($package.Name).xml"
             $filePath = Join-Path $staging $fileName

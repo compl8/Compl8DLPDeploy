@@ -683,6 +683,98 @@ Describe 'Resolve-DesiredContent pipeline' {
             param([string]$Workspace)
             Resolve-DesiredContent -WorkspacePath $Workspace -Prefix 'P' -Publisher 'Test Pub'
         }
+
+        # Helper: builds a workspace whose single composed package is well over 150 KB UTF-16
+        # but well under 150 KB UTF-8, so the OLD UTF-8 cap check passes while the NEW UTF-16
+        # cap check fires.
+        #
+        # Design: the regex content uses 1 000 LF-terminated lines of 74 ASCII chars each.
+        #   sectionText (entity+regex+resource joined with LF) ≈ 75 372 chars
+        #     UTF-16 SizeBytes ≈ 150 744  →  packer projection ≈ 151 344 ≤ 151 552 PREFERRED cap → PACKED
+        #     UTF-8  SizeBytes ≈  75 372  →  packer projection ≈  75 972 ≤ 151 552                → PACKED
+        #   After CRLF normalisation (each LF → CRLF adds 1 char per newline):
+        #     composed body ≈ 77 061 chars  →  Utf16SizeBytes ≈ 154 122 > 153 600 HARD cap → THROW
+        #     composed body UTF-8 ≈ 77 061 bytes                        < 153 600           → no old throw
+        function New-OvercapWorkspace {
+            param([string]$Name)
+            $ws = Join-Path $TestDrive $Name
+            $releasePath = Join-Path $ws 'desired' 'release'
+            New-Item -ItemType Directory -Path (Join-Path $releasePath 'fragments') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $releasePath 'definitions') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $releasePath 'dictionaries') -Force | Out-Null
+
+            # 1 000 lines of 74 "a"s, each terminated by LF.  When CRLF-normalised in
+            # ConvertTo-RulePackageXml each LF becomes CRLF (+1 char), pushing Utf16SizeBytes
+            # over 153 600 while UTF-8 SizeBytes stays well below it.
+            $lineContent = 'a' * 74
+            $bigRegexContent = ($lineContent + "`n") * 1000   # 75 000 chars: 74 000 a's + 1 000 LF
+            $entityId = 'eeeeeeee-eeee-4eee-8eee-000000000001'
+            $fragJson = [pscustomobject]@{
+                schemaVersion = 'compl8.fragment/v1'
+                slug          = 'big-item'
+                entityId      = $entityId
+                sections      = [pscustomobject]@{
+                    entity   = "<Entity id=`"$entityId`" patternsProximity=`"300`" recommendedConfidence=`"85`"><Pattern confidenceLevel=`"85`"><IdMatch idRef=`"Pattern_big`" /></Pattern></Entity>"
+                    regexes  = @("<Regex id=`"Pattern_big`">$bigRegexContent</Regex>")
+                    keywords  = @()
+                    filters   = @()
+                    validators = @()
+                    resources = @("<Resource idRef=`"$entityId`"><Name default=`"true`" langcode=`"en-us`">Big Item</Name><Description default=`"true`" langcode=`"en-us`">Oversized for UTF-16 cap test.</Description></Resource>")
+                }
+            } | ConvertTo-Json -Depth 6
+            Set-Content -LiteralPath (Join-Path $releasePath 'fragments' 'big-item.json') -Value $fragJson -Encoding UTF8
+
+            $defJson = '{"schemaVersion":"compl8.definition/v1","slug":"big-item","type":"sit","name":"Big Item","description":"Oversized test SIT"}'
+            Set-Content -LiteralPath (Join-Path $releasePath 'definitions' 'big-item.json') -Value $defJson -Encoding UTF8
+
+            [pscustomobject]@{
+                schemaVersion = 'compl8.dictionaries/v1'
+                dictionaries  = @()
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releasePath 'dictionaries' 'manifest.json') -Encoding UTF8
+
+            [pscustomobject]@{
+                schemaVersion = 'compl8.release/v1'
+                version       = '2026.06-test.overcap'
+                generatedUtc  = '2026-06-13T00:00:00Z'
+                tier          = 'test'
+                items         = @(
+                    [pscustomobject]@{
+                        slug          = 'big-item'
+                        type          = 'sit'
+                        entityId      = $entityId
+                        name          = 'Big Item'
+                        fragment      = 'fragments/big-item.json'
+                        definition    = 'definitions/big-item.json'
+                        dictionaryRefs = @()
+                        sourceHash    = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+                    }
+                )
+                contentHash   = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $releasePath 'release.json') -Encoding UTF8
+
+            # Minimal empty overlay
+            $overlayPath = Join-Path $ws 'desired' 'overlay'
+            New-Item -ItemType Directory -Path $overlayPath -Force | Out-Null
+            [pscustomobject]@{
+                schemaVersion = 'compl8.overlay/v1'
+                add           = @()
+                override      = @()
+                disable       = @()
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $overlayPath 'overlay.json') -Encoding UTF8
+
+            # Ledger with one entry + one package binding
+            [pscustomobject]@{
+                schemaVersion = 'compl8.entity-ledger/v1'
+                entries       = @(
+                    [pscustomobject]@{ slug = 'big-item'; entityId = $entityId; state = 'active'; source = 'release'; firstBound = '2026-06-13' }
+                )
+                packages      = @(
+                    [pscustomobject]@{ name = 'P-test-01'; rulePackId = 'deadbeef-dead-4eef-8eef-deadbeefcafe' }
+                )
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ws 'entity-ledger.json') -Encoding UTF8
+
+            $ws
+        }
     }
 
     It 'resolves end-to-end: package file, manifest, ledger-pinned RulePack id' {
@@ -764,5 +856,13 @@ Describe 'Resolve-DesiredContent pipeline' {
         $ov | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ovPath
         $m = Invoke-Resolve $ws
         @($m.warnings | Where-Object { $_ -like 'conflict:override-base-changed:bail-note*' }).Count | Should -Be 1
+    }
+
+    It 'rejects a package over the 150KB UTF-16 hard cap' {
+        # Build a release whose one composed package is well over 150KB UTF-16 (but its UTF-8 size
+        # alone would be under the old UTF-8 cap). Use the block's fixture helpers to write the release.
+        $ws = New-OvercapWorkspace 'ws-over-utf16-cap'
+        { Resolve-DesiredContent -WorkspacePath $ws -Prefix 'P' -Publisher 'Pub' } |
+            Should -Throw -ExpectedMessage '*over the 153600-byte hard cap*'
     }
 }
