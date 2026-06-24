@@ -21,6 +21,11 @@ Describe 'Get-DeploymentLimits' {
     It 'keeps the auto-label CONSUMPTION limit separate from the authoring cap' {
         (Get-DeploymentLimits).AutoLabelMaxSitsPerRule | Should -Be 125
     }
+    It 'reserves one package slot for manual additions' {
+        $l = Get-DeploymentLimits
+        $l.ReservedManualPackages | Should -Be 1
+        ($l.MaxRulePackagesPerTenant - $l.ReservedManualPackages) | Should -Be 9
+    }
 }
 
 Describe 'DLP-Deploy facade' {

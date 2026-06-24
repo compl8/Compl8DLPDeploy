@@ -10,6 +10,7 @@ function Get-DeploymentLimits {
         by a single auto-labeling rule.
         PreferredRulePackageBytes is the toolkit's self-imposed safety margin under
         the hard 150 KB package cap (kept at the historical 148 KB).
+        All *Bytes limits are measured UTF-16LE (Purview/testpattern enforce 150KB as UTF-16).
     #>
     [CmdletBinding()]
     param()
@@ -20,6 +21,7 @@ function Get-DeploymentLimits {
         MaxRulePackageBytes       = 150KB    # 153600 — hard Purview cap
         PreferredRulePackageBytes = 148KB    # 151552 — toolkit margin under the cap
         MaxRulePackagesPerTenant  = 10
+        ReservedManualPackages    = 1        # automated build uses MaxRulePackagesPerTenant - this; 10th left for manual adds
         # Keyword dictionary budget (docs conflict 480 KB vs 1 MB; warn early, stop hard)
         DictionaryBudgetWarnBytes = 480KB    # 491520
         DictionaryBudgetMaxBytes  = 1MB      # 1048576
