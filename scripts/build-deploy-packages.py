@@ -26,6 +26,7 @@ from pathlib import Path
 MAX_PACKAGE_UTF16 = 150 * 1024        # 153600 — Purview/testpattern hard cap, measured UTF-16LE
 PREFERRED_PACKAGE_UTF16 = 148 * 1024  # 151552 — working budget under the cap
 MAX_PACKAGES = 9                      # automated build cap; 10th tenant slot reserved for manual adds
+MAX_SITS_PER_PACKAGE = 50             # Purview authoring hard cap: 50 entities per rule package
 TESTPATTERN_API = "https://testpattern.dev/api/export/purview-bundle"
 TIER_COLS = {"small": 9, "medium": 10, "large": 11}
 
@@ -34,11 +35,15 @@ def utf16_len(text):
     return len(text.encode("utf-16-le"))
 
 
-def select_bin(remaining, sizes, shrink, target):
+def select_bin(remaining, sizes, shrink, target, max_entities=MAX_SITS_PER_PACKAGE):
     """Greedily choose slugs (caller passes `remaining` sorted desc by sizes[s]) whose estimated
-    real size (single-slug size * shrink) sums to ~target. Pure. Returns (chosen, rest)."""
+    real size (single-slug size * shrink) sums to ~target. Pure. Returns (chosen, rest).
+    Also enforces a hard entity cap: once len(chosen) >= max_entities remaining slugs go to rest."""
     chosen, rest, est = [], [], 0.0
     for s in remaining:
+        if len(chosen) >= max_entities:
+            rest.append(s)
+            continue
         e = sizes[s] * shrink
         if est + e <= target:
             chosen.append(s); est += e
@@ -214,7 +219,7 @@ def main():
     while remaining and pkgnum < MAX_PACKAGES:
         pkgnum += 1
         pkg_name = f"{prefix}-{args.tier}-{pkgnum:02d}"
-        chosen, rest = select_bin(remaining, live, shrink, TARGET)
+        chosen, rest = select_bin(remaining, live, shrink, TARGET, max_entities=MAX_SITS_PER_PACKAGE)
         if not chosen:
             chosen, rest = [remaining[0]], remaining[1:]
         # fetch + verify; back off the largest slug until the real composed size fits, or it's a lone slug
@@ -247,8 +252,9 @@ def main():
             with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:
                 f.write(xml_text)
             entities = count_entities(xml_text)
-            print(f"  {pkg_name}: OK ({entities} entities, {real//1024}KB UTF-16, {len(chosen)} slugs)")
-            results.append({"name": pkg_name, "entities": entities, "size": real, "slugs": list(chosen)})
+            utf8_size = len(xml_text.encode("utf-8"))  # actual on-disk size written
+            print(f"  {pkg_name}: OK ({entities} entities, {real//1024}KB UTF-16, {utf8_size//1024}KB UTF-8, {len(chosen)} slugs)")
+            results.append({"name": pkg_name, "entities": entities, "size": utf8_size, "utf16bytes": real, "slugs": list(chosen)})
         else:
             print(f"  OVERSIZED single slug '{chosen[0]}' ({real//1024}KB) — exceeds 150KB, cannot deploy as-is")
             dropped.append(chosen[0])
@@ -266,8 +272,10 @@ def main():
         still = []
         for slug in dropped:
             placed = False
-            # try emptiest (smallest) package first to spread load
+            # try emptiest (smallest) package first to spread load; skip packages already at entity cap
             for r in sorted(results, key=lambda x: x["size"]):
+                if len(r["slugs"]) >= MAX_SITS_PER_PACKAGE:
+                    continue
                 trial = r["slugs"] + [slug]
                 try:
                     txt = optimise(fetch_bundle(trial, r["name"]), publisher)
@@ -280,8 +288,9 @@ def main():
                 if sz <= ACCEPT:
                     with open(os.path.join(output_dir, f"{r['name']}.xml"), "w", encoding="utf-8") as f:
                         f.write(txt)
-                    r["slugs"] = trial; r["size"] = sz; r["entities"] = count_entities(txt)
-                    print(f"    + {slug} -> {r['name']} ({sz//1024}KB UTF-16)")
+                    utf8_sz = len(txt.encode("utf-8"))  # actual on-disk size
+                    r["slugs"] = trial; r["size"] = utf8_sz; r["utf16bytes"] = sz; r["entities"] = count_entities(txt)
+                    print(f"    + {slug} -> {r['name']} ({sz//1024}KB UTF-16, {utf8_sz//1024}KB UTF-8)")
                     placed = True; break
             if not placed:
                 still.append(slug)
