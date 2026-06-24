@@ -13,15 +13,15 @@ GUID_RE = re.compile(
 )
 
 
-def resolve_guid(entry, xml_lookup, classifier_lookup):
-    """Resolve GUID for an entry using available sources.
+def _norm_name(n):
+    return "".join(c for c in str(n or "").lower() if c.isalnum())
 
-    Returns (guid, source) where source is one of:
-      'spreadsheet' - GUID from XLS GUID column
-      'xml' - GUID from XML package entity
-      'existing' - GUID from current classifiers.json
-      'unresolved' - no GUID found
-    """
+
+def resolve_guid(entry, xml_lookup, classifier_lookup, builtin_map=None):
+    """Resolve GUID. Priority: verified Microsoft built-in (tenant) -> spreadsheet UUID -> XML -> existing -> unresolved."""
+    # 0. Verified Microsoft built-in (authoritative; independent of packing).
+    if builtin_map and _norm_name(entry["name"]) in builtin_map:
+        return builtin_map[_norm_name(entry["name"])], "builtin"
     # 1. Spreadsheet GUID column (actual UUID format)
     if GUID_RE.match(entry["guid_slug"]):
         return entry["guid_slug"], "spreadsheet"
@@ -77,14 +77,14 @@ def build_classifier_entry(entry, guid, classifier_type):
         return result
 
 
-def build_classifiers_json(entries, xml_lookup, classifier_lookup):
+def build_classifiers_json(entries, xml_lookup, classifier_lookup, builtin_map=None):
     """Build the full classifiers.json structure from spreadsheet entries.
 
     Returns (classifiers_dict, stats_dict).
     """
     classifiers = defaultdict(list)
     stats = {
-        "resolved": {"spreadsheet": 0, "xml": 0, "existing": 0},
+        "resolved": {"builtin": 0, "spreadsheet": 0, "xml": 0, "existing": 0},
         "unresolved": [],
         "by_label": defaultdict(int),
         "by_type": defaultdict(int),
@@ -104,7 +104,7 @@ def build_classifiers_json(entries, xml_lookup, classifier_lookup):
             continue
         seen.add(key)
 
-        guid, source = resolve_guid(entry, xml_lookup, classifier_lookup)
+        guid, source = resolve_guid(entry, xml_lookup, classifier_lookup, builtin_map)
 
         # Map classifier type from spreadsheet to classifiers.json type
         ct = entry["classifier_type"]
@@ -199,6 +199,7 @@ def print_report(stats, label_issues, total_entries, tier):
     unresolved_total = len(stats["unresolved"])
     print(f"\n  Entries processed: {total_entries}")
     print(f"  GUIDs resolved:   {resolved_total}")
+    print(f"    From builtin: {stats['resolved']['builtin']}")
     print(f"    From spreadsheet: {stats['resolved']['spreadsheet']}")
     print(f"    From XML packages: {stats['resolved']['xml']}")
     print(f"    From existing config: {stats['resolved']['existing']}")

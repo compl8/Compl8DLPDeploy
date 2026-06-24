@@ -39,6 +39,7 @@ from _bfx_loaders import (
     build_xml_guid_lookup,
     build_existing_classifier_lookup,
     load_labels_json,
+    load_builtin_map,
 )
 from _bfx_analysis import (
     filter_by_tier,
@@ -109,6 +110,11 @@ def main():
         default="QGISCFDLM",
         help="Name of the label definition sheet in the workbook (default: QGISCFDLM)",
     )
+    parser.add_argument(
+        "--builtin-map",
+        default="tenant-sits-full.csv",
+        help="CSV of tenant SITs (Name,Id,Publisher) for authoritative built-in resolution",
+    )
 
     args = parser.parse_args()
 
@@ -167,6 +173,9 @@ def main():
     classifier_lookup = build_existing_classifier_lookup(str(config_dir))
     print(f"    {len(classifier_lookup)} existing entries")
 
+    builtin_map = load_builtin_map(os.path.join(str(project_root), args.builtin_map))
+    print(f"    Built-in map: {len(builtin_map)} Microsoft SITs")
+
     # Load label definitions for validation
     label_sheet_data = load_label_sheet(str(xls_path), args.label_sheet)
     labels_json = load_labels_json(str(config_dir))
@@ -174,7 +183,7 @@ def main():
 
     # Build classifiers.json
     classifiers, stats = build_classifiers_json(
-        entries, xml_lookup, classifier_lookup,
+        entries, xml_lookup, classifier_lookup, builtin_map
     )
 
     # Strip unresolved entries unless --include-unresolved

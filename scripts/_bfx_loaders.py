@@ -255,3 +255,18 @@ def load_labels_json(config_dir):
         return []
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_builtin_map(csv_path):
+    """name(normalized) -> GUID for Publisher == 'Microsoft Corporation' (authoritative built-in set)."""
+    import csv
+    out = {}
+    if not csv_path or not os.path.isfile(csv_path):
+        return out
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            if "microsoft" in (row.get("Publisher") or "").lower():
+                key = "".join(c for c in (row.get("Name") or "").lower() if c.isalnum())
+                if key:
+                    out[key] = row.get("Id")
+    return out
