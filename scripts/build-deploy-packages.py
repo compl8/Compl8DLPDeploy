@@ -23,10 +23,36 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-MAX_PACKAGE_SIZE = 148 * 1024  # 148KB, margin under 150KB
-MAX_PACKAGES = 9
+MAX_PACKAGE_UTF16 = 150 * 1024        # 153600 — Purview/testpattern hard cap, measured UTF-16LE
+PREFERRED_PACKAGE_UTF16 = 148 * 1024  # 151552 — working budget under the cap
+MAX_PACKAGES = 9                      # automated build cap; 10th tenant slot reserved for manual adds
 TESTPATTERN_API = "https://testpattern.dev/api/export/purview-bundle"
 TIER_COLS = {"small": 9, "medium": 10, "large": 11}
+
+
+def utf16_len(text):
+    return len(text.encode("utf-16-le"))
+
+
+def ffd_assign(slug_sizes, wrapper, budget, max_packages):
+    """First-Fit-Decreasing: place largest slugs first into bins of (budget - wrapper) capacity.
+    Returns (bins, dropped). A slug exceeding an empty bin, or not fitting within max_packages, is dropped."""
+    cap = budget - wrapper
+    order = sorted(slug_sizes, key=lambda s: (-slug_sizes[s], s))
+    bins, fills, dropped = [], [], []
+    for slug in order:
+        sz = slug_sizes[slug]
+        placed = False
+        for i in range(len(bins)):
+            if fills[i] + sz <= cap:
+                bins[i].append(slug); fills[i] += sz; placed = True; break
+        if placed:
+            continue
+        if len(bins) < max_packages and sz <= cap:
+            bins.append([slug]); fills.append(sz)
+        else:
+            dropped.append(slug)
+    return bins, dropped
 
 
 def load_slugs(xls_path, tier):
@@ -144,65 +170,75 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Build work queue
-    pkg_num = 0
-    work = []
-    for i in range(0, len(slugs), args.batch_size):
-        pkg_num += 1
-        work.append((slugs[i:i + args.batch_size], f"{prefix}-{args.tier}-{pkg_num:02d}"))
+    # ---- Phase 1: measure each slug's UTF-16 footprint (single-slug bundle), cached ----
+    cache_path = os.path.join(output_dir, ".size-cache.json")
+    single = {}
+    if os.path.isfile(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            single = json.load(f)
+    to_measure = [s for s in slugs if s not in single]
+    print(f"  Measuring {len(to_measure)} slugs (cached: {len(slugs) - len(to_measure)})...")
+    for s in to_measure:
+        try:
+            single[s] = utf16_len(optimise(fetch_bundle([s], "measure"), publisher))
+        except Exception as e:
+            print(f"    measure {s}: FAILED {e} (skipping)"); single[s] = None
+        time.sleep(args.delay)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(single, f, indent=2)
+    live = {s: single[s] for s in slugs if single.get(s)}
 
+    # ---- Estimate the constant package wrapper, so FFD packs on MARGINAL size ----
+    # single(a) = wrapper + marginal(a);  pair(a,b) = wrapper + marginal(a) + marginal(b) (+shared, ignored)
+    # => wrapper = single(a) + single(b) - pair(a,b).  One extra fetch; conservative if a,b share content.
+    wrapper = 1024
+    keys = list(live.keys())
+    if len(keys) >= 2:
+        a, b = keys[0], keys[1]
+        try:
+            pair = utf16_len(optimise(fetch_bundle([a, b], "wrapcal"), publisher))
+            est = live[a] + live[b] - pair
+            if est > 0:
+                wrapper = est
+        except Exception as e:
+            print(f"    wrapper calibration failed ({e}); using default {wrapper}")
+        time.sleep(args.delay)
+    print(f"  Package wrapper (UTF-16) estimated at {wrapper} bytes")
+    marginal = {s: max(live[s] - wrapper, 1) for s in live}
+
+    # ---- Phase 2: FFD assign marginals into <=9 packages of (PREFERRED - wrapper) capacity ----
+    bins, dropped = ffd_assign(marginal, wrapper=wrapper, budget=PREFERRED_PACKAGE_UTF16, max_packages=MAX_PACKAGES)
+    if dropped:
+        print(f"  WARNING: {len(dropped)} slug(s) dropped (no headroom in {MAX_PACKAGES} packages): {dropped}")
+
+    # ---- Phase 3: fetch each bin, verify UTF-16 <= hard cap, write UTF-8 ----
     results = []
-    retry_queue = []
-
-    while work or retry_queue:
-        if not work:
-            work = retry_queue
-            retry_queue = []
-
+    work = [(b, f"{prefix}-{args.tier}-{i+1:02d}") for i, b in enumerate(bins)]
+    while work:
         batch_slugs, pkg_name = work.pop(0)
         print(f"  {pkg_name} ({len(batch_slugs)} slugs)...", end=" ", flush=True)
-
         try:
-            raw_xml = fetch_bundle(batch_slugs, pkg_name)
-            xml_text = optimise(raw_xml, publisher)
-            size = len(xml_text.encode("utf-8"))
-            entities = count_entities(xml_text)
-
-            if size > MAX_PACKAGE_SIZE:
-                if len(batch_slugs) <= 5:
-                    print(f"OVERSIZED ({size // 1024}KB, {len(batch_slugs)} slugs) - cannot split further")
-                    continue
+            xml_text = optimise(fetch_bundle(batch_slugs, pkg_name), publisher)
+            size16 = utf16_len(xml_text)
+            if size16 > MAX_PACKAGE_UTF16 and len(batch_slugs) > 1:
                 half = len(batch_slugs) // 2
-                print(f"OVERSIZED ({size // 1024}KB), splitting...")
-                retry_queue.append((batch_slugs[:half], f"{pkg_name}a"))
-                retry_queue.append((batch_slugs[half:], f"{pkg_name}b"))
-                continue
-
-            out_path = os.path.join(output_dir, f"{pkg_name}.xml")
-            with open(out_path, "w", encoding="utf-8") as f:
+                print(f"OVERSIZED ({size16 // 1024}KB UTF-16), splitting...")
+                work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
+                time.sleep(args.delay); continue
+            entities = count_entities(xml_text)
+            with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:
                 f.write(xml_text)
-
-            print(f"OK ({entities} entities, {size // 1024}KB)")
-            results.append({"name": pkg_name, "entities": entities, "size": size})
-
+            print(f"OK ({entities} entities, {size16 // 1024}KB UTF-16)")
+            results.append({"name": pkg_name, "entities": entities, "size": size16})
         except urllib.error.HTTPError as e:
-            # testpattern.dev enforces Purview's 150KB-per-RulePackage limit (measured UTF-16LE) and
-            # returns 422 for an oversized bundle BEFORE we can measure it locally. Treat that 422 like
-            # the local-oversize case: split the batch and retry. A single slug that still 422s is a SIT
-            # whose own package exceeds 150KB and cannot be deployed as-is — report it, don't lose silently.
             if e.code == 422 and len(batch_slugs) > 1:
                 half = len(batch_slugs) // 2
-                print(f"OVERSIZED (server 422, {len(batch_slugs)} slugs), splitting...")
-                retry_queue.append((batch_slugs[:half], f"{pkg_name}a"))
-                retry_queue.append((batch_slugs[half:], f"{pkg_name}b"))
-            elif e.code == 422:
-                print(f"OVERSIZED (server 422, single slug '{batch_slugs[0]}') - exceeds 150KB, cannot deploy as-is")
+                print("OVERSIZED (server 422), splitting...")
+                work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
             else:
                 print(f"FAILED: {e}")
-
         except Exception as e:
             print(f"FAILED: {e}")
-
         time.sleep(args.delay)
 
     # Write registry
