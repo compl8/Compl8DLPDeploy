@@ -454,6 +454,26 @@ Describe 'Get-RulePackageAssignment' {
         $hugePkg = $r.Packages | Where-Object { $_.Slugs -contains 'huge' }
         @($hugePkg.Slugs).Count | Should -Be 1   # big item alone; smalls fill OTHER packages
     }
+
+    It 'P2-3: reservation cap is enforced when Prior already fills MaxRulePackagesPerTenant packages' {
+        # Build a Prior mapping with MaxRulePackagesPerTenant (10) distinct packages,
+        # each holding exactly one small item.  The effective cap is 9 (one slot reserved).
+        # After Pass 1 all 10 items land in 10 prior groups; the reservation guard (Pass 2b)
+        # must evict the highest-ordinal package so only 9 remain.
+        $totalPkgs  = $script:Limits.MaxRulePackagesPerTenant      # 10
+        $effectiveCap = $totalPkgs - $script:Limits.ReservedManualPackages  # 9
+        $slugs = 1..$totalPkgs | ForEach-Object { "pkg$_-item" }
+        $items = $slugs | ForEach-Object { New-PackItem $_ }
+        $prior = @{}
+        for ($i = 0; $i -lt $totalPkgs; $i++) {
+            $prior[$slugs[$i]] = ('P-test-{0:d2}' -f ($i + 1))
+        }
+        $r = Invoke-Pack $items $prior
+        @($r.Packages).Count | Should -BeLessOrEqual $effectiveCap
+        # No item silently lost: placed + dropped must equal input count
+        $placedCount = ($r.Packages | ForEach-Object { @($_.Slugs).Count } | Measure-Object -Sum).Sum
+        ($placedCount + @($r.Dropped).Count) | Should -Be $totalPkgs
+    }
 }
 
 Describe 'ConvertTo-RulePackageXml' {

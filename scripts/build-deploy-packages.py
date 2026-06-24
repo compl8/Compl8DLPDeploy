@@ -192,16 +192,17 @@ def main():
     if os.path.isfile(cache_path):
         with open(cache_path, encoding="utf-8") as f:
             single = json.load(f)
-    to_measure = [s for s in slugs if s not in single]
+    to_measure = [s for s in slugs if not single.get(s)]
     print(f"  Measuring {len(to_measure)} slugs (cached: {len(slugs) - len(to_measure)})...")
     for s in to_measure:
         try:
             single[s] = utf16_len(optimise(fetch_bundle([s], "measure"), publisher))
         except Exception as e:
-            print(f"    measure {s}: FAILED {e} (skipping)"); single[s] = None
+            print(f"    measure {s}: FAILED {e} (skipping)")
+            # Do NOT persist None — leave s absent so it is re-measured next run.
         time.sleep(args.delay)
     with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(single, f, indent=2)
+        json.dump({k: v for k, v in single.items() if v}, f, indent=2)
     live = {s: single[s] for s in slugs if single.get(s)}
     missing = [s for s in slugs if not single.get(s)]
     if missing:
@@ -233,6 +234,9 @@ def main():
                 half = len(batch_slugs) // 2
                 print(f"OVERSIZED ({size16 // 1024}KB UTF-16), splitting...")
                 work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
+                time.sleep(args.delay); continue
+            elif size16 > MAX_PACKAGE_UTF16:
+                print(f"OVERSIZED (single slug '{batch_slugs[0]}', {size16 // 1024}KB UTF-16) — exceeds 150KB, cannot deploy as-is")
                 time.sleep(args.delay); continue
             entities = count_entities(xml_text)
             with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:

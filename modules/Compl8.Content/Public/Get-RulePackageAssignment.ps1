@@ -86,6 +86,17 @@ function Get-RulePackageAssignment {
     }
     foreach ($item in ($evicted | Sort-Object { $itemIndex[$_.Slug] })) { $unplaced.Add($item) }
 
+    # Pass 2b — reservation cap: if prior groups already fill or exceed $maxPackages, evict
+    # entire excess packages (highest ordinal first) so at most $maxPackages groups remain
+    # before Pass 3 opens any new packages.
+    $nonEmptyNames = @($groups.Keys | Where-Object { $groups[$_].Count -gt 0 } | Sort-Object { Get-PackageSortKey $_ } -Descending)
+    while ($nonEmptyNames.Count -gt $maxPackages) {
+        $excessName = $nonEmptyNames[0]
+        foreach ($item in $groups[$excessName]) { $unplaced.Add($item) }
+        $groups.Remove($excessName)
+        $nonEmptyNames = @($groups.Keys | Where-Object { $groups[$_].Count -gt 0 } | Sort-Object { Get-PackageSortKey $_ } -Descending)
+    }
+
     # Pass 3 — placement: fill ascending-ordinal headroom, then open new packages.
     $dropped = [System.Collections.Generic.List[object]]::new()
     # FFD: largest items claim space first; ties broken by original order for determinism.
