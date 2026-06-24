@@ -421,11 +421,13 @@ Describe 'Get-RulePackageAssignment' {
 
     It 'drops items beyond the tenant package cap with a reason, never throws' {
         # 70KB items: exactly two fit per package under the 148KB preferred cap, so 22
-        # items need 11 packages — one over the tenant cap; the last two drop.
+        # items need 11 packages. The automated build is capped at the EFFECTIVE cap
+        # (tenant cap minus the reserved manual slot) = 9, so packages 10-11 (4 items) drop.
+        $effectiveCap = $script:Limits.MaxRulePackagesPerTenant - $script:Limits.ReservedManualPackages
         $items = 1..22 | ForEach-Object { New-PackItem "cap-$_" -SizeBytes 71680 }
         $r = Invoke-Pack $items
-        @($r.Packages).Count | Should -Be $script:Limits.MaxRulePackagesPerTenant
-        @($r.Dropped).Count | Should -Be 2
+        @($r.Packages).Count | Should -Be $effectiveCap
+        @($r.Dropped).Count | Should -Be 4
         $r.Dropped[0].Reason | Should -Match 'package'
     }
 
