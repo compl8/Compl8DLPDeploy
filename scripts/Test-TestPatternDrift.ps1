@@ -215,9 +215,9 @@ function Test-PurviewBundleXml {
         return
     }
 
-    $sizeBytes = [System.Text.Encoding]::UTF8.GetByteCount($XmlText)
+    $sizeBytes = [System.Text.Encoding]::Unicode.GetByteCount($XmlText)
     if ($sizeBytes -gt $MaxPackageSizeBytes) {
-        Add-DriftError "$Source Purview bundle is $sizeBytes bytes, above the configured $MaxPackageSizeBytes byte guardrail."
+        Add-DriftError "$Source Purview bundle is $sizeBytes UTF-16 bytes, above the configured $MaxPackageSizeBytes UTF-16 byte guardrail."
     }
 
     try {
@@ -273,7 +273,7 @@ function Test-PurviewBundleXml {
         Add-DriftError "$Source Purview bundle contains namespace-resetting child elements."
     }
 
-    Write-Host "  $Source bundle: $($entities.Count) entit$(if ($entities.Count -eq 1) { 'y' } else { 'ies' }), $sizeBytes bytes, $($placeholders.Count) dictionary placeholder(s)" -ForegroundColor Gray
+    Write-Host "  $Source bundle: $($entities.Count) entit$(if ($entities.Count -eq 1) { 'y' } else { 'ies' }), $sizeBytes UTF-16 bytes, $($placeholders.Count) dictionary placeholder(s)" -ForegroundColor Gray
 }
 
 function Invoke-TestPatternJson {
