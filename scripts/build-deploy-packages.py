@@ -236,6 +236,11 @@ def main():
                 else:
                     print(f"FAILED: {e}")
                     dropped.extend(chosen); chosen = []; break
+            except Exception as e:
+                # Non-HTTP failure (timeout/DNS/TLS): stay resilient like the measurement phase — drop
+                # this bin's slugs (the back-fill pass retries them) instead of aborting the whole build.
+                print(f"NETWORK ERROR: {e}")
+                dropped.extend(chosen); chosen = []; break
             else:
                 print(f"{real//1024}KB UTF-16")
             if real <= ACCEPT or len(chosen) == 1:
@@ -284,6 +289,8 @@ def main():
                     if e.code == 422:
                         time.sleep(args.delay); continue
                     print(f"    back-fill fetch failed for {slug} into {r['name']}: {e}"); break
+                except Exception as e:
+                    print(f"    back-fill network error for {slug} into {r['name']}: {e}"); break
                 time.sleep(args.delay)
                 if sz <= ACCEPT:
                     with open(os.path.join(output_dir, f"{r['name']}.xml"), "w", encoding="utf-8") as f:
