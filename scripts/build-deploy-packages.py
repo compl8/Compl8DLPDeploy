@@ -34,25 +34,17 @@ def utf16_len(text):
     return len(text.encode("utf-16-le"))
 
 
-def ffd_assign(slug_sizes, wrapper, budget, max_packages):
-    """First-Fit-Decreasing: place largest slugs first into bins of (budget - wrapper) capacity.
-    Returns (bins, dropped). A slug exceeding an empty bin, or not fitting within max_packages, is dropped."""
-    cap = budget - wrapper
-    order = sorted(slug_sizes, key=lambda s: (-slug_sizes[s], s))
-    bins, fills, dropped = [], [], []
-    for slug in order:
-        sz = slug_sizes[slug]
-        placed = False
-        for i in range(len(bins)):
-            if fills[i] + sz <= cap:
-                bins[i].append(slug); fills[i] += sz; placed = True; break
-        if placed:
-            continue
-        if len(bins) < max_packages and sz <= cap:
-            bins.append([slug]); fills.append(sz)
+def select_bin(remaining, sizes, shrink, target):
+    """Greedily choose slugs (caller passes `remaining` sorted desc by sizes[s]) whose estimated
+    real size (single-slug size * shrink) sums to ~target. Pure. Returns (chosen, rest)."""
+    chosen, rest, est = [], [], 0.0
+    for s in remaining:
+        e = sizes[s] * shrink
+        if est + e <= target:
+            chosen.append(s); est += e
         else:
-            dropped.append(slug)
-    return bins, dropped
+            rest.append(s)
+    return chosen, rest
 
 
 def load_slugs(xls_path, tier):
@@ -208,53 +200,94 @@ def main():
     if missing:
         print(f"  WARNING: {len(missing)} slug(s) excluded from packing (measurement failed): {missing}")
 
-    # ---- Phase 2: FFD assign on RAW single-slug sizes (the true per-slug cost when composed) ----
-    # Empirically (measured on the real build), a composed package is ~= the sum of its slugs'
-    # single-slug sizes minus only ~1KB/slug of shared scaffolding. Marginal-based packing
-    # (single - wrapper) UNDER-counts and over-fills bins -> server 422 -> split -> too many pkgs.
-    # So we pack on raw single sizes against a budget set ABOVE the hard cap by the composition
-    # shrink (~16%): real_composed ~= 0.835 * sum(singles_in_bin). A 165KB singles-budget lands
-    # real packages near ~138KB UTF-16, safely under the 150KB hard cap, in <=9 bins with 0 dropped.
-    # Phase 3 still verifies the REAL size and splits any bin that overshoots, as a backstop.
-    SINGLES_PACK_BUDGET = 165 * 1024
-    bins, dropped = ffd_assign(live, wrapper=0, budget=SINGLES_PACK_BUDGET, max_packages=MAX_PACKAGES)
-    if dropped:
-        print(f"  WARNING: {len(dropped)} slug(s) dropped (no headroom in {MAX_PACKAGES} packages): {dropped}")
-
-    # ---- Phase 3: fetch each bin, verify UTF-16 <= hard cap, write UTF-8 ----
-    results = []
-    work = [(b, f"{prefix}-{args.tier}-{i+1:02d}") for i, b in enumerate(bins)]
-    while work:
-        batch_slugs, pkg_name = work.pop(0)
-        print(f"  {pkg_name} ({len(batch_slugs)} slugs)...", end=" ", flush=True)
-        try:
-            xml_text = optimise(fetch_bundle(batch_slugs, pkg_name), publisher)
-            size16 = utf16_len(xml_text)
-            if size16 > MAX_PACKAGE_UTF16 and len(batch_slugs) > 1:
-                half = len(batch_slugs) // 2
-                print(f"OVERSIZED ({size16 // 1024}KB UTF-16), splitting...")
-                work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
-                time.sleep(args.delay); continue
-            elif size16 > MAX_PACKAGE_UTF16:
-                print(f"OVERSIZED (single slug '{batch_slugs[0]}', {size16 // 1024}KB UTF-16) — exceeds 150KB, cannot deploy as-is")
-                time.sleep(args.delay); continue
-            entities = count_entities(xml_text)
+    # ---- Phase 2+3: ITERATIVE MEASURED bin-packing (fetch-verify, self-calibrating) ----
+    # Static estimation can't reliably hit the tight ~145KB target (the real/single shrink varies
+    # per slug set). Instead: pick a bin by ESTIMATE (single-slug size * shrink ~= target), FETCH it,
+    # measure the REAL size, back off the largest slug while it's over ACCEPT, then re-calibrate
+    # `shrink` from the real bin so the next estimate is sharper. Greedy largest-first; <=9 packages.
+    TARGET = 145 * 1024            # estimated real-size fill target per package
+    ACCEPT = PREFERRED_PACKAGE_UTF16  # 151552 — accept a fetched bin at/under this (under the 153600 hard cap)
+    shrink = 0.84                  # initial real/single ratio; refined after each real bin
+    remaining = sorted(live, key=lambda s: -live[s])
+    results, dropped = [], []
+    pkgnum = 0
+    while remaining and pkgnum < MAX_PACKAGES:
+        pkgnum += 1
+        pkg_name = f"{prefix}-{args.tier}-{pkgnum:02d}"
+        chosen, rest = select_bin(remaining, live, shrink, TARGET)
+        if not chosen:
+            chosen, rest = [remaining[0]], remaining[1:]
+        # fetch + verify; back off the largest slug until the real composed size fits, or it's a lone slug
+        xml_text, real = None, 0
+        while True:
+            print(f"  {pkg_name}: trying {len(chosen)} slugs...", end=" ", flush=True)
+            try:
+                xml_text = optimise(fetch_bundle(chosen, pkg_name), publisher)
+                real = utf16_len(xml_text)
+            except urllib.error.HTTPError as e:
+                if e.code == 422 and len(chosen) > 1:
+                    real = ACCEPT + 1  # force a backoff
+                    print("server 422")
+                else:
+                    print(f"FAILED: {e}")
+                    dropped.extend(chosen); chosen = []; break
+            else:
+                print(f"{real//1024}KB UTF-16")
+            if real <= ACCEPT or len(chosen) == 1:
+                break
+            biggest = max(chosen, key=lambda s: live[s])
+            chosen.remove(biggest); rest.insert(0, biggest)
+            time.sleep(args.delay)
+        if not chosen:
+            remaining = rest; continue
+        # calibrate shrink from this real bin
+        ssum = sum(live[s] for s in chosen)
+        if ssum: shrink = real / ssum
+        if real <= MAX_PACKAGE_UTF16:
             with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:
                 f.write(xml_text)
-            print(f"OK ({entities} entities, {size16 // 1024}KB UTF-16)")
-            results.append({"name": pkg_name, "entities": entities, "size": size16})
-        except urllib.error.HTTPError as e:
-            if e.code == 422 and len(batch_slugs) > 1:
-                half = len(batch_slugs) // 2
-                print("OVERSIZED (server 422), splitting...")
-                work.append((batch_slugs[:half], f"{pkg_name}a")); work.append((batch_slugs[half:], f"{pkg_name}b"))
-            elif e.code == 422:
-                print(f"OVERSIZED (server 422, single slug '{batch_slugs[0]}') — exceeds 150KB, cannot deploy as-is")
-            else:
-                print(f"FAILED: {e}")
-        except Exception as e:
-            print(f"FAILED: {e}")
+            entities = count_entities(xml_text)
+            print(f"  {pkg_name}: OK ({entities} entities, {real//1024}KB UTF-16, {len(chosen)} slugs)")
+            results.append({"name": pkg_name, "entities": entities, "size": real, "slugs": list(chosen)})
+        else:
+            print(f"  OVERSIZED single slug '{chosen[0]}' ({real//1024}KB) — exceeds 150KB, cannot deploy as-is")
+            dropped.append(chosen[0])
+        remaining = rest
         time.sleep(args.delay)
+    if remaining:
+        dropped.extend(remaining)
+        remaining = []
+
+    # ---- Back-fill pass: place any leftover slugs into existing packages that have headroom ----
+    # The greedy bins settle below ACCEPT, leaving headroom; small leftovers fit if we add them to
+    # an existing package and confirm (fetch-verify) the augmented package still fits. No new pkgs.
+    if dropped:
+        print(f"  Back-fill pass: {len(dropped)} leftover slug(s), trying existing packages with headroom...")
+        still = []
+        for slug in dropped:
+            placed = False
+            # try emptiest (smallest) package first to spread load
+            for r in sorted(results, key=lambda x: x["size"]):
+                trial = r["slugs"] + [slug]
+                try:
+                    txt = optimise(fetch_bundle(trial, r["name"]), publisher)
+                    sz = utf16_len(txt)
+                except urllib.error.HTTPError as e:
+                    if e.code == 422:
+                        time.sleep(args.delay); continue
+                    print(f"    back-fill fetch failed for {slug} into {r['name']}: {e}"); break
+                time.sleep(args.delay)
+                if sz <= ACCEPT:
+                    with open(os.path.join(output_dir, f"{r['name']}.xml"), "w", encoding="utf-8") as f:
+                        f.write(txt)
+                    r["slugs"] = trial; r["size"] = sz; r["entities"] = count_entities(txt)
+                    print(f"    + {slug} -> {r['name']} ({sz//1024}KB UTF-16)")
+                    placed = True; break
+            if not placed:
+                still.append(slug)
+        dropped = still
+    if dropped:
+        print(f"  DROPPED {len(dropped)} slug(s): {dropped}")
 
     # Write registry
     reg_path = os.path.join(output_dir, "deploy-registry.json")
