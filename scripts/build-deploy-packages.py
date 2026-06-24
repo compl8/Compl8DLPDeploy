@@ -20,6 +20,7 @@ import re
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 MAX_PACKAGE_SIZE = 148 * 1024  # 148KB, margin under 150KB
@@ -183,6 +184,21 @@ def main():
 
             print(f"OK ({entities} entities, {size // 1024}KB)")
             results.append({"name": pkg_name, "entities": entities, "size": size})
+
+        except urllib.error.HTTPError as e:
+            # testpattern.dev enforces Purview's 150KB-per-RulePackage limit (measured UTF-16LE) and
+            # returns 422 for an oversized bundle BEFORE we can measure it locally. Treat that 422 like
+            # the local-oversize case: split the batch and retry. A single slug that still 422s is a SIT
+            # whose own package exceeds 150KB and cannot be deployed as-is — report it, don't lose silently.
+            if e.code == 422 and len(batch_slugs) > 1:
+                half = len(batch_slugs) // 2
+                print(f"OVERSIZED (server 422, {len(batch_slugs)} slugs), splitting...")
+                retry_queue.append((batch_slugs[:half], f"{pkg_name}a"))
+                retry_queue.append((batch_slugs[half:], f"{pkg_name}b"))
+            elif e.code == 422:
+                print(f"OVERSIZED (server 422, single slug '{batch_slugs[0]}') - exceeds 150KB, cannot deploy as-is")
+            else:
+                print(f"FAILED: {e}")
 
         except Exception as e:
             print(f"FAILED: {e}")
