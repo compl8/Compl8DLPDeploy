@@ -125,10 +125,11 @@ function ConvertTo-RulePackageXml {
     $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($body)
 
     [pscustomobject]@{
-        Name        = $Name
-        Text        = $body
-        Bytes       = $bytes
-        EntityCount = $entities.Count
-        SizeBytes   = $bytes.Length
+        Name          = $Name
+        Text          = $body
+        Bytes         = $bytes
+        EntityCount   = $entities.Count
+        SizeBytes     = $bytes.Length
+        Utf16SizeBytes = [System.Text.Encoding]::Unicode.GetByteCount($body)
     }
 }
