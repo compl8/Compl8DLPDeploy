@@ -228,6 +228,7 @@ def main():
             print(f"  {pkg_name}: trying {len(chosen)} slugs...", end=" ", flush=True)
             try:
                 xml_text = optimise(fetch_bundle(chosen, pkg_name), publisher)
+                xml_text = xml_text.replace("\r\n", "\n").replace("\n", "\r\n")
                 real = utf16_len(xml_text)
             except urllib.error.HTTPError as e:
                 if e.code == 422 and len(chosen) > 1:
@@ -254,7 +255,7 @@ def main():
         ssum = sum(live[s] for s in chosen)
         if ssum: shrink = real / ssum
         if real <= MAX_PACKAGE_UTF16:
-            with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8") as f:
+            with open(os.path.join(output_dir, f"{pkg_name}.xml"), "w", encoding="utf-8", newline="") as f:
                 f.write(xml_text)
             entities = count_entities(xml_text)
             utf8_size = len(xml_text.encode("utf-8"))  # actual on-disk size written
@@ -284,6 +285,7 @@ def main():
                 trial = r["slugs"] + [slug]
                 try:
                     txt = optimise(fetch_bundle(trial, r["name"]), publisher)
+                    txt = txt.replace("\r\n", "\n").replace("\n", "\r\n")
                     sz = utf16_len(txt)
                 except urllib.error.HTTPError as e:
                     if e.code == 422:
@@ -293,7 +295,7 @@ def main():
                     print(f"    back-fill network error for {slug} into {r['name']}: {e}"); break
                 time.sleep(args.delay)
                 if sz <= ACCEPT:
-                    with open(os.path.join(output_dir, f"{r['name']}.xml"), "w", encoding="utf-8") as f:
+                    with open(os.path.join(output_dir, f"{r['name']}.xml"), "w", encoding="utf-8", newline="") as f:
                         f.write(txt)
                     utf8_sz = len(txt.encode("utf-8"))  # actual on-disk size
                     r["slugs"] = trial; r["size"] = utf8_sz; r["utf16bytes"] = sz; r["entities"] = count_entities(txt)
