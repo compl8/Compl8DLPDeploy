@@ -134,14 +134,18 @@ function Get-TenantActualState {
     }
 
     # Classifier packages aren't provenance-stamped today; match on configured prefix.
+    # REST/modern SCC can return a blank .Name/.RulePackId; resolve the authoritative values
+    # from the serialized rule-collection XML so our prefixed packages are still discovered.
     $classifierPackages = @(Get-DlpSensitiveInformationTypeRulePackage |
-        Where-Object { $_.Name -and $_.Name.StartsWith("$NamingPrefix-", [System.StringComparison]::OrdinalIgnoreCase) } |
         ForEach-Object {
-            [ordered]@{
-                name           = $_.Name
-                rulePackId     = if ($_.PSObject.Properties['RulePackId']) { [string]$_.RulePackId } else { $null }
-                entities       = @()
-                dictionaryRefs = @()
+            $pkgId = Resolve-DlpRulePackageIdentity -Package $_
+            if ($pkgId.Name -and $pkgId.Name.StartsWith("$NamingPrefix-", [System.StringComparison]::OrdinalIgnoreCase)) {
+                [ordered]@{
+                    name           = $pkgId.Name
+                    rulePackId     = if ($pkgId.RulePackId) { [string]$pkgId.RulePackId } else { $null }
+                    entities       = @()
+                    dictionaryRefs = @()
+                }
             }
         })
 

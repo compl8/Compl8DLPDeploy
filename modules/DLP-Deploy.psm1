@@ -31,6 +31,103 @@ foreach ($compl8Layer in @('Compl8.Model', 'Compl8.Tenant')) {
     }
 }
 
+#region Rule-package identity
+function Resolve-DlpRulePackageIdentity {
+    <#
+    .SYNOPSIS
+        Resolves the authoritative Name / Identity / Publisher / RulePack GUID of a SIT
+        rule-package object, preferring the live object property and FALLING BACK to the
+        package's SerializedClassificationRuleCollection XML when a property is blank.
+
+    .DESCRIPTION
+        Get-DlpSensitiveInformationTypeRulePackage objects can return BLANK .Name, .Identity
+        and .Publisher over modern/REST Security & Compliance connections (observed LIVE on
+        compl8.dev with ExchangeOnlineManagement 3.9.2). When that happens the only reliable
+        source of identity is the serialized rule-collection XML the package carries:
+          * RulePack GUID : <RulePack id="GUID">  (built-in "Microsoft Rule Package" has id
+                            00000000-0000-0000-0000-000000000000 and CANNOT be deleted)
+          * Publisher     : <PublisherName>...</PublisherName>
+          * Package name  : the first <Name>...</Name>
+
+        This resolver prefers the object property and only consults the XML when the property
+        is null/empty, so populated-property behavior is unchanged. It is null-safe: an object
+        with no SerializedClassificationRuleCollection simply yields whatever the properties
+        hold (possibly $null).
+
+    .OUTPUTS
+        [pscustomobject] with: Name, Identity, Publisher, RulePackId, IsBuiltIn.
+        IsBuiltIn is $true when the resolved name is 'Microsoft Rule Package' OR the resolved
+        RulePack GUID is the all-zeros built-in id.
+    #>
+    param([Parameter(Mandatory)][object]$Package)
+
+    $builtInRulePackId = '00000000-0000-0000-0000-000000000000'
+
+    # --- property-first reads (whitespace-safe; .RuleCollectionName is an alias for Name) ---
+    $name      = Get-DeploymentGraphObjectValue -InputObject $Package -Names @('Name', 'RuleCollectionName')
+    $identity  = Get-DeploymentGraphObjectValue -InputObject $Package -Names @('Identity')
+    $publisher = Get-DeploymentGraphObjectValue -InputObject $Package -Names @('Publisher')
+    $rulePackId = Get-DeploymentGraphObjectValue -InputObject $Package -Names @('RulePackId', 'Id', 'Guid')
+
+    # --- fall back to the serialized XML only for whatever is still blank --------------------
+    $needXml = [string]::IsNullOrWhiteSpace($name) -or
+               [string]::IsNullOrWhiteSpace($publisher) -or
+               [string]::IsNullOrWhiteSpace($rulePackId)
+    if ($needXml) {
+        $serialized = $null
+        $serializedProp = $Package.PSObject.Properties['SerializedClassificationRuleCollection']
+        if ($serializedProp -and $null -ne $serializedProp.Value) { $serialized = $serializedProp.Value }
+
+        # The bytes can arrive boxed as Object[] (e.g. when an array was unrolled through a return
+        # or round-tripped); coerce to a true Byte[] so the decoder doesn't stringify it.
+        if ($null -ne $serialized -and $serialized -isnot [byte[]] -and $serialized -is [System.Collections.IEnumerable]) {
+            try { $serialized = [byte[]]$serialized } catch { }
+        }
+
+        if ($null -ne $serialized) {
+            $rawText = Convert-DlpSerializedRulePackageToText -Raw $serialized
+            # A decoded UTF-16/UTF-8-BOM package keeps a leading U+FEFF; [xml] rejects it.
+            if ($rawText -and $rawText.Length -gt 0 -and $rawText[0] -eq [char]0xFEFF) {
+                $rawText = $rawText.Substring(1)
+            }
+            if ($rawText) {
+                # Regex extraction (not [xml] dotted-navigation): robust to namespaces, whitespace,
+                # element order, and the PowerShell XML-adapter quirks that make .Name ambiguous.
+                # The first <Name>/<PublisherName> in a rule package is the RulePack's LocalizedDetails.
+                if ([string]::IsNullOrWhiteSpace($rulePackId)) {
+                    $m = [regex]::Match($rawText, '<RulePack\s+id="([^"]+)"')
+                    if ($m.Success) { $rulePackId = $m.Groups[1].Value }
+                }
+                if ([string]::IsNullOrWhiteSpace($name)) {
+                    $m = [regex]::Match($rawText, '<Name>([^<]+)</Name>')
+                    if ($m.Success) { $name = $m.Groups[1].Value.Trim() }
+                }
+                if ([string]::IsNullOrWhiteSpace($publisher)) {
+                    $m = [regex]::Match($rawText, '<PublisherName>([^<]+)</PublisherName>')
+                    if ($m.Success) { $publisher = $m.Groups[1].Value.Trim() }
+                }
+            }
+        }
+    }
+
+    # Identity, when the property is blank, defaults to the RulePack GUID — the value
+    # Remove-DlpSensitiveInformationTypeRulePackage -Identity accepts.
+    if ([string]::IsNullOrWhiteSpace($identity) -and -not [string]::IsNullOrWhiteSpace($rulePackId)) {
+        $identity = $rulePackId
+    }
+
+    $isBuiltIn = ($name -eq 'Microsoft Rule Package') -or ($rulePackId -eq $builtInRulePackId)
+
+    [pscustomobject]@{
+        Name       = $name
+        Identity   = $identity
+        Publisher  = $publisher
+        RulePackId = $rulePackId
+        IsBuiltIn  = $isBuiltIn
+    }
+}
+#endregion
+
 #region Module Defaults
 function Get-ModuleDefaults {
     return @{
@@ -950,10 +1047,16 @@ function Resolve-CleanupTargets {
     }
 
     foreach ($pkg in @($Objects['SitPackage'])) {
-        if (-not $pkg -or -not $pkg.Identity) { continue }
-        if ($pkg.Publisher -eq "Microsoft Corporation" -or $pkg.Publisher -eq "Microsoft") { continue }
-        if ($publisher -and $pkg.Publisher -eq $publisher) {
-            $manifest.Add((New-CleanupTarget $pkg.Identity "SitPackage" "SIT rule package" "publisher '$publisher'" "scoped" "Get-DlpSensitiveInformationTypeRulePackage" "Remove-DlpSensitiveInformationTypeRulePackage" $pkg))
+        if (-not $pkg) { continue }
+        # REST/modern SCC connections can return blank .Name/.Identity/.Publisher; resolve the
+        # authoritative values from the serialized rule-collection XML before scoping.
+        $pkgId = Resolve-DlpRulePackageIdentity -Package $pkg
+        if (-not $pkgId.Identity) { continue }
+        # Never touch the Microsoft built-in rule package or any Microsoft-published package.
+        if ($pkgId.IsBuiltIn) { continue }
+        if ($pkgId.Publisher -eq "Microsoft Corporation" -or $pkgId.Publisher -eq "Microsoft") { continue }
+        if ($publisher -and $pkgId.Publisher -eq $publisher) {
+            $manifest.Add((New-CleanupTarget $pkgId.Identity "SitPackage" "SIT rule package" "publisher '$publisher'" "scoped" "Get-DlpSensitiveInformationTypeRulePackage" "Remove-DlpSensitiveInformationTypeRulePackage" $pkg))
         }
     }
 
@@ -1099,8 +1202,12 @@ function Invoke-CleanupPlan {
         if ($cat -eq "KeywordDictionary" -and $items.Count -gt 0) {
             # Keep any dictionary still referenced by a package that will REMAIN after this run
             # (SIT packages are deleted earlier in $order, so only out-of-scope packages remain).
+            # Resolve each live package's identity from the serialized XML first, since REST/modern
+            # SCC can return a blank .Identity that would never match a target and so be wrongly
+            # treated as "remaining".
+            $sitTargetIds = @($sitTargets | ForEach-Object { $_.Identity })
             $remaining = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction SilentlyContinue |
-                Where-Object { $sitTargets.Identity -notcontains $_.Identity })
+                Where-Object { $sitTargetIds -notcontains (Resolve-DlpRulePackageIdentity -Package $_).Identity })
             $referenced = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($p in $remaining) {
                 $txt = Convert-DlpSerializedRulePackageToText -Raw $p.SerializedClassificationRuleCollection
@@ -2316,6 +2423,7 @@ Export-ModuleMember -Function @(
     'Get-DeploymentLimits'
     'Test-DeploymentTenantFingerprint'
     'Convert-DlpSerializedRulePackageToText'
+    'Resolve-DlpRulePackageIdentity'
     'Get-DlpRulePackageEntityIds'
     'Get-DeploymentReferenceGraph'
     'Get-DlpClassifierRuleReferences'

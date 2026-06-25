@@ -258,12 +258,19 @@ if ($doClassifiers -and $registryJson) {
 
     $deployedPkgs = @(Get-DlpSensitiveInformationTypeRulePackage -ErrorAction Stop)
 
-    # Build lookup by identity (rulePackId) and by displayName
+    # Build lookup by identity (rulePackId) and by displayName.
+    # REST/modern SCC can return a blank .Identity/.Name/.Publisher; resolve the authoritative
+    # values from the serialized rule-collection XML so matches still land and orphan detection
+    # does not skip the Microsoft built-in or mis-flag our packages.
     $deployedById   = @{}
     $deployedByName = @{}
+    $resolvedById   = @{}
     foreach ($dp in $deployedPkgs) {
-        if ($dp.Identity) { $deployedById[$dp.Identity.ToLower()] = $dp }
-        if ($dp.Name)     { $deployedByName[$dp.Name] = $dp }
+        $dpId = Resolve-DlpRulePackageIdentity -Package $dp
+        $resolvedById[$dp] = $dpId
+        if ($dpId.Identity)   { $deployedById[$dpId.Identity.ToLower()] = $dp }
+        if ($dpId.RulePackId) { $deployedById[$dpId.RulePackId.ToLower()] = $dp }
+        if ($dpId.Name)       { $deployedByName[$dpId.Name] = $dp }
     }
 
     $registryIds   = @{}
@@ -313,12 +320,15 @@ if ($doClassifiers -and $registryJson) {
 
     # Detect deployed custom packages not in registry (skip Microsoft built-in)
     foreach ($dp in $deployedPkgs) {
-        $idMatch   = $dp.Identity -and $registryIds.ContainsKey($dp.Identity.ToLower())
-        $nameMatch = $dp.Name -and $registryNames.ContainsKey($dp.Name)
-        if (-not $idMatch -and -not $nameMatch -and $dp.Publisher -ne "Microsoft Corporation") {
-            $ident = if ($dp.Identity) { $dp.Identity } else { $dp.Name }
-            Add-Row -Component "SITPackage" -Action "delete" -Identity $ident -Detail "Custom package not in registry: $($dp.Name)"
-            Write-Host "  DELETE $($dp.Name) - not in registry" -ForegroundColor Red
+        $dpId = $resolvedById[$dp]
+        if (-not $dpId) { $dpId = Resolve-DlpRulePackageIdentity -Package $dp }
+        $idMatch   = ($dpId.Identity   -and $registryIds.ContainsKey($dpId.Identity.ToLower())) -or
+                     ($dpId.RulePackId -and $registryIds.ContainsKey($dpId.RulePackId.ToLower()))
+        $nameMatch = $dpId.Name -and $registryNames.ContainsKey($dpId.Name)
+        if (-not $idMatch -and -not $nameMatch -and -not $dpId.IsBuiltIn -and $dpId.Publisher -ne "Microsoft Corporation") {
+            $ident = if ($dpId.Identity) { $dpId.Identity } else { $dpId.Name }
+            Add-Row -Component "SITPackage" -Action "delete" -Identity $ident -Detail "Custom package not in registry: $($dpId.Name)"
+            Write-Host "  DELETE $($dpId.Name) - not in registry" -ForegroundColor Red
         }
     }
 }

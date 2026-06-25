@@ -539,6 +539,44 @@ Describe 'Resolve-CleanupTargets' {
         $pkgs[0].Identity | Should -Be 'our-pkg'
     }
 
+    It 'resolves a blank-property SIT package from serialized XML and targets ours, not the built-in' {
+        function script:New-SerializedPackage {
+            param([string]$RulePackId, [string]$Publisher, [string]$Name)
+            $xml = @"
+<RulePackage>
+  <RulePack id="$RulePackId">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Details defaultLangCode="en-us">
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>$Publisher</PublisherName>
+        <Name>$Name</Name>
+        <Description>Test package</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules><Entity id="dddddddd-1111-2222-3333-444444444444"/></Rules>
+</RulePackage>
+"@
+            $enc = [System.Text.Encoding]::Unicode
+            [byte[]]($enc.GetPreamble() + $enc.GetBytes($xml))
+        }
+        # Both objects come back from REST with blank .Name/.Identity/.Publisher.
+        $ours = [pscustomobject]@{
+            Name = ''; Identity = $null; Publisher = $null
+            SerializedClassificationRuleCollection = (New-SerializedPackage 'cccccccc-1111-2222-3333-444444444444' 'Queensland Government CSU' 'QGISCF-medium-08')
+        }
+        $builtIn = [pscustomobject]@{
+            Name = ''; Identity = $null; Publisher = $null
+            SerializedClassificationRuleCollection = (New-SerializedPackage '00000000-0000-0000-0000-000000000000' 'Microsoft Corporation' 'Microsoft Rule Package')
+        }
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects @{ SitPackage = @($ours, $builtIn) }
+        $pkgs = @($m | Where-Object { $_.Category -eq 'SitPackage' })
+        $pkgs.Count | Should -Be 1
+        # Identity falls back to the RulePack GUID, which Remove-...-Identity accepts.
+        $pkgs[0].Identity | Should -Be 'cccccccc-1111-2222-3333-444444444444'
+        $pkgs[0].Risk     | Should -Be 'scoped'
+    }
+
     It 'does not match labels unless IncludeLabels is set' {
         $objs = @{ Label = @([pscustomobject]@{ Name = 'OFFICIAL'; ParentId = $null; Priority = 1 }) }
         (Resolve-CleanupTargets -Config $script:cfg -Objects $objs).Count | Should -Be 0
@@ -633,6 +671,93 @@ Describe 'Convert-DlpSerializedRulePackageToText' {
     }
     It 'returns null for null input' {
         Convert-DlpSerializedRulePackageToText -Raw $null | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Resolve-DlpRulePackageIdentity' {
+    BeforeAll {
+        # Build a serialized rule-package as UTF-16LE bytes (with BOM), mirroring how
+        # Get-DlpSensitiveInformationTypeRulePackage returns SerializedClassificationRuleCollection
+        # over modern/REST SCC connections.
+        function script:New-SerializedPackage {
+            param([string]$RulePackId, [string]$Publisher, [string]$Name)
+            $xml = @"
+<RulePackage>
+  <RulePack id="$RulePackId">
+    <Version major="1" minor="0" build="0" revision="0"/>
+    <Details defaultLangCode="en-us">
+      <LocalizedDetails langcode="en-us">
+        <PublisherName>$Publisher</PublisherName>
+        <Name>$Name</Name>
+        <Description>Test package</Description>
+      </LocalizedDetails>
+    </Details>
+  </RulePack>
+  <Rules>
+    <Entity id="dddddddd-1111-2222-3333-444444444444"/>
+  </Rules>
+</RulePackage>
+"@
+            $enc = [System.Text.Encoding]::Unicode
+            [byte[]]($enc.GetPreamble() + $enc.GetBytes($xml))
+        }
+    }
+
+    It 'prefers populated object properties over the serialized XML' {
+        $pkg = [pscustomobject]@{
+            Name      = 'PropName'
+            Identity  = 'prop-identity'
+            Publisher = 'PropPublisher'
+            RulePackId = 'aaaaaaaa-1111-2222-3333-444444444444'
+            SerializedClassificationRuleCollection = (New-SerializedPackage 'bbbbbbbb-9999-9999-9999-999999999999' 'XmlPublisher' 'XmlName')
+        }
+        $r = Resolve-DlpRulePackageIdentity -Package $pkg
+        $r.Name       | Should -Be 'PropName'
+        $r.Identity   | Should -Be 'prop-identity'
+        $r.Publisher  | Should -Be 'PropPublisher'
+        $r.RulePackId | Should -Be 'aaaaaaaa-1111-2222-3333-444444444444'
+        $r.IsBuiltIn  | Should -BeFalse
+    }
+
+    It 'falls back to the serialized XML when Name/Identity/Publisher are blank' {
+        $pkg = [pscustomobject]@{
+            Name      = ''
+            Identity  = $null
+            Publisher = '   '
+            SerializedClassificationRuleCollection = (New-SerializedPackage 'cccccccc-1111-2222-3333-444444444444' 'Queensland Government CSU' 'QGISCF-medium-08')
+        }
+        $r = Resolve-DlpRulePackageIdentity -Package $pkg
+        $r.Name       | Should -Be 'QGISCF-medium-08'
+        $r.Publisher  | Should -Be 'Queensland Government CSU'
+        $r.RulePackId | Should -Be 'cccccccc-1111-2222-3333-444444444444'
+        # Identity falls back to the RulePack GUID (what Remove-...-Identity accepts).
+        $r.Identity   | Should -Be 'cccccccc-1111-2222-3333-444444444444'
+        $r.IsBuiltIn  | Should -BeFalse
+    }
+
+    It 'marks the all-zeros RulePack GUID as built-in' {
+        $pkg = [pscustomobject]@{
+            Name = ''
+            Identity = $null
+            Publisher = $null
+            SerializedClassificationRuleCollection = (New-SerializedPackage '00000000-0000-0000-0000-000000000000' 'Microsoft Corporation' 'Some Pack')
+        }
+        $r = Resolve-DlpRulePackageIdentity -Package $pkg
+        $r.RulePackId | Should -Be '00000000-0000-0000-0000-000000000000'
+        $r.IsBuiltIn  | Should -BeTrue
+    }
+
+    It 'marks the "Microsoft Rule Package" name as built-in' {
+        $pkg = [pscustomobject]@{ Name = 'Microsoft Rule Package'; Identity = 'ms'; Publisher = 'Microsoft Corporation' }
+        (Resolve-DlpRulePackageIdentity -Package $pkg).IsBuiltIn | Should -BeTrue
+    }
+
+    It 'is null-safe when there is no serialized collection and properties are blank' {
+        $pkg = [pscustomobject]@{ Name = ''; Identity = $null; Publisher = $null }
+        $r = Resolve-DlpRulePackageIdentity -Package $pkg
+        $r.Name      | Should -BeNullOrEmpty
+        $r.Identity  | Should -BeNullOrEmpty
+        $r.IsBuiltIn | Should -BeFalse
     }
 }
 
