@@ -18,13 +18,16 @@ def _norm_name(n):
 
 
 def resolve_guid(entry, xml_lookup, classifier_lookup, builtin_map=None):
-    """Resolve GUID. Priority: verified Microsoft built-in (tenant) -> spreadsheet UUID -> XML -> existing -> unresolved."""
-    # 0. Verified Microsoft built-in (authoritative; independent of packing).
-    if builtin_map and _norm_name(entry["name"]) in builtin_map:
-        return builtin_map[_norm_name(entry["name"])], "builtin"
-    # 1. Spreadsheet GUID column (actual UUID format)
+    """Resolve GUID. Priority: explicit spreadsheet UUID -> verified Microsoft built-in (tenant)
+    -> XML -> existing -> unresolved."""
+    # 1. Explicit spreadsheet GUID column (actual UUID format). An operator-supplied UUID is the most
+    #    precise source and must win over a name-based built-in match (which can be a normalized-name
+    #    collision). Built-in rows carry slugs/names here, not UUIDs, so they fall through to step 2.
     if GUID_RE.match(entry["guid_slug"]):
         return entry["guid_slug"], "spreadsheet"
+    # 2. Verified Microsoft built-in (authoritative for rows identified only by name/slug).
+    if builtin_map and _norm_name(entry["name"]) in builtin_map:
+        return builtin_map[_norm_name(entry["name"])], "builtin"
 
     # 2. XML package entity lookup (exact name match, including prefix-stripped)
     name_lower = entry["name"].lower()
