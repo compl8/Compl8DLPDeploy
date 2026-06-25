@@ -125,6 +125,32 @@ def count_entities(xml_text):
     return len(re.findall(r'<Entity\s+id="', xml_text))
 
 
+def measure_slugs(slugs, single, measure_fn, delay=0.0, attempts=3, sleep_fn=time.sleep, log=print):
+    """Measure each slug's footprint into `single` (slug -> size), retrying transient failures.
+
+    A single-slug request can fail transiently (timeout/429/5xx). Such a slug must NOT be silently
+    dropped from the build — it is retried up to `attempts` times across sweeps. `measure_fn(slug)`
+    returns the size (raising on failure). Returns (single, missing) where `missing` is the slugs
+    still unmeasured after all attempts; the caller decides (we fail the build) — never write an
+    incomplete package set. `single` is mutated/returned so a persisted cache lets a re-run resume.
+    """
+    to_measure = [s for s in slugs if not single.get(s)]
+    for attempt in range(1, attempts + 1):
+        pending = [s for s in to_measure if not single.get(s)]
+        if not pending:
+            break
+        if attempt > 1:
+            log(f"  Retry {attempt - 1}/{attempts - 1}: re-measuring {len(pending)} slug(s) that failed...")
+        for s in pending:
+            try:
+                single[s] = measure_fn(s)
+            except Exception as e:
+                log(f"    measure {s}: FAILED {e}")
+            sleep_fn(delay)
+    missing = [s for s in slugs if not single.get(s)]
+    return single, missing
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build deployment packages from testpattern.dev")
     parser.add_argument("--tier", choices=["small", "medium", "large"], default="medium")
@@ -191,19 +217,22 @@ def main():
             single = json.load(f)
     to_measure = [s for s in slugs if not single.get(s)]
     print(f"  Measuring {len(to_measure)} slugs (cached: {len(slugs) - len(to_measure)})...")
-    for s in to_measure:
-        try:
-            single[s] = utf16_len(optimise(fetch_bundle([s], "measure"), publisher))
-        except Exception as e:
-            print(f"    measure {s}: FAILED {e} (skipping)")
-            # Do NOT persist None — leave s absent so it is re-measured next run.
-        time.sleep(args.delay)
+    single, missing = measure_slugs(
+        slugs, single,
+        lambda s: utf16_len(optimise(fetch_bundle([s], "measure"), publisher)),
+        delay=args.delay,
+    )
+    # Persist whatever we measured (even on partial failure) so a re-run resumes from the cache.
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in single.items() if v}, f, indent=2)
-    live = {s: single[s] for s in slugs if single.get(s)}
-    missing = [s for s in slugs if not single.get(s)]
     if missing:
-        print(f"  WARNING: {len(missing)} slug(s) excluded from packing (measurement failed): {missing}")
+        # A measurement failure means we cannot know a slug's size, so it would be silently absent
+        # from every package. Refuse to write an incomplete build — fail loudly; the operator re-runs
+        # (cached measurements make the retry cheap) or fixes connectivity.
+        print(f"  ERROR: {len(missing)} slug(s) could not be measured after retries: {missing}", file=sys.stderr)
+        print("  Refusing to write an incomplete package set. Re-run to retry (measurements are cached).", file=sys.stderr)
+        sys.exit(1)
+    live = {s: single[s] for s in slugs if single.get(s)}
 
     # ---- Phase 2+3: ITERATIVE MEASURED bin-packing (fetch-verify, self-calibrating) ----
     # Static estimation can't reliably hit the tight ~145KB target (the real/single shrink varies
