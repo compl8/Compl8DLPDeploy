@@ -52,7 +52,7 @@ function Test-SITRulePackageXml {
 
     if ($result.FileSize -gt $MaxFileSizeBytes) {
         $result.Valid = $false
-        $result.Errors.Add("File exceeds 150KB UTF-16 limit: $([math]::Round($result.FileSize / 1KB, 1))KB (UTF-16)")
+        $result.Errors.Add("File exceeds $([math]::Round($MaxFileSizeBytes / 1KB, 0))KB UTF-16 limit: $([math]::Round($result.FileSize / 1KB, 1))KB (UTF-16)")
     }
 
     # Validate structure

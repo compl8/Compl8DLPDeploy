@@ -377,8 +377,9 @@ Describe 'Get-RulePackageAssignment' {
     }
 
     It 'opens a new package when the size cap binds before the entity cap' {
-        # 60KB each: two fit under the 148KB preferred cap, the third must spill.
-        $items = 1..3 | ForEach-Object { New-PackItem "big-$_" -SizeBytes 61440 }
+        # ~293KB each: two fit under the 760KB preferred cap (600+2*300000=600600), the third
+        # spills (600+3*300000=900600 > 778240) — the size cap binds well before the 50-entity cap.
+        $items = 1..3 | ForEach-Object { New-PackItem "big-$_" -SizeBytes 300000 }
         $r = Invoke-Pack $items
         @($r.Packages).Count | Should -Be 2
         @($r.Packages[0].Slugs) | Should -Be @('big-1', 'big-2')
@@ -406,11 +407,11 @@ Describe 'Get-RulePackageAssignment' {
 
     It 'overflow evicts only the newest slugs of the oversized package' {
         # Prior package P-test-01 holds three items; release growth inflates them so only
-        # two fit. The LAST in item order (c) must move; a and b stay.
+        # two fit under the 760KB preferred cap. The LAST in item order (c) must move; a and b stay.
         $items = @(
-            New-PackItem 'a' -SizeBytes 61440
-            New-PackItem 'b' -SizeBytes 61440
-            New-PackItem 'c' -SizeBytes 61440
+            New-PackItem 'a' -SizeBytes 300000
+            New-PackItem 'b' -SizeBytes 300000
+            New-PackItem 'c' -SizeBytes 300000
         )
         $prior = @{ a = 'P-test-01'; b = 'P-test-01'; c = 'P-test-01' }
         $r = Invoke-Pack $items $prior
@@ -420,11 +421,12 @@ Describe 'Get-RulePackageAssignment' {
     }
 
     It 'drops items beyond the tenant package cap with a reason, never throws' {
-        # 70KB items: exactly two fit per package under the 148KB preferred cap, so 22
-        # items need 11 packages. The automated build is capped at the EFFECTIVE cap
-        # (tenant cap minus the reserved manual slot) = 9, so packages 10-11 (4 items) drop.
+        # ~293KB items: exactly two fit per package under the 760KB preferred cap
+        # (600+2*300000=600600; 600+3*300000=900600 > 778240), so 22 items need 11 packages.
+        # The automated build is capped at the EFFECTIVE cap (tenant cap minus the reserved
+        # manual slot) = 9, so packages 10-11 (4 items) drop.
         $effectiveCap = $script:Limits.MaxRulePackagesPerTenant - $script:Limits.ReservedManualPackages
-        $items = 1..22 | ForEach-Object { New-PackItem "cap-$_" -SizeBytes 71680 }
+        $items = 1..22 | ForEach-Object { New-PackItem "cap-$_" -SizeBytes 300000 }
         $r = Invoke-Pack $items
         @($r.Packages).Count | Should -Be $effectiveCap
         @($r.Dropped).Count | Should -Be 4
@@ -704,17 +706,23 @@ Describe 'Resolve-DesiredContent pipeline' {
             Resolve-DesiredContent -WorkspacePath $Workspace -Prefix 'P' -Publisher 'Test Pub'
         }
 
-        # Helper: builds a workspace whose single composed package is well over 150 KB UTF-16
-        # but well under 150 KB UTF-8, so the OLD UTF-8 cap check passes while the NEW UTF-16
-        # cap check fires.
+        # Helper: builds a workspace whose single composed package is over the 770 KB UTF-16
+        # hard cap (788 480 bytes) but whose packer PROJECTION stays under the 760 KB
+        # PREFERRED cap (778 240 bytes) so the item is still PACKED — the throw must come from
+        # the compose-time hard-cap re-check, not the packer dropping it.
         #
-        # Design: the regex content uses 1 000 LF-terminated lines of 74 ASCII chars each.
-        #   sectionText (entity+regex+resource joined with LF) ≈ 75 372 chars
-        #     UTF-16 SizeBytes ≈ 150 744  →  packer projection ≈ 151 344 ≤ 151 552 PREFERRED cap → PACKED
-        #     UTF-8  SizeBytes ≈  75 372  →  packer projection ≈  75 972 ≤ 151 552                → PACKED
-        #   After CRLF normalisation (each LF → CRLF adds 1 char per newline):
-        #     composed body ≈ 77 061 chars  →  Utf16SizeBytes ≈ 154 122 > 153 600 HARD cap → THROW
-        #     composed body UTF-8 ≈ 77 061 bytes                        < 153 600           → no old throw
+        # The trick exploits the LF→CRLF normalisation in ConvertTo-RulePackageXml: the packer
+        # projects sizes from the LF-joined sectionText, but the composed body has every LF
+        # rewritten to CRLF (+1 char per newline). Many short LF-terminated lines make that
+        # expansion a large fraction of the total, so the composed size crosses the hard cap
+        # while the projection stays under preferred.
+        #
+        # Design: the regex content uses 20 000 LF-terminated lines of 18 ASCII chars each.
+        #   sectionText (entity+regex+resource joined with LF):
+        #     UTF-16 projection ≈ 761 452  ≤ 778 240 PREFERRED cap → PACKED
+        #   After CRLF normalisation (each of the 20 000 LF → CRLF, +1 char each):
+        #     composed Utf16SizeBytes ≈ 801 854 > 788 480 HARD cap → THROW
+        #     composed UTF-8 size      ≈ 400 927 < 788 480          → only the UTF-16 measure trips
         function New-OvercapWorkspace {
             param([string]$Name)
             $ws = Join-Path $TestDrive $Name
@@ -723,11 +731,11 @@ Describe 'Resolve-DesiredContent pipeline' {
             New-Item -ItemType Directory -Path (Join-Path $releasePath 'definitions') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $releasePath 'dictionaries') -Force | Out-Null
 
-            # 1 000 lines of 74 "a"s, each terminated by LF.  When CRLF-normalised in
+            # 20 000 lines of 18 "a"s, each terminated by LF.  When CRLF-normalised in
             # ConvertTo-RulePackageXml each LF becomes CRLF (+1 char), pushing Utf16SizeBytes
-            # over 153 600 while UTF-8 SizeBytes stays well below it.
-            $lineContent = 'a' * 74
-            $bigRegexContent = ($lineContent + "`n") * 1000   # 75 000 chars: 74 000 a's + 1 000 LF
+            # over 788 480 while the packer projection stays under the 778 240 preferred cap.
+            $lineContent = 'a' * 18
+            $bigRegexContent = ($lineContent + "`n") * 20000   # 380 000 chars: 360 000 a's + 20 000 LF
             $entityId = 'eeeeeeee-eeee-4eee-8eee-000000000001'
             $fragJson = [pscustomobject]@{
                 schemaVersion = 'compl8.fragment/v1'
@@ -878,11 +886,13 @@ Describe 'Resolve-DesiredContent pipeline' {
         @($m.warnings | Where-Object { $_ -like 'conflict:override-base-changed:bail-note*' }).Count | Should -Be 1
     }
 
-    It 'rejects a package over the 150KB UTF-16 hard cap' {
-        # Build a release whose one composed package is well over 150KB UTF-16 (but its UTF-8 size
-        # alone would be under the old UTF-8 cap). Use the block's fixture helpers to write the release.
+    It 'rejects a package over the 770KB UTF-16 hard cap' {
+        # Build a release whose one composed package is over the 770KB (788480-byte) UTF-16 hard
+        # cap while its packer projection stays under the preferred cap (so it is still packed and
+        # the throw comes from the compose-time re-check). Its UTF-8 size stays well under the cap,
+        # so only the UTF-16 measure trips. Use the block's fixture helpers to write the release.
         $ws = New-OvercapWorkspace 'ws-over-utf16-cap'
         { Resolve-DesiredContent -WorkspacePath $ws -Prefix 'P' -Publisher 'Pub' } |
-            Should -Throw -ExpectedMessage '*over the 153600-byte hard cap*'
+            Should -Throw -ExpectedMessage '*over the 788480-byte hard cap*'
     }
 }

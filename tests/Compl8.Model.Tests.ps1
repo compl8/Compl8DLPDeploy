@@ -6,11 +6,11 @@ BeforeAll {
 }
 
 Describe 'Get-DeploymentLimits' {
-    It 'returns the authoring-class rule package limits (sit-limits, MS-verified 2026-06-10)' {
+    It 'returns the authoring-class rule package limits (770 KB upload cap, empirically verified on compl8.dev)' {
         $l = Get-DeploymentLimits
         $l.MaxSitsPerRulePackage    | Should -Be 50
-        $l.MaxRulePackageBytes      | Should -Be 153600   # 150 KB
-        $l.PreferredRulePackageBytes | Should -Be 151552  # 148 KB self-imposed margin
+        $l.MaxRulePackageBytes      | Should -Be 788480   # 770 KB practical UTF-16 upload cap
+        $l.PreferredRulePackageBytes | Should -Be 778240  # 760 KB self-imposed margin
         $l.MaxRulePackagesPerTenant | Should -Be 10
     }
     It 'returns dictionary budget thresholds' {
@@ -389,16 +389,16 @@ Describe 'Test-SITRulePackageXml — UTF-16 size validation (codex P2-2)' {
         $v.FileSize | Should -BeGreaterThan $onDisk
     }
 
-    It '(b) a file whose UTF-16 size exceeds 153600 is rejected with a UTF-16 size error' {
-        # Construct content whose UTF-16 byte count > 153600 while UTF-8 byte count is ~half that.
-        # We need roughly 77000 ASCII chars so UTF-16 = 154000 bytes (> 153600 cap).
-        # Pad the regex content with enough ASCII so the total XML crosses the threshold.
+    It '(b) a file whose UTF-16 size exceeds 788480 is rejected with a UTF-16 size error' {
+        # Construct content whose UTF-16 byte count > 788480 (770 KB cap) while UTF-8 byte
+        # count is ~half that. We need roughly 400 000 ASCII chars so UTF-16 ≈ 800 000 bytes
+        # (> 788480 cap). Pad the regex content with enough ASCII so the total XML crosses it.
         $padLine = 'a' * 74  # 74 chars per line
-        $padContent = ($padLine + "`r`n") * 1050  # ~78 750 ASCII chars; UTF-16 ≈ 157 500 bytes
+        $padContent = ($padLine + "`r`n") * 5300  # ~402 800 ASCII chars; UTF-16 ≈ 805 600 bytes
         $xml = New-MinimalPackageXml -ExtraRegexContent $padContent
         $utf16Size = [System.Text.Encoding]::Unicode.GetByteCount($xml)
         # Sanity: confirm the fixture actually exceeds the cap before writing.
-        $utf16Size | Should -BeGreaterThan 153600
+        $utf16Size | Should -BeGreaterThan 788480
 
         $filePath = Join-Path $TestDrive 'oversized-utf16.xml'
         [System.IO.File]::WriteAllText($filePath, $xml, [System.Text.Encoding]::UTF8)
@@ -406,7 +406,7 @@ Describe 'Test-SITRulePackageXml — UTF-16 size validation (codex P2-2)' {
         $v = Test-SITRulePackageXml -FilePath $filePath
         $v.Valid | Should -BeFalse
         $v.Errors | Should -Contain ($v.Errors | Where-Object { $_ -like '*UTF-16*' })
-        # On-disk size (UTF-8) is well under 153600; only the UTF-16 measure triggers the error.
-        (Get-Item $filePath).Length | Should -BeLessThan 153600
+        # On-disk size (UTF-8) is well under 788480; only the UTF-16 measure triggers the error.
+        (Get-Item $filePath).Length | Should -BeLessThan 788480
     }
 }

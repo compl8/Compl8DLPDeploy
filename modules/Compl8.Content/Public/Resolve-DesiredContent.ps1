@@ -13,7 +13,8 @@ function Resolve-DesiredContent {
         (release, overlay, ledger): identical inputs reproduce identical package bytes.
 
         Hard failures (abort, nothing written): dictionary budget over the 1 MB cap,
-        composed package over the 150 KB hard limit, or Test-SITRulePackageXml rejection.
+        composed package over the per-package UTF-16 hard limit (Get-DeploymentLimits
+        MaxRulePackageBytes, 770 KB), or Test-SITRulePackageXml rejection.
         Soft signals (recorded in manifest warnings): merge conflicts, budget warnings,
         items dropped at the tenant package cap.
 
