@@ -28,8 +28,12 @@ try {
     $dicts = @(Get-DlpKeywordDictionary -ErrorAction Stop | Where-Object { $_.Name -like "$Prefix*" })
     Write-Host "Dictionaries matching '$Prefix*': $($dicts.Count)"
     $dicts | ForEach-Object { Write-Host "  - $($_.Name)" }
+    # Remove by NAME: Remove-DlpKeywordDictionary -Identity resolves a bare string as the dictionary
+    # NAME, not a GUID. Get-DlpKeywordDictionary's .Identity is a GUID for Sync-created dictionaries,
+    # which -Identity then looks up AS a name and fails ("dictionary with name '<guid>' cannot be
+    # found"). Passing .Name resolves correctly. (Piping the live object also works.)
     foreach ($d in $dicts) {
-        try { Remove-DlpKeywordDictionary -Identity $d.Identity -Confirm:$false -ErrorAction Stop; Write-Host "  removed: $($d.Name)" -ForegroundColor DarkGreen }
+        try { Remove-DlpKeywordDictionary -Identity $d.Name -Confirm:$false -ErrorAction Stop; Write-Host "  removed: $($d.Name)" -ForegroundColor DarkGreen }
         catch { Write-Warning "  failed $($d.Name): $($_.Exception.Message)" }
     }
     Start-Sleep 4

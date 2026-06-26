@@ -1064,10 +1064,14 @@ function Resolve-CleanupTargets {
         if (-not $d) { continue }
         $provenance = Get-ProvenanceMatchedBy -InputObject $d -Component "KeywordDictionary"
         if ($provenance -eq "__foreign_provenance__") { continue }
+        # Target by NAME: Remove-DlpKeywordDictionary -Identity resolves a bare string as the
+        # dictionary NAME, not a GUID (unlike Remove-...RulePackage). Passing $d.Identity (a GUID)
+        # makes removal look up a dict NAMED that guid and fail. The live object $d (with its GUID
+        # Identity) is still carried as InputObject for the package-reference dedup in Invoke-CleanupPlan.
         if ($provenance) {
-            $manifest.Add((New-CleanupTarget $d.Identity "KeywordDictionary" "Keyword dictionary" $provenance "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
+            $manifest.Add((New-CleanupTarget $d.Name "KeywordDictionary" "Keyword dictionary" $provenance "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
         } elseif ($d.Name -like "$prefix*") {
-            $manifest.Add((New-CleanupTarget $d.Identity "KeywordDictionary" "Keyword dictionary" "prefix '$prefix'" "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
+            $manifest.Add((New-CleanupTarget $d.Name "KeywordDictionary" "Keyword dictionary" "prefix '$prefix'" "scoped" "Get-DlpKeywordDictionary" "Remove-DlpKeywordDictionary" $d))
         }
     }
 

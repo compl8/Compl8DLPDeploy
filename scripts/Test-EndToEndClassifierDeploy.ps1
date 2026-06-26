@@ -105,11 +105,13 @@ try {
         try { Remove-DlpSensitiveInformationTypeRulePackage -Identity $createdRid -Confirm:$false -ErrorAction Stop; Write-Host "  removed test package $createdRid" -ForegroundColor DarkGreen }
         catch { Write-Warning "  package remove failed ($createdRid): $($_.Exception.Message)" }
         Start-Sleep 5
-        # Remove dictionaries via the LIVE object's identity (Remove-DlpKeywordDictionary does NOT
-        # accept the GUID that New-/Sync returns -- it resolves -Identity by name/DN).
+        # Remove dictionaries by NAME: Remove-DlpKeywordDictionary -Identity resolves a bare string
+        # as the dictionary NAME, and Get-DlpKeywordDictionary's .Identity is a GUID for Sync-created
+        # dictionaries -- passing .Identity makes -Identity look up a dict NAMED that guid and fail
+        # ("dictionary with name '<guid>' cannot be found"), which is what orphaned the QGISCF-* dicts.
         $ourDicts = @(Get-DlpKeywordDictionary -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$Prefix*" })
         foreach ($d in $ourDicts) {
-            try { Remove-DlpKeywordDictionary -Identity $d.Identity -Confirm:$false -ErrorAction Stop; Write-Host "  removed dictionary $($d.Name)" -ForegroundColor DarkGreen }
+            try { Remove-DlpKeywordDictionary -Identity $d.Name -Confirm:$false -ErrorAction Stop; Write-Host "  removed dictionary $($d.Name)" -ForegroundColor DarkGreen }
             catch { Write-Warning "  dictionary remove failed ($($d.Name)): $($_.Exception.Message)" }
         }
     } else {

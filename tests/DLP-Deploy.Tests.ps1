@@ -587,6 +587,22 @@ Describe 'Resolve-CleanupTargets' {
         $objs = @{ DlpPolicy = @([pscustomobject]@{ Name = 'UnrelatedThing' }) }
         (Resolve-CleanupTargets -Config $script:cfg -Objects $objs).Count | Should -Be 0
     }
+
+    It 'targets keyword dictionaries by NAME, not GUID (Remove-DlpKeywordDictionary -Identity resolves a name)' {
+        # Remove-DlpKeywordDictionary -Identity resolves a bare string as the dictionary NAME (unlike
+        # Remove-...RulePackage, which accepts a GUID). The cleanup target's Identity is what gets passed
+        # to -Identity, so it must be the Name or removal fails ("dictionary with name '<guid>' cannot
+        # be found") — the bug that orphaned the QGISCF-* dictionaries.
+        $objs = @{ KeywordDictionary = @([pscustomobject]@{ Name = 'QGISCF - AU Forenames'; Identity = '0083f67e-1d42-4cab-95dd-c9af1b9206ac' }) }
+        $m = Resolve-CleanupTargets -Config $script:cfg -Objects $objs
+        $dict = @($m | Where-Object { $_.Category -eq 'KeywordDictionary' })
+        $dict.Count | Should -Be 1
+        $dict[0].Risk | Should -Be 'scoped'
+        $dict[0].Identity | Should -Be 'QGISCF - AU Forenames'
+        # The live object (with its GUID Identity) is still carried so Invoke-CleanupPlan's
+        # package-reference dedup can match dictionary GUIDs in package idRefs.
+        $dict[0].InputObject.Identity | Should -Be '0083f67e-1d42-4cab-95dd-c9af1b9206ac'
+    }
 }
 
 Describe 'Get-CleanupConfirmationPhrase' {
