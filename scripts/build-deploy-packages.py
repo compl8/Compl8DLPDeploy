@@ -63,14 +63,17 @@ def load_slugs(xls_path, tier):
         if not row[0]:
             continue
         slug = str(row[1] or "").strip()
-        source = str(row[14] or "").strip()
         in_tier = str(row[TIER_COLS[tier]] or "").strip().upper() == "Y"
         is_uuid = (
             len(slug) == 36
             and slug.count("-") == 4
             and all(c in "0123456789abcdef-" for c in slug.lower())
         )
-        if in_tier and source == "TestPattern" and slug and not is_uuid:
+        # Pack ANY tier-flagged custom that has a fetchable slug, regardless of the spreadsheet's
+        # `source` label (TestPattern, QLD-Custom, ...). Microsoft built-ins are excluded later in
+        # main() via the built-in map. Filtering on source=="TestPattern" here silently dropped the
+        # entire QLD-Custom category even though testpattern serves those slugs.
+        if in_tier and slug and not is_uuid:
             slugs.append(slug)
     wb.close()
     return slugs
@@ -202,6 +205,17 @@ def main():
         slugs = [s for s in slugs if _norm(name_by_slug.get(s, "")) not in builtin_map]
         print(f"  Excluded {before - len(slugs)} Microsoft built-ins from packing (referenced by GUID instead)")
 
+    # Per-slug metadata: risk_rating drives keep-priority (highest risk packed first, lowest-risk
+    # dropped when capacity is exceeded); name/source/label_code feed the keep/drop review CSV.
+    from _bfx_loaders import load_spreadsheet
+    from _bfx_analysis import filter_by_tier
+    _meta = {e["guid_slug"]: e for e in filter_by_tier(load_spreadsheet(xls_path), args.tier) if e.get("guid_slug")}
+    def slug_risk(s):
+        try:
+            return int(_meta.get(s, {}).get("risk_rating") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     if args.dry_run:
         n = (len(slugs) + args.batch_size - 1) // args.batch_size
         print(f"\n  [DRY RUN] Would create ~{n} packages")
@@ -242,7 +256,10 @@ def main():
     TARGET = 145 * 1024            # estimated real-size fill target per package
     ACCEPT = PREFERRED_PACKAGE_UTF16  # 151552 — accept a fetched bin at/under this (under the 153600 hard cap)
     shrink = 0.84                  # initial real/single ratio; refined after each real bin
-    remaining = sorted(live, key=lambda s: -live[s])
+    # Keep-priority: highest risk first (size desc as tie-break for packing efficiency). The
+    # highest-risk SITs are packed while packages have room; whatever lowest-risk doesn't fit in
+    # MAX_PACKAGES is dropped and reported — "drop lowest risk to fit", not silently by size.
+    remaining = sorted(live, key=lambda s: (-slug_risk(s), -live[s]))
     results, dropped = [], []
     pkgnum = 0
     while remaining and pkgnum < MAX_PACKAGES:
@@ -304,6 +321,7 @@ def main():
     # an existing package and confirm (fetch-verify) the augmented package still fits. No new pkgs.
     if dropped:
         print(f"  Back-fill pass: {len(dropped)} leftover slug(s), trying existing packages with headroom...")
+        dropped = sorted(dropped, key=lambda s: (-slug_risk(s), live.get(s, 0)))  # higher-risk leftovers first
         still = []
         for slug in dropped:
             placed = False
@@ -335,6 +353,32 @@ def main():
         dropped = still
     if dropped:
         print(f"  DROPPED {len(dropped)} slug(s): {dropped}")
+
+    # ---- Keep/drop review CSV: every candidate custom with its decision, risk and package ----
+    import csv as _csvmod
+    placed_pkg = {s: r["name"] for r in results for s in r["slugs"]}
+    review_rows = []
+    for s in slugs:
+        e = _meta.get(s, {})
+        review_rows.append({
+            "decision":   "KEEP" if s in placed_pkg else "DROP",
+            "risk":       slug_risk(s),
+            "name":       e.get("name", ""),
+            "slug":       s,
+            "source":     e.get("source", ""),
+            "label_code": e.get("label_code", ""),
+            "package":    placed_pkg.get(s, ""),
+            "utf16_bytes": single.get(s, ""),
+        })
+    # KEEP first, then by risk desc, then name — so the review reads top-down by importance.
+    review_rows.sort(key=lambda r: (r["decision"] != "KEEP", -r["risk"], r["name"].lower()))
+    review_path = os.path.join(output_dir, "keep-drop-review.csv")
+    with open(review_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = _csvmod.DictWriter(f, fieldnames=["decision", "risk", "name", "slug", "source", "label_code", "package", "utf16_bytes"])
+        w.writeheader()
+        w.writerows(review_rows)
+    _kept = sum(1 for r in review_rows if r["decision"] == "KEEP")
+    print(f"  Keep/drop review CSV: {review_path}  ({_kept} KEEP / {len(review_rows) - _kept} DROP)")
 
     # Write registry
     reg_path = os.path.join(output_dir, "deploy-registry.json")
