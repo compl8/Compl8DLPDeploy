@@ -2222,6 +2222,43 @@ function Get-DlpDictionaryInventory {
     return $out.ToArray()
 }
 
+function Resolve-RulePackageDictionaryPlaceholders {
+    <#
+    .SYNOPSIS
+        Substitutes {{DICT_*}} keyword-dictionary placeholders in a rule-package XML string with
+        the live dictionary GUIDs from a placeholder->GUID map, then asserts no {{DICT_*}}
+        placeholder remains. This is the canonical "wire dictionary GUIDs into the package" step,
+        shared by the deploy pipeline (Deploy-Classifiers.ps1's Resolve-RulePackageUploadContent)
+        and the end-to-end deploy test so both resolve placeholders identically.
+    .PARAMETER Content
+        The rule-package XML text (may contain {{DICT_*}} placeholders).
+    .PARAMETER DictionaryGuidMap
+        Hashtable mapping placeholder (e.g. '{{DICT_AU_FORENAMES}}') -> dictionary GUID, as
+        returned by Sync-DlpKeywordDictionaries. May be $null/empty (then nothing is substituted).
+    .PARAMETER Scope
+        Optional manifest scope string, appended to the unresolved-placeholder error so the
+        operator knows which manifest scope to check.
+    .OUTPUTS
+        The resolved XML string. Throws if any {{DICT_*}} placeholder remains unresolved.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content,
+        [hashtable]$DictionaryGuidMap,
+        [string]$Scope
+    )
+    if ($DictionaryGuidMap) {
+        foreach ($kv in $DictionaryGuidMap.GetEnumerator()) {
+            $Content = $Content -replace [regex]::Escape($kv.Key), $kv.Value
+        }
+    }
+    $unresolved = @([regex]::Matches($Content, '\{\{DICT_[A-Z0-9_]+\}\}') | ForEach-Object { $_.Value } | Sort-Object -Unique)
+    if ($unresolved.Count -gt 0) {
+        $scopeHint = if ($Scope) { " or check dictionary manifest scope '$Scope'" } else { '' }
+        throw "Unresolved keyword dictionary placeholder(s): $($unresolved -join ', '). Run without -SkipDictionarySync$scopeHint."
+    }
+    return $Content
+}
+
 function Assert-PackageDictionaryReferencesExist {
     <#
     .SYNOPSIS
@@ -2442,6 +2479,7 @@ Export-ModuleMember -Function @(
     'Get-DlpDictionaryInventory'
     'ConvertFrom-DlpDictionaryTermProperty'
     'Assert-PackageDictionaryReferencesExist'
+    'Resolve-RulePackageDictionaryPlaceholders'
     'Assert-OrchestrationGate'
     'Get-EffectiveConfigDir'
     'Resolve-ConfigFile'

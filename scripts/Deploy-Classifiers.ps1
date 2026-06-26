@@ -414,16 +414,10 @@ function Resolve-RulePackageUploadContent {
         $content = Set-RulePackageDeploymentPackageName -Content $content -PackageName $deploymentPackageName
     }
 
-    if ($DictionaryGuidMap) {
-        foreach ($kv in $DictionaryGuidMap.GetEnumerator()) {
-            $content = $content -replace [regex]::Escape($kv.Key), $kv.Value
-        }
-    }
-
-    $unresolved = @([regex]::Matches($content, '\{\{DICT_[A-Z0-9_]+\}\}') | ForEach-Object { $_.Value } | Sort-Object -Unique)
-    if ($unresolved.Count -gt 0) {
-        throw "Unresolved keyword dictionary placeholder(s): $($unresolved -join ', '). Run without -SkipDictionarySync or check dictionary manifest scope '$Scope'."
-    }
+    # Wire dictionary GUIDs into the package and assert no {{DICT_*}} placeholder is left. Shared
+    # with the end-to-end deploy test (scripts/Test-EndToEndClassifierDeploy.ps1) so both resolve
+    # placeholders through the same module function.
+    $content = Resolve-RulePackageDictionaryPlaceholders -Content $content -DictionaryGuidMap $DictionaryGuidMap -Scope $Scope
 
     return $content
 }

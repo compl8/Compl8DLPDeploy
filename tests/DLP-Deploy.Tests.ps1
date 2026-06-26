@@ -1108,6 +1108,40 @@ Describe 'Get-DictionaryGuidReferences' {
     }
 }
 
+Describe 'Resolve-RulePackageDictionaryPlaceholders' {
+    It 'substitutes a single placeholder with its GUID' {
+        $xml = '<Match idRef="{{DICT_AU_FORENAMES}}" />'
+        $map = @{ '{{DICT_AU_FORENAMES}}' = 'dddddddd-1111-2222-3333-444444444444' }
+        $r = Resolve-RulePackageDictionaryPlaceholders -Content $xml -DictionaryGuidMap $map
+        $r | Should -Be '<Match idRef="dddddddd-1111-2222-3333-444444444444" />'
+    }
+    It 'substitutes multiple distinct placeholders' {
+        $xml = '<a idRef="{{DICT_FORE}}"/><b idRef="{{DICT_SUR}}"/>'
+        $map = @{ '{{DICT_FORE}}' = 'aaaaaaaa-0000-0000-0000-000000000001'; '{{DICT_SUR}}' = 'aaaaaaaa-0000-0000-0000-000000000002' }
+        $r = Resolve-RulePackageDictionaryPlaceholders -Content $xml -DictionaryGuidMap $map
+        $r | Should -Be '<a idRef="aaaaaaaa-0000-0000-0000-000000000001"/><b idRef="aaaaaaaa-0000-0000-0000-000000000002"/>'
+    }
+    It 'returns content unchanged when there are no placeholders and no map' {
+        $xml = '<Match idRef="Pattern_au_crn" />'
+        Resolve-RulePackageDictionaryPlaceholders -Content $xml | Should -Be $xml
+    }
+    It 'throws when a DICT placeholder remains unresolved (not in the map)' {
+        $xml = '<Match idRef="{{DICT_MISSING}}" />'
+        { Resolve-RulePackageDictionaryPlaceholders -Content $xml -DictionaryGuidMap @{} } |
+            Should -Throw -ExpectedMessage '*Unresolved keyword dictionary placeholder(s): {{DICT_MISSING}}*'
+    }
+    It 'includes the manifest scope hint in the throw message when -Scope is supplied' {
+        $xml = '<Match idRef="{{DICT_MISSING}}" />'
+        { Resolve-RulePackageDictionaryPlaceholders -Content $xml -DictionaryGuidMap @{} -Scope 'universal,au' } |
+            Should -Throw -ExpectedMessage "*manifest scope 'universal,au'*"
+    }
+    It 'does not throw when an unmapped placeholder is not a DICT_ placeholder' {
+        # The pipeline guard targets {{DICT_*}} only; other tokens are out of scope for this step.
+        $xml = '<x>{{SOMETHING_ELSE}}</x>'
+        Resolve-RulePackageDictionaryPlaceholders -Content $xml -DictionaryGuidMap @{} | Should -Be $xml
+    }
+}
+
 Describe 'Resolve-DictionarySyncDecision' {
     It 'CREATE when no existing dictionary matched' {
         (Resolve-DictionarySyncDecision -OurTerms @('a','b') -Existing $null -TenantHeadroomBytes 100000).Action | Should -Be 'Create'
