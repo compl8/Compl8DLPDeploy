@@ -23,8 +23,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-MAX_PACKAGE_UTF16 = 150 * 1024        # 153600 — Purview/testpattern hard cap, measured UTF-16LE
-PREFERRED_PACKAGE_UTF16 = 148 * 1024  # 151552 — working budget under the cap
+MAX_PACKAGE_UTF16 = 770 * 1024        # 788480 — real Purview/testpattern per-package upload cap (UTF-16LE). The old 150KB came from the sit-limits doc page and is NOT the upload limit (empirically ≥1000KB accepted; ~770KB is the practical ceiling). testpattern's guardrail was raised to match.
+PREFERRED_PACKAGE_UTF16 = 760 * 1024  # 778240 — working budget under the 770KB cap
 MAX_PACKAGES = 9                      # automated build cap; 10th tenant slot reserved for manual adds
 MAX_SITS_PER_PACKAGE = 50             # Purview authoring hard cap: 50 entities per rule package
 TESTPATTERN_API = "https://testpattern.dev/api/export/purview-bundle"
@@ -253,8 +253,8 @@ def main():
     # per slug set). Instead: pick a bin by ESTIMATE (single-slug size * shrink ~= target), FETCH it,
     # measure the REAL size, back off the largest slug while it's over ACCEPT, then re-calibrate
     # `shrink` from the real bin so the next estimate is sharper. Greedy largest-first; <=9 packages.
-    TARGET = 145 * 1024            # estimated real-size fill target per package
-    ACCEPT = PREFERRED_PACKAGE_UTF16  # 151552 — accept a fetched bin at/under this (under the 153600 hard cap)
+    TARGET = 740 * 1024            # estimated real-size fill target per package (under the 760KB ACCEPT). With the 770KB cap, the 50-SIT/package limit binds first, so packages pack to 50 entities (~280KB) — not size.
+    ACCEPT = PREFERRED_PACKAGE_UTF16  # 778240 — accept a fetched bin at/under this (under the 788480 hard cap)
     shrink = 0.84                  # initial real/single ratio; refined after each real bin
     # Keep-priority: highest risk first (size desc as tie-break for packing efficiency). The
     # highest-risk SITs are packed while packages have room; whatever lowest-risk doesn't fit in
