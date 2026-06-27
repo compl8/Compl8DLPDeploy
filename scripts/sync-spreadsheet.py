@@ -1,134 +1,131 @@
 #!/usr/bin/env python3
-"""Sync the SIT Risk Analysis spreadsheet with testpattern.dev's current catalogue.
+"""Refresh the SIT Risk Analysis spreadsheet from testpattern.dev's catalogue.
 
-Compares the spreadsheet's SIT entries against testpattern.dev's pattern list
-and reports:
-  - New patterns on testpattern.dev not in the spreadsheet
-  - Spreadsheet entries whose slugs no longer exist on testpattern.dev
-  - Slug or name changes
+Report-only by default; --update appends new (enriched) patterns and syncs freshness
+provenance, writing to --out. Never overwrites the input or curated values.
+See docs/superpowers/specs/2026-06-27-catalog-refresh-design.md.
 
-Usage:
-  python scripts/sync-spreadsheet.py                      # report only
-  python scripts/sync-spreadsheet.py --update              # update spreadsheet
-  python scripts/sync-spreadsheet.py --jurisdiction au     # filter by jurisdiction
+  python scripts/sync-spreadsheet.py                                  # report only
+  python scripts/sync-spreadsheet.py --update --out SIT-...-v14.xlsx   # append new rows
 """
-
-import argparse
-import json
-import sys
-import urllib.request
+import argparse, csv, json, sys, urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import catalog_refresh as cr
+from pipeline_utils import find_spreadsheet
 
-def load_spreadsheet_slugs(xls_path):
-    """Load all TestPattern slugs from the spreadsheet."""
+CATALOG_URL = "https://testpattern.dev/patterns.json"
+SHEET = "SIT Risk Analysis"
+
+
+def fetch_catalog(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Compl8DLPDeploy/1.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    pats = data["patterns"] if isinstance(data, dict) and "patterns" in data else data
+    if not isinstance(pats, list):
+        raise ValueError("Unexpected catalogue response shape")
+    return pats
+
+
+def load_sheet_rows(xls_path):
     import openpyxl
     wb = openpyxl.load_workbook(str(xls_path), read_only=True, data_only=True)
-    ws = wb["SIT Risk Analysis"]
-
-    entries = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row[0]:
-            continue
-        name = str(row[0]).strip()
-        slug = str(row[1] or "").strip()
-        source = str(row[14] or "").strip()
-        if source == "TestPattern" and slug:
-            entries[slug] = {"name": name, "source": source}
-
+    ws = wb[SHEET]
+    rows = [list(r) for r in ws.iter_rows(min_row=2, values_only=True)]
     wb.close()
-    return entries
+    return rows
 
 
-def fetch_testpattern_catalogue(jurisdiction=None):
-    """Fetch the full pattern catalogue from testpattern.dev."""
-    url = "https://testpattern.dev/api/export/purview"
-    if jurisdiction:
-        url += f"?jurisdiction={jurisdiction}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Compl8DLPDeploy/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if isinstance(data, list):
-                return {p["slug"]: p for p in data if "slug" in p}
-            elif isinstance(data, dict) and "patterns" in data:
-                return {p["slug"]: p for p in data["patterns"] if "slug" in p}
-            else:
-                print(f"Unexpected API response format", file=sys.stderr)
-                return {}
-    except Exception as e:
-        print(f"Failed to fetch catalogue: {e}", file=sys.stderr)
-        return {}
+def build_change_report(patterns, sheet_rows):
+    skipped = sum(1 for p in patterns if cr.is_microsoft(p))
+    catalog = cr.index_catalog(patterns)
+    sheet = cr.index_sheet_rows(sheet_rows)
+    added, removed, common = cr.reconcile(catalog, sheet)
+    drift, tuned = [], []
+    for s in common:
+        ch = cr.detect_changes(catalog[s], sheet[s])
+        if ch["drift"]:
+            drift.append((s, ch["drift"]))
+        if ch["tuned"]:
+            tuned.append(s)
+    return {"added": added, "removed": removed, "drift": drift,
+            "tuned": tuned, "skipped_microsoft": skipped, "_catalog": catalog}
+
+
+def write_report(report_dir, report):
+    report_dir = Path(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    with open(report_dir / "changes.csv", "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["change", "slug", "detail"])
+        for s in report["added"]:
+            w.writerow(["added", s, ""])
+        for s in report["removed"]:
+            w.writerow(["removed", s, ""])
+        for s, fields in report["drift"]:
+            w.writerow(["drift", s, "; ".join(fields)])
+        for s in report["tuned"]:
+            w.writerow(["tuned", s, "version bump"])
+    md = ["# Catalog refresh report", "",
+          f"- Added: {len(report['added'])}",
+          f"- Removed: {len(report['removed'])}",
+          f"- Drifted: {len(report['drift'])}",
+          f"- Tuned (version bump): {len(report['tuned'])}",
+          f"- Skipped (source=microsoft replicas): {report['skipped_microsoft']}", ""]
+    if report["added"]:
+        md += ["## Added — need curation (tier + classification)", ""]
+        md += [f"- `{s}`" for s in report["added"]]
+    (report_dir / "report.md").write_text("\n".join(md), encoding="utf-8")
+
+
+def _versioned_out(xls_path):
+    p = Path(xls_path)
+    return p.with_name(p.stem + ".refreshed" + p.suffix)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sync spreadsheet with testpattern.dev")
-    parser.add_argument("--xls", default=None, help="Path to spreadsheet")
-    parser.add_argument("--jurisdiction", default=None, help="Filter by jurisdiction (e.g. au)")
-    parser.add_argument("--update", action="store_true", help="Update spreadsheet (add new patterns)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Refresh spreadsheet from testpattern.dev")
+    ap.add_argument("--xls", default=None)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--catalog-url", default=CATALOG_URL)
+    ap.add_argument("--report", default="reports/catalog-refresh")
+    ap.add_argument("--update", action="store_true")
+    ap.add_argument("--refresh-metadata", action="store_true")
+    ap.add_argument("--in-place", action="store_true")
+    args = ap.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from pipeline_utils import find_spreadsheet
     xls_path = find_spreadsheet(project_root, args.xls)
     if not xls_path:
-        print("ERROR: No input spreadsheet found. Specify with --xls or set inputSpreadsheet in settings.json", file=sys.stderr)
-        sys.exit(1)
+        sys.exit("ERROR: no input spreadsheet (set --xls or settings.json inputSpreadsheet)")
 
-    print(f"  Spreadsheet: {xls_path.name}")
+    print(f"  Spreadsheet: {Path(xls_path).name}")
+    patterns = fetch_catalog(args.catalog_url)
+    print(f"  Catalogue patterns: {len(patterns)}")
+    cr.assert_catalog_sane(patterns)
+    rows = load_sheet_rows(xls_path)
+    report = build_change_report(patterns, rows)
 
-    # Load current spreadsheet state
-    spreadsheet_slugs = load_spreadsheet_slugs(xls_path)
-    print(f"  Spreadsheet TestPattern entries: {len(spreadsheet_slugs)}")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    report_dir = Path(args.report) / stamp
+    write_report(report_dir, report)
+    print(f"  Added {len(report['added'])} | Removed {len(report['removed'])} | "
+          f"Drift {len(report['drift'])} | Tuned {len(report['tuned'])} | "
+          f"Skipped-MS {report['skipped_microsoft']}")
+    print(f"  Report: {report_dir}")
 
-    # Fetch testpattern.dev catalogue
-    print(f"  Fetching testpattern.dev catalogue...")
-    catalogue = fetch_testpattern_catalogue(args.jurisdiction)
-    if not catalogue:
-        sys.exit("ERROR: Could not fetch catalogue")
-    print(f"  TestPattern catalogue: {len(catalogue)} patterns")
+    if not args.update:
+        print("  (report only; pass --update to write the refreshed spreadsheet)")
+        return
 
-    # Compare
-    spreadsheet_set = set(spreadsheet_slugs.keys())
-    catalogue_set = set(catalogue.keys())
-
-    new_patterns = catalogue_set - spreadsheet_set
-    removed_patterns = spreadsheet_set - catalogue_set
-    common = spreadsheet_set & catalogue_set
-
-    # Report
-    print(f"\n=== Sync Report ===")
-    print(f"  In both: {len(common)}")
-    print(f"  New on testpattern.dev: {len(new_patterns)}")
-    print(f"  In spreadsheet but not on testpattern.dev: {len(removed_patterns)}")
-
-    if new_patterns:
-        print(f"\n  --- New Patterns ({len(new_patterns)}) ---")
-        print(f"  These exist on testpattern.dev but are not in the spreadsheet:")
-        for slug in sorted(new_patterns)[:30]:
-            p = catalogue[slug]
-            name = p.get("name", slug)
-            print(f"    {slug}: {name}")
-        if len(new_patterns) > 30:
-            print(f"    ... and {len(new_patterns) - 30} more")
-
-    if removed_patterns:
-        print(f"\n  --- Removed Patterns ({len(removed_patterns)}) ---")
-        print(f"  These are in the spreadsheet but not on testpattern.dev:")
-        for slug in sorted(removed_patterns)[:20]:
-            entry = spreadsheet_slugs[slug]
-            print(f"    {slug}: {entry['name']}")
-        if len(removed_patterns) > 20:
-            print(f"    ... and {len(removed_patterns) - 20} more")
-
-    if not new_patterns and not removed_patterns:
-        print(f"\n  Spreadsheet is in sync with testpattern.dev.")
-
-    if args.update and new_patterns:
-        print(f"\n  --update not yet implemented. New patterns listed above need manual addition to spreadsheet.")
-        # TODO: Auto-add new patterns to spreadsheet with default tier/label assignments
+    from catalog_update import apply_update   # Task 5
+    out_path = Path(args.out) if args.out else _versioned_out(xls_path)
+    apply_update(xls_path, out_path, report["_catalog"], report["added"],
+                 report["removed"], args.refresh_metadata, args.in_place)
+    print(f"  Wrote: {out_path if not args.in_place else xls_path}")
 
 
 if __name__ == "__main__":
