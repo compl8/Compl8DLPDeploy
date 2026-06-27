@@ -39,3 +39,40 @@ def test_write_report_emits_files(tmp_path):
     assert (tmp_path / "changes.csv").exists()
     md = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Added: 1" in md and "Tuned" in md
+
+def test_apply_update_appends_and_preserves(tmp_path):
+    import openpyxl, catalog_refresh as cr
+    from catalog_update import apply_update
+    # existing row with a human-curated risk_rating + tier flag we must preserve
+    existing = cr.row_from_catalog({"slug": "keep", "name": "Keep", "version": "1.0.0"})
+    existing[cr.COL_RISK_RATING] = 7              # curated
+    existing[9] = "Y"                             # Small (tenant) tier flag (curated)
+    src = tmp_path / "in.xlsx"
+    _make_xlsx(src, [existing])
+    catalog = {"keep": {"slug": "keep", "name": "Keep", "version": "1.3.0"},  # tuned -> sync version
+               "new": {"slug": "new", "name": "New", "data_categories": ["pii"],
+                       "version": "1.0.0", "source": None}}
+    out = tmp_path / "out.xlsx"
+    apply_update(src, out, catalog, added=["new"], removed=[], refresh_metadata=False, in_place=False)
+
+    wb = openpyxl.load_workbook(str(out)); ws = wb["SIT Risk Analysis"]
+    data = [list(r) for r in ws.iter_rows(min_row=2, values_only=True)]; wb.close()
+    by_slug = {r[cr.COL_SLUG]: r for r in data}
+    assert set(by_slug) == {"keep", "new"}                      # appended
+    assert by_slug["keep"][cr.COL_RISK_RATING] == 7            # curated preserved
+    assert by_slug["keep"][9] == "Y"                           # tier flag preserved
+    assert str(by_slug["keep"][cr.COL_VERSION]) == "1.3.0"     # freshness synced
+    assert by_slug["new"][cr.COL_CATEGORY] == "pii"            # new row enriched
+    assert src.exists()                                        # input untouched
+
+def test_apply_update_idempotent(tmp_path):
+    import openpyxl, catalog_refresh as cr
+    from catalog_update import apply_update
+    existing = cr.row_from_catalog({"slug": "keep", "name": "Keep", "version": "1.0.0"})
+    src = tmp_path / "in.xlsx"; _make_xlsx(src, [existing])
+    catalog = {"keep": {"slug": "keep", "name": "Keep", "version": "1.0.0"}}
+    out = tmp_path / "out.xlsx"
+    apply_update(src, out, catalog, added=[], removed=[], refresh_metadata=False, in_place=False)
+    wb = openpyxl.load_workbook(str(out)); ws = wb["SIT Risk Analysis"]
+    n = sum(1 for r in ws.iter_rows(min_row=2, values_only=True) if r[cr.COL_SLUG]); wb.close()
+    assert n == 1   # no duplicate appended
