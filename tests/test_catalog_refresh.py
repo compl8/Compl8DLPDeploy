@@ -70,3 +70,21 @@ def test_row_from_catalog_qld_source_and_missing_fields():
     assert r[cr.COL_SOURCE] == "QLD-Custom"
     assert r[cr.COL_CATEGORY] == "" and r[cr.COL_REF_URL] == "" and r[cr.COL_RISK_RATING] == ""
     assert r[cr.COL_CLASSIFIER_TYPE] == "SIT"
+
+def test_version_bumped():
+    assert cr.version_bumped({"version": "1.2.0"}, make_row(cr.SHEET_WIDTH, version="1.0.0"))
+    assert not cr.version_bumped({"version": "1.0.0"}, make_row(cr.SHEET_WIDTH, version="1.0.0"))
+    # new freshness on a row that never had it = tuned/updated signal
+    assert cr.version_bumped({"version": "1.0.0"}, make_row(cr.SHEET_WIDTH, version=""))
+
+def test_detect_changes_drift_and_tuned():
+    p = {"name": "New Name", "data_categories": ["pii"], "jurisdictions": ["au"], "version": "2.0.0"}
+    row = make_row(cr.SHEET_WIDTH, name="Old Name", category="pii", jurisdictions="au", version="1.0.0")
+    ch = cr.detect_changes(p, row)
+    assert ch["drift"] == ["name"]   # category/jurisdictions match
+    assert ch["tuned"] is True
+
+def test_detect_changes_no_change():
+    p = {"name": "Same", "data_categories": ["pii"], "jurisdictions": ["au"], "version": "1.0.0"}
+    row = make_row(cr.SHEET_WIDTH, name="Same", category="pii", jurisdictions="au", version="1.0.0")
+    assert cr.detect_changes(p, row) == {"drift": [], "tuned": False}

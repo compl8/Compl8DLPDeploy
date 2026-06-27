@@ -88,3 +88,25 @@ def row_from_catalog(pattern):
     row[COL_UPDATED] = str(pattern.get("updated") or "")
     row[COL_VERSION] = str(pattern.get("version") or "")
     return row
+
+
+_DRIFT_FIELDS = (
+    (COL_NAME, "name", lambda p: str(p.get("name") or "")),
+    (COL_CATEGORY, "category", lambda p: _join(p.get("data_categories"))),
+    (COL_JURISDICTIONS, "jurisdictions", lambda p: _join(p.get("jurisdictions"))),
+)
+
+
+def version_bumped(pattern, sheet_row):
+    cat_v = str(pattern.get("version") or "").strip()
+    sheet_v = str(sheet_row[COL_VERSION] or "").strip() if len(sheet_row) > COL_VERSION else ""
+    return bool(cat_v) and cat_v != sheet_v
+
+
+def detect_changes(pattern, sheet_row):
+    drift = []
+    for col, label, getter in _DRIFT_FIELDS:
+        sheet_val = str(sheet_row[col] or "").strip() if len(sheet_row) > col else ""
+        if getter(pattern).strip() != sheet_val:
+            drift.append(label)
+    return {"drift": drift, "tuned": version_bumped(pattern, sheet_row)}
