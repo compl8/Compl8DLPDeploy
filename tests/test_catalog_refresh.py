@@ -88,3 +88,14 @@ def test_detect_changes_no_change():
     p = {"name": "Same", "data_categories": ["pii"], "jurisdictions": ["au"], "version": "1.0.0"}
     row = make_row(cr.SHEET_WIDTH, name="Same", category="pii", jurisdictions="au", version="1.0.0")
     assert cr.detect_changes(p, row) == {"drift": [], "tuned": False}
+
+def test_row_from_catalog_dict_references():
+    p = {"slug": "s", "name": "N", "references": [{"url": "https://x", "title": "t"}]}
+    assert cr.row_from_catalog(p)[cr.COL_REF_URL] == "https://x"
+
+def test_row_from_catalog_string_references_still_work():
+    p = {"slug": "s", "name": "N", "references": ["https://y"]}
+    assert cr.row_from_catalog(p)[cr.COL_REF_URL] == "https://y"
+
+def test_join_handles_dict_elements():
+    assert cr._join([{"name": "a"}, "b"]) == "a; b"

@@ -18,10 +18,20 @@ SHEET_SOURCES = (SOURCE_TESTPATTERN, SOURCE_QLD)
 MIN_CATALOG_SIZE = 500
 
 
+def _scalar(value):
+    """Coerce a possibly-dict catalog element to a clean string (url/name/title/value, else str)."""
+    if isinstance(value, dict):
+        for k in ("url", "name", "title", "value"):
+            if value.get(k):
+                return str(value[k])
+        return ""
+    return "" if value is None else str(value)
+
+
 def _join(value):
     if isinstance(value, (list, tuple)):
-        return "; ".join(str(v) for v in value if v not in (None, ""))
-    return "" if value is None else str(value)
+        return "; ".join(s for s in (_scalar(v) for v in value) if s)
+    return _scalar(value)
 
 
 def is_microsoft(pattern):
@@ -77,7 +87,7 @@ def row_from_catalog(pattern):
     rr = pattern.get("risk_rating")
     row[COL_RISK_RATING] = rr if rr is not None else ""
     refs = pattern.get("references")
-    row[COL_REF_URL] = (refs[0] if isinstance(refs, list) and refs else (refs or "")) or ""
+    row[COL_REF_URL] = _scalar(refs[0]) if isinstance(refs, list) and refs else _scalar(refs)
     row[COL_CLASSIFIER_TYPE] = "SIT"
     row[COL_SOURCE] = derive_source(pattern.get("source"))
     row[COL_JURISDICTIONS] = _join(pattern.get("jurisdictions"))
