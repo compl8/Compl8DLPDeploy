@@ -65,6 +65,16 @@ def test_apply_update_appends_and_preserves(tmp_path):
     assert by_slug["new"][cr.COL_CATEGORY] == "pii"            # new row enriched
     assert src.exists()                                        # input untouched
 
+def test_apply_update_refuses_out_equals_input(tmp_path):
+    import catalog_refresh as cr
+    from catalog_update import apply_update
+    src = tmp_path / "in.xlsx"
+    _make_xlsx(src, [cr.row_from_catalog({"slug": "a", "name": "A", "version": "1.0.0"})])
+    import pytest
+    with pytest.raises(ValueError):
+        apply_update(src, src, {"a": {"slug": "a", "name": "A", "version": "1.0.0"}},
+                     added=[], removed=[], refresh_metadata=False, in_place=False)
+
 def test_apply_update_idempotent(tmp_path):
     import openpyxl, catalog_refresh as cr
     from catalog_update import apply_update

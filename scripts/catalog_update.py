@@ -29,6 +29,10 @@ _FRESHNESS = (
 
 def apply_update(xls_path, out_path, catalog, added, removed, refresh_metadata, in_place):
     import openpyxl
+    if not in_place and Path(out_path).resolve() == Path(xls_path).resolve():
+        raise ValueError(
+            "--out must differ from the input; use --in-place to overwrite (which takes a .bak first)."
+        )
     if in_place:
         shutil.copy2(str(xls_path), str(xls_path) + ".bak")
         out_path = xls_path

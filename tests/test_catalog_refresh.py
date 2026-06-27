@@ -72,10 +72,13 @@ def test_row_from_catalog_qld_source_and_missing_fields():
     assert r[cr.COL_CLASSIFIER_TYPE] == "SIT"
 
 def test_version_bumped():
+    # Genuine version change from a known baseline → True
     assert cr.version_bumped({"version": "1.2.0"}, make_row(cr.SHEET_WIDTH, version="1.0.0"))
+    # Versions equal → False
     assert not cr.version_bumped({"version": "1.0.0"}, make_row(cr.SHEET_WIDTH, version="1.0.0"))
-    # new freshness on a row that never had it = tuned/updated signal
-    assert cr.version_bumped({"version": "1.0.0"}, make_row(cr.SHEET_WIDTH, version=""))
+    # First-run seed: sheet has no recorded version (blank) → False (not a real bump)
+    # I3 fix: both sides must be non-blank for a bump to be counted.
+    assert not cr.version_bumped({"version": "1.0.0"}, make_row(cr.SHEET_WIDTH, version=""))
 
 def test_detect_changes_drift_and_tuned():
     p = {"name": "New Name", "data_categories": ["pii"], "jurisdictions": ["au"], "version": "2.0.0"}

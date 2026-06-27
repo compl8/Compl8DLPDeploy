@@ -101,8 +101,10 @@ def row_from_catalog(pattern):
 
 
 _DRIFT_FIELDS = (
+    # category excluded: curated spreadsheet taxonomy vs. catalog data_categories are
+    # disjoint — comparing them causes every common row to appear drifted, drowning
+    # genuine name/jurisdiction drift in noise (I2 fix).
     (COL_NAME, "name", lambda p: str(p.get("name") or "")),
-    (COL_CATEGORY, "category", lambda p: _join(p.get("data_categories"))),
     (COL_JURISDICTIONS, "jurisdictions", lambda p: _join(p.get("jurisdictions"))),
 )
 
@@ -110,7 +112,8 @@ _DRIFT_FIELDS = (
 def version_bumped(pattern, sheet_row):
     cat_v = str(pattern.get("version") or "").strip()
     sheet_v = str(sheet_row[COL_VERSION] or "").strip() if len(sheet_row) > COL_VERSION else ""
-    return bool(cat_v) and cat_v != sheet_v
+    # Both sides must be non-blank: a blank sheet_v means first-run seed, not a real bump.
+    return bool(cat_v) and bool(sheet_v) and cat_v != sheet_v
 
 
 def detect_changes(pattern, sheet_row):
