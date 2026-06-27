@@ -66,3 +66,25 @@ def assert_catalog_sane(patterns):
         raise ValueError(
             f"Catalog has only {len(patterns)} patterns (< {MIN_CATALOG_SIZE} floor); "
             "refusing to diff against a possibly-degraded API.")
+
+
+def row_from_catalog(pattern):
+    row = [""] * SHEET_WIDTH
+    row[COL_NAME] = str(pattern.get("name") or "")
+    row[COL_SLUG] = str(pattern.get("slug") or "")
+    row[COL_CATEGORY] = _join(pattern.get("data_categories"))
+    row[COL_RISK_DESC] = str(pattern.get("risk_description") or "")
+    rr = pattern.get("risk_rating")
+    row[COL_RISK_RATING] = rr if rr is not None else ""
+    refs = pattern.get("references")
+    row[COL_REF_URL] = (refs[0] if isinstance(refs, list) and refs else (refs or "")) or ""
+    row[COL_CLASSIFIER_TYPE] = "SIT"
+    row[COL_SOURCE] = derive_source(pattern.get("source"))
+    row[COL_JURISDICTIONS] = _join(pattern.get("jurisdictions"))
+    row[COL_SCOPE] = str(pattern.get("scope") or "")
+    row[COL_CONFIDENCE] = str(pattern.get("confidence") or "")
+    row[COL_REGULATIONS] = _join(pattern.get("regulations"))
+    row[COL_CREATED] = str(pattern.get("created") or "")
+    row[COL_UPDATED] = str(pattern.get("updated") or "")
+    row[COL_VERSION] = str(pattern.get("version") or "")
+    return row

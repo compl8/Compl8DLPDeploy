@@ -41,3 +41,32 @@ def test_join():
     assert cr._join(["a", None, ""]) == "a"
     assert cr._join("x") == "x"
     assert cr._join(None) == ""
+
+def test_row_from_catalog_maps_fields():
+    p = {"slug": "global-aws-key", "name": "AWS Key",
+         "data_categories": ["credentials", "secrets"], "risk_description": "leak",
+         "risk_rating": 9, "references": ["https://x"], "source": None,
+         "jurisdictions": ["global"], "scope": "wide", "confidence": "high",
+         "regulations": ["ISO 27001"], "created": "2026-01-01", "updated": "2026-02-01",
+         "version": "1.2.0"}
+    r = cr.row_from_catalog(p)
+    assert len(r) == cr.SHEET_WIDTH
+    assert r[cr.COL_NAME] == "AWS Key"
+    assert r[cr.COL_SLUG] == "global-aws-key"
+    assert r[cr.COL_CATEGORY] == "credentials; secrets"
+    assert r[cr.COL_RISK_RATING] == 9
+    assert r[cr.COL_REF_URL] == "https://x"
+    assert r[cr.COL_CLASSIFIER_TYPE] == "SIT"
+    assert r[cr.COL_SOURCE] == "TestPattern"
+    assert r[cr.COL_JURISDICTIONS] == "global"
+    assert r[cr.COL_REGULATIONS] == "ISO 27001"
+    assert r[cr.COL_VERSION] == "1.2.0"
+    assert r[cr.COL_UPDATED] == "2026-02-01"
+    # curated columns left blank
+    assert r[6] == "" and r[9] == "" and r[12] == "" and r[20] == ""
+
+def test_row_from_catalog_qld_source_and_missing_fields():
+    r = cr.row_from_catalog({"slug": "qld-x", "name": "Q", "source": "qld-custom"})
+    assert r[cr.COL_SOURCE] == "QLD-Custom"
+    assert r[cr.COL_CATEGORY] == "" and r[cr.COL_REF_URL] == "" and r[cr.COL_RISK_RATING] == ""
+    assert r[cr.COL_CLASSIFIER_TYPE] == "SIT"
