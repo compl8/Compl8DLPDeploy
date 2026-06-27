@@ -116,6 +116,21 @@ def version_bumped(pattern, sheet_row):
     return bool(cat_v) and bool(sheet_v) and cat_v != sheet_v
 
 
+def filter_by_jurisdiction(patterns, jurisdiction):
+    """Keep patterns whose jurisdictions include `jurisdiction` (case-insensitive). Falsy = no filter."""
+    if not jurisdiction:
+        return patterns
+    j = str(jurisdiction).strip().lower()
+    out = []
+    for p in patterns:
+        js = p.get("jurisdictions") or []
+        if isinstance(js, str):
+            js = [js]
+        if any(str(x).strip().lower() == j for x in js):
+            out.append(p)
+    return out
+
+
 def detect_changes(pattern, sheet_row):
     drift = []
     for col, label, getter in _DRIFT_FIELDS:

@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--refresh-metadata", action="store_true")
     ap.add_argument("--in-place", action="store_true")
+    ap.add_argument("--jurisdiction", default=None,
+                    help="report-only: filter the catalogue to one jurisdiction (e.g. au)")
     args = ap.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -106,6 +108,9 @@ def main():
     patterns = fetch_catalog(args.catalog_url)
     print(f"  Catalogue patterns: {len(patterns)}")
     cr.assert_catalog_sane(patterns)
+    if args.jurisdiction and args.update:
+        sys.exit("ERROR: --jurisdiction is report-only (it would mark all other-region rows as removed); drop --update or --jurisdiction.")
+    patterns = cr.filter_by_jurisdiction(patterns, args.jurisdiction)
     rows = load_sheet_rows(xls_path)
     report = build_change_report(patterns, rows)
 

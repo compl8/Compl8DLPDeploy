@@ -102,3 +102,13 @@ def test_row_from_catalog_string_references_still_work():
 
 def test_join_handles_dict_elements():
     assert cr._join([{"name": "a"}, "b"]) == "a; b"
+
+def test_filter_by_jurisdiction():
+    pats = [{"slug": "a", "jurisdictions": ["au", "global"]},
+            {"slug": "b", "jurisdictions": ["eu"]},
+            {"slug": "c", "jurisdictions": "AU"},
+            {"slug": "d"}]
+    got = {p["slug"] for p in cr.filter_by_jurisdiction(pats, "au")}
+    assert got == {"a", "c"}
+    assert len(cr.filter_by_jurisdiction(pats, None)) == 4   # no filter
+    assert len(cr.filter_by_jurisdiction(pats, "")) == 4
